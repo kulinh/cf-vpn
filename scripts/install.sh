@@ -60,7 +60,9 @@ tunnel_name() {
 ensure_tunnel() {
   local name tid
   name=$(tunnel_name)
-  tid=$(get_tunnel_by_name "$name" || true)
+  if ! tid=$(get_tunnel_by_name "$name"); then
+    die "failed to look up tunnel '$name' (check Cloudflare API/auth/network)"
+  fi
   if [ -n "$tid" ]; then
     log "tunnel '$name' exists: $tid"
   else
@@ -68,20 +70,31 @@ ensure_tunnel() {
     local cred_file_tmp
     cred_file_tmp=$(mktemp)
     # Capture stdout (tunnel_id) separately from FD 3 (credentials)
-    tid=$(create_tunnel "$name" 3>"$cred_file_tmp")
-    [ -n "$tid" ] || die "failed to create tunnel"
+    if ! tid=$(create_tunnel "$name" 3>"$cred_file_tmp"); then
+      rm -f "$cred_file_tmp"
+      die "failed to create tunnel '$name'"
+    fi
+    if [ -z "$tid" ]; then
+      rm -f "$cred_file_tmp"
+      die "failed to create tunnel '$name'"
+    fi
     local cred_dest="$PROJECT_ROOT/cloudflared/${tid}.json"
-    mv "$cred_file_tmp" "$cred_dest"
-    chmod 600 "$cred_dest"
+    if ! mv "$cred_file_tmp" "$cred_dest"; then
+      rm -f "$cred_file_tmp"
+      die "failed to write tunnel credentials to $cred_dest"
+    fi
+    chmod 600 "$cred_dest" || die "failed to set permissions on $cred_dest"
     log "tunnel created: $tid (credentials at $cred_dest)"
   fi
   env_write "$ENV_FILE" "TUNNEL_UUID" "$tid"
   export TUNNEL_UUID="$tid"
 
+  local cred_file="$PROJECT_ROOT/cloudflared/${tid}.json"
   # Ensure credentials file exists (user may have deleted; detect missing)
-  if [ ! -f "$PROJECT_ROOT/cloudflared/${tid}.json" ]; then
+  if [ ! -f "$cred_file" ]; then
     die "credentials file missing at cloudflared/${tid}.json — delete tunnel in CF dashboard and re-run"
   fi
+  chmod 600 "$cred_file" || die "failed to set permissions on $cred_file"
 }
 
 ensure_dns() {
