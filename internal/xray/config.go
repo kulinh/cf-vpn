@@ -120,6 +120,42 @@ func ListUserNames(cfg Config) []string {
 
 func CountUsers(cfg Config) int { return len(ListUserNames(cfg)) }
 
+// GetVLESSClient returns the UUID of the VLESS client whose email matches name.
+func GetVLESSClient(cfg Config, name string) (string, bool) {
+	in := findInbound(&cfg, "vless")
+	if in == nil {
+		return "", false
+	}
+	s, err := loadVLESS(in)
+	if err != nil {
+		return "", false
+	}
+	for _, c := range s.Clients {
+		if c.Email == name {
+			return c.ID, true
+		}
+	}
+	return "", false
+}
+
+// GetTrojanClient returns the password of the Trojan client whose email matches name.
+func GetTrojanClient(cfg Config, name string) (string, bool) {
+	in := findInbound(&cfg, "trojan")
+	if in == nil {
+		return "", false
+	}
+	s, err := loadTrojan(in)
+	if err != nil {
+		return "", false
+	}
+	for _, c := range s.Clients {
+		if c.Email == name {
+			return c.Password, true
+		}
+	}
+	return "", false
+}
+
 func AddUser(cfg *Config, name, uuid, password string) error {
 	if err := ValidateUserName(name); err != nil {
 		return err
