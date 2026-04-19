@@ -1,0 +1,52 @@
+services:
+  xray:
+    image: teddysun/xray:${XRAY_VERSION}
+    container_name: cf-vpn-xray
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./xray/config.json:/etc/xray/config.json:ro
+    networks:
+      - cfvpn_net
+    healthcheck:
+      test: ["CMD-SHELL", "ss -tln 2>/dev/null | grep -q ':10001' || nc -z 127.0.0.1 10001"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION}
+    container_name: cf-vpn-cloudflared
+    restart: unless-stopped
+    command: tunnel --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/${TUNNEL_UUID}.json:/etc/cloudflared/${TUNNEL_UUID}.json:ro
+    networks:
+      - cfvpn_net
+    depends_on:
+      xray:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "cloudflared", "tunnel", "info", "${TUNNEL_UUID}"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  cfvpn_net:
+    driver: bridge
