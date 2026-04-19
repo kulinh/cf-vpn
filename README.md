@@ -18,7 +18,7 @@ cp .env.example .env
 bash scripts/install.sh
 ```
 
-On success, `install.sh` prints the subscription for `user1`. To print again:
+After install completes, print the subscription for `user1` with:
 ```bash
 bash scripts/gen-subscription.sh
 ```
@@ -46,10 +46,11 @@ bash scripts/healthcheck.sh --install
 
 ```bash
 docker compose ps                           # both Up (healthy)
+source .env
 curl -I https://${DOMAIN}/                  # expect 404
 curl -I https://${DOMAIN}/vless             # expect 400 or 426
 docker compose logs cloudflared | grep "Registered tunnel"
-bash scripts/healthcheck.sh                 # expect "OK code=400"
+bash scripts/healthcheck.sh                 # expect "OK code=400" or "OK code=426"
 ```
 
 Full checklist: [docs/TESTING.md](docs/TESTING.md).
