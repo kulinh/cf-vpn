@@ -32,3 +32,30 @@ func TestLoadAndSaveRoundTrip(t *testing.T) {
 		t.Fatalf("unexpected mode: %o", info.Mode().Perm())
 	}
 }
+
+func TestSaveAtomicOverwriteKeepsMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "cfvpn.env")
+
+	if err := SaveAtomic(path, map[string]string{"A": "1"}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAtomic(path, map[string]string{"A": "2", "B": "3"}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["A"] != "2" || got["B"] != "3" {
+		t.Fatalf("unexpected values: %#v", got)
+	}
+	info, _ := os.Stat(path)
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("mode drifted: %o", info.Mode().Perm())
+	}
+	// Temp file should not linger.
+	if _, err := os.Stat(path + ".tmp"); !os.IsNotExist(err) {
+		t.Fatalf("temp file leaked: %v", err)
+	}
+}

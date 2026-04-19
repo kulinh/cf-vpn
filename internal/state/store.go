@@ -41,6 +41,12 @@ func SaveAtomic(path string, values map[string]string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
+	// Ensure the requested mode even if a restrictive umask cleared bits.
+	if err := os.Chmod(tmp, mode); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
 
 	keys := make([]string, 0, len(values))
 	for k := range values {
@@ -50,11 +56,22 @@ func SaveAtomic(path string, values map[string]string, mode os.FileMode) error {
 	for _, k := range keys {
 		if _, err := fmt.Fprintf(f, "%s=%s\n", k, values[k]); err != nil {
 			f.Close()
+			os.Remove(tmp)
 			return err
 		}
 	}
-	if err := f.Close(); err != nil {
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
