@@ -1,0 +1,20 @@
+# Secrets & runtime state
+.env
+.env.local
+cloudflared/*.json
+cloudflared/config.yml
+xray/config.json
+subscriptions/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
