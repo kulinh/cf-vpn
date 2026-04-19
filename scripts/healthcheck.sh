@@ -52,7 +52,10 @@ case "$code" in
     ;;
   *)
     fails=0
-    [ -f "$STATE_FILE" ] && fails=$(cat "$STATE_FILE")
+    if [ -f "$STATE_FILE" ]; then
+      raw=$(cat "$STATE_FILE")
+      [[ "$raw" =~ ^[0-9]+$ ]] && fails=$raw
+    fi
     fails=$((fails + 1))
     printf '%d' "$fails" > "$STATE_FILE"
     printf '[%s] FAIL code=%s fails=%d\n' "$ts" "$code" "$fails"
