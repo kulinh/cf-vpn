@@ -52,11 +52,84 @@ ensure_user1_secrets() {
   fi
 }
 
+tunnel_name() {
+  # Derive from DOMAIN: replace dots with dashes, prefix cf-vpn-
+  printf 'cf-vpn-%s' "${DOMAIN//./-}"
+}
+
+ensure_tunnel() {
+  local name tid
+  name=$(tunnel_name)
+  tid=$(get_tunnel_by_name "$name" || true)
+  if [ -n "$tid" ]; then
+    log "tunnel '$name' exists: $tid"
+  else
+    log "creating tunnel '$name'"
+    local cred_file_tmp
+    cred_file_tmp=$(mktemp)
+    # Capture stdout (tunnel_id) separately from FD 3 (credentials)
+    tid=$(create_tunnel "$name" 3>"$cred_file_tmp")
+    [ -n "$tid" ] || die "failed to create tunnel"
+    local cred_dest="$PROJECT_ROOT/cloudflared/${tid}.json"
+    mv "$cred_file_tmp" "$cred_dest"
+    chmod 600 "$cred_dest"
+    log "tunnel created: $tid (credentials at $cred_dest)"
+  fi
+  env_write "$ENV_FILE" "TUNNEL_UUID" "$tid"
+  export TUNNEL_UUID="$tid"
+
+  # Ensure credentials file exists (user may have deleted; detect missing)
+  if [ ! -f "$PROJECT_ROOT/cloudflared/${tid}.json" ]; then
+    die "credentials file missing at cloudflared/${tid}.json — delete tunnel in CF dashboard and re-run"
+  fi
+}
+
+ensure_dns() {
+  local zone_id
+  zone_id=$(get_zone_id "$DOMAIN")
+  log "zone id for $DOMAIN: $zone_id"
+  upsert_dns_cname "$zone_id" "$DOMAIN" "${TUNNEL_UUID}.cfargotunnel.com"
+  log "DNS CNAME $DOMAIN -> ${TUNNEL_UUID}.cfargotunnel.com (proxied)"
+}
+
+render_templates() {
+  set -a
+  # shellcheck source=/dev/null
+  source "$ENV_FILE"
+  set +a
+  envsubst < "$PROJECT_ROOT/xray/config.template.json" > "$PROJECT_ROOT/xray/config.json"
+  jq . "$PROJECT_ROOT/xray/config.json" >/dev/null || die "rendered xray config is not valid JSON"
+  envsubst < "$PROJECT_ROOT/cloudflared/config.template.yml" > "$PROJECT_ROOT/cloudflared/config.yml"
+  log "templates rendered"
+}
+
+compose_up() {
+  cd "$PROJECT_ROOT"
+  docker compose up -d
+  log "waiting 15s for services to settle"
+  sleep 15
+  docker compose ps
+}
+
+probe_tunnel() {
+  local code
+  code=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "https://${DOMAIN}/vless" || true)
+  case "$code" in
+    400|426) log "probe OK: /vless returned $code (WS upgrade expected)" ;;
+    *) log "WARN: /vless returned $code — tunnel may still be propagating; retry in 1-2 minutes" ;;
+  esac
+}
+
 main() {
   check_prereqs
   load_env
   ensure_user1_secrets
-  log "prereq + secrets ready; tunnel setup in next step"
+  ensure_tunnel
+  ensure_dns
+  render_templates
+  compose_up
+  probe_tunnel
+  log "install complete. Run scripts/gen-subscription.sh to print subscription for ${USER1_NAME:-user1}."
 }
 
 main "$@"
