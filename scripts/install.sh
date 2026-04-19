@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Bootstrap the cf-vpn stack. Idempotent — safe to re-run.
+# shellcheck source-path=SCRIPTDIR
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
