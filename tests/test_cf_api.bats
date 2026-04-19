@@ -61,3 +61,11 @@ mock_cf_req() {
   run cf_req_check '{"success":true,"result":{}}'
   [ "$status" -eq 0 ]
 }
+
+@test "get_zone_id returns error when token is invalid" {
+  export CF_MOCK_RESPONSE='{"success":false,"errors":[{"code":10000,"message":"Authentication error"}]}'
+  cf_req() { mock_cf_req "$@"; }
+  run get_zone_id "vpn.example.com"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Authentication error"* ]]
+}
