@@ -1,0 +1,15 @@
+tunnel: ${TUNNEL_UUID}
+credentials-file: /etc/cloudflared/${TUNNEL_UUID}.json
+
+ingress:
+  - hostname: ${DOMAIN}
+    path: ^/vless$
+    service: http://xray:10001
+    originRequest:
+      noTLSVerify: true
+  - hostname: ${DOMAIN}
+    path: ^/trojan$
+    service: http://xray:10002
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404
