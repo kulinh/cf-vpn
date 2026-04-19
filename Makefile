@@ -1,4 +1,4 @@
-.PHONY: lint test all install smoke clean
+.PHONY: lint test all install smoke clean build test-go
 
 SHELL := /bin/bash
 SCRIPTS := $(shell find scripts -name '*.sh' 2>/dev/null)
@@ -24,3 +24,9 @@ smoke:
 
 clean:
 	@echo "Use 'docker compose down -v' explicitly to remove state"
+
+build:
+	@go build -o bin/cfvpnctl ./cmd/cfvpnctl
+
+test-go:
+	@go test ./...
