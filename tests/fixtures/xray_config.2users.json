@@ -1,0 +1,37 @@
+{
+  "log": {"loglevel": "warning"},
+  "inbounds": [
+    {
+      "tag": "vless-ws",
+      "listen": "0.0.0.0",
+      "port": 10001,
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {"id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "email": "alice@vpn"},
+          {"id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb", "email": "bob@vpn"}
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {"network": "ws", "wsSettings": {"path": "/vless"}}
+    },
+    {
+      "tag": "trojan-ws",
+      "listen": "0.0.0.0",
+      "port": 10002,
+      "protocol": "trojan",
+      "settings": {
+        "clients": [
+          {"password": "alice-pass", "email": "alice@vpn"},
+          {"password": "bob-pass", "email": "bob@vpn"}
+        ]
+      },
+      "streamSettings": {"network": "ws", "wsSettings": {"path": "/trojan"}}
+    }
+  ],
+  "outbounds": [
+    {"tag": "direct", "protocol": "freedom"},
+    {"tag": "block", "protocol": "blackhole"}
+  ],
+  "routing": {"rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "block"}]}
+}
