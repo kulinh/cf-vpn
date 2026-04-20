@@ -66,6 +66,8 @@ sudo cfvpnctl healthcheck run                       # expect "OK code=400" or "O
 
 Full checklist: [docs/TESTING.md](docs/TESTING.md).
 
+Minimal VPS install guide: [docs/INSTALL_MINIMAL.md](docs/INSTALL_MINIMAL.md).
+
 ## Files of Note
 
 ```
