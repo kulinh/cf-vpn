@@ -50,3 +50,20 @@ func TestRunHelp(t *testing.T) {
 		t.Fatalf("expected empty stderr, got %q", errOut.String())
 	}
 }
+
+func TestRunInstallCommandDispatches(t *testing.T) {
+	var out, errBuf bytes.Buffer
+	exit := Run([]string{"install"}, &out, &errBuf)
+	// Dispatch must route "install" to the install handler. In this test env
+	// there's no /etc/cfvpn/cfvpn.env, so the handler fails to load env and
+	// exits 1 — that's our proof the dispatch reached the install path.
+	if exit == 0 {
+		t.Fatalf("expected non-zero exit, got 0")
+	}
+	if strings.Contains(errBuf.String(), "unknown command") {
+		t.Fatalf("dispatch did not route install: %q", errBuf.String())
+	}
+	if !strings.Contains(errBuf.String(), "cannot read env file") {
+		t.Fatalf("expected env-load failure, got %q", errBuf.String())
+	}
+}

@@ -35,7 +35,17 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			Domain:      env["DOMAIN"],
 			User1Name:   env["USER1_NAME"],
 		}
-		if err := commands.RunInstall(context.Background(), in, stdout, stderr); err != nil {
+		deps := commands.InstallDeps{
+			CF: &cloudflare.Client{
+				BaseURL:   "https://api.cloudflare.com/client/v4",
+				Token:     env["CF_API_TOKEN"],
+				AccountID: env["CF_ACCOUNT_ID"],
+				HTTP:      http.DefaultClient,
+			},
+			BinaryRunner:  systemd.ExecRunner{},
+			SystemdRunner: systemd.ExecRunner{},
+		}
+		if err := commands.RunInstall(context.Background(), in, deps, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
