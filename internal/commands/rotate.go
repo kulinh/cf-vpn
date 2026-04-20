@@ -84,40 +84,49 @@ func RunRotateDomain(ctx context.Context, in RotateInputs, deps RotateDeps, stdo
 
 	credPath := filepath.Join(cloudflaredCredDir, newTunnelID+".json")
 	if err := writeAtomicFile(credPath, creds, 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("write tunnel credentials: %w", err)
 	}
 
 	if err := deps.CF.UpsertCNAME(ctx, zoneID, in.NewDomain, newTunnelID+".cfargotunnel.com"); err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("upsert dns cname: %w", err)
 	}
 
 	rendered, err := templates.RenderCloudflared(newTunnelID, in.NewDomain)
 	if err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("render cloudflared config: %w", err)
 	}
 	if err := writeAtomicFile(cloudflaredConfig, []byte(rendered), 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("write cloudflared config: %w", err)
 	}
 
 	env, err := state.Load(envFilePath)
 	if err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("load env: %w", err)
 	}
 	env["DOMAIN"] = in.NewDomain
 	env["TUNNEL_UUID"] = newTunnelID
 	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("save env: %w", err)
 	}
 
 	runner := resolveRunner(deps.Runner)
 	if err := systemd.Restart(ctx, runner, "cfvpn-cloudflared.service"); err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("restart cfvpn-cloudflared.service: %w", err)
 	}
 	if err := systemd.Restart(ctx, runner, "cfvpn-xray.service"); err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return fmt.Errorf("restart cfvpn-xray.service: %w", err)
 	}
 
 	if err := regenerateSubscriptions(in.NewDomain); err != nil {
+		printRotateHint(stdout, "cfvpnctl rotate-domain "+in.NewDomain, newTunnelID)
 		return err
 	}
 

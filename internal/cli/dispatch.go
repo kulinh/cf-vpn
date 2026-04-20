@@ -67,11 +67,32 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		return 0
 	case "remove-user":
-		if len(args) < 2 || args[1] == "" {
-			fmt.Fprintln(stderr, "usage: cfvpnctl remove-user <name>")
+		var (
+			name string
+			yes  bool
+		)
+		for _, arg := range args[1:] {
+			if arg == "--yes" {
+				yes = true
+				continue
+			}
+			if name == "" {
+				name = arg
+				continue
+			}
+			fmt.Fprintln(stderr, "usage: cfvpnctl remove-user <name> --yes")
 			return 2
 		}
-		in := commands.UserInputs{Name: args[1]}
+		if name == "" {
+			fmt.Fprintln(stderr, "usage: cfvpnctl remove-user <name> --yes")
+			return 2
+		}
+		if !yes {
+			fmt.Fprintln(stderr, "refusing destructive operation without --yes")
+			fmt.Fprintln(stderr, "usage: cfvpnctl remove-user <name> --yes")
+			return 2
+		}
+		in := commands.UserInputs{Name: name}
 		if err := commands.RunRemoveUser(context.Background(), in, nil, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
@@ -98,6 +119,52 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: cfvpnctl rotate-domain <new-domain> | --cleanup <uuid>")
 			return 2
 		}
+		if args[1] == "--cleanup" {
+			var (
+				tunnelID string
+				yes      bool
+			)
+			for _, arg := range args[2:] {
+				if arg == "--yes" {
+					yes = true
+					continue
+				}
+				if tunnelID == "" {
+					tunnelID = arg
+					continue
+				}
+				fmt.Fprintln(stderr, "usage: cfvpnctl rotate-domain --cleanup <uuid> --yes")
+				return 2
+			}
+			if tunnelID == "" {
+				fmt.Fprintln(stderr, "usage: cfvpnctl rotate-domain --cleanup <uuid> --yes")
+				return 2
+			}
+			if !yes {
+				fmt.Fprintln(stderr, "refusing destructive operation without --yes")
+				fmt.Fprintln(stderr, "usage: cfvpnctl rotate-domain --cleanup <uuid> --yes")
+				return 2
+			}
+			env, err := state.Load(paths.EnvFile)
+			if err != nil {
+				fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
+				return 1
+			}
+			deps := commands.RotateDeps{
+				CF: &cloudflare.Client{
+					BaseURL:   "https://api.cloudflare.com/client/v4",
+					Token:     env["CF_API_TOKEN"],
+					AccountID: env["CF_ACCOUNT_ID"],
+					HTTP:      http.DefaultClient,
+				},
+				Runner: systemd.ExecRunner{},
+			}
+			if err := commands.RunRotateCleanup(context.Background(), tunnelID, deps, stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
 		env, err := state.Load(paths.EnvFile)
 		if err != nil {
 			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
@@ -111,17 +178,6 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 				HTTP:      http.DefaultClient,
 			},
 			Runner: systemd.ExecRunner{},
-		}
-		if args[1] == "--cleanup" {
-			if len(args) < 3 {
-				fmt.Fprintln(stderr, "usage: cfvpnctl rotate-domain --cleanup <uuid>")
-				return 2
-			}
-			if err := commands.RunRotateCleanup(context.Background(), args[2], deps, stdout, stderr); err != nil {
-				fmt.Fprintln(stderr, err)
-				return 1
-			}
-			return 0
 		}
 		in := commands.RotateInputs{
 			NewDomain:   args[1],

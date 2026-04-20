@@ -1,6 +1,7 @@
 package xray
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -8,13 +9,19 @@ import (
 	"regexp"
 )
 
+// Config represents an xray config, preserving any top-level fields the
+// control plane does not know about (log, outbounds, routing, ...).
 type Config struct {
-	Inbounds []Inbound `json:"inbounds"`
+	Inbounds []Inbound
+	Extras   map[string]json.RawMessage
 }
 
+// Inbound represents a single xray inbound, preserving any fields the
+// control plane does not know about (tag, listen, port, streamSettings, ...).
 type Inbound struct {
-	Protocol string          `json:"protocol"`
-	Settings json.RawMessage `json:"settings"`
+	Protocol string
+	Settings json.RawMessage
+	Extras   map[string]json.RawMessage
 }
 
 type vlessClient struct {
@@ -45,6 +52,9 @@ func ValidateUserName(name string) error {
 	return nil
 }
 
+// NewBaseConfig returns a minimal Config suitable for tests. Production
+// installs use templates.RenderXray so the full runtime config (ports,
+// streamSettings, outbounds, routing) is written verbatim.
 func NewBaseConfig(user, uuid, password string) Config {
 	vless, _ := json.Marshal(vlessSettings{
 		Clients:    []vlessClient{{ID: uuid, Email: user}},
@@ -57,6 +67,135 @@ func NewBaseConfig(user, uuid, password string) Config {
 		{Protocol: "vless", Settings: vless},
 		{Protocol: "trojan", Settings: trojan},
 	}}
+}
+
+// MarshalJSON emits the Config by merging the known `inbounds` field with
+// any preserved Extras, producing a canonical object.
+func (c Config) MarshalJSON() ([]byte, error) {
+	merged := make(map[string]json.RawMessage, len(c.Extras)+1)
+	for k, v := range c.Extras {
+		merged[k] = v
+	}
+	rawInbounds, err := json.Marshal(c.Inbounds)
+	if err != nil {
+		return nil, err
+	}
+	merged["inbounds"] = rawInbounds
+	return marshalStableObject(merged, topLevelOrder)
+}
+
+// UnmarshalJSON splits the object into typed inbounds and an Extras bag.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if inboundsRaw, ok := raw["inbounds"]; ok {
+		if err := json.Unmarshal(inboundsRaw, &c.Inbounds); err != nil {
+			return err
+		}
+		delete(raw, "inbounds")
+	} else {
+		c.Inbounds = nil
+	}
+	c.Extras = raw
+	return nil
+}
+
+// MarshalJSON emits the Inbound by merging `protocol` + `settings` with
+// any preserved Extras.
+func (in Inbound) MarshalJSON() ([]byte, error) {
+	merged := make(map[string]json.RawMessage, len(in.Extras)+2)
+	for k, v := range in.Extras {
+		merged[k] = v
+	}
+	protoRaw, err := json.Marshal(in.Protocol)
+	if err != nil {
+		return nil, err
+	}
+	merged["protocol"] = protoRaw
+	if len(in.Settings) > 0 {
+		merged["settings"] = in.Settings
+	}
+	return marshalStableObject(merged, inboundOrder)
+}
+
+// UnmarshalJSON splits the inbound into typed protocol/settings plus Extras.
+func (in *Inbound) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if protoRaw, ok := raw["protocol"]; ok {
+		if err := json.Unmarshal(protoRaw, &in.Protocol); err != nil {
+			return err
+		}
+		delete(raw, "protocol")
+	}
+	if settingsRaw, ok := raw["settings"]; ok {
+		in.Settings = settingsRaw
+		delete(raw, "settings")
+	}
+	in.Extras = raw
+	return nil
+}
+
+// topLevelOrder and inboundOrder preserve a stable field order for
+// human-readable output; unknown keys are appended in sorted order.
+var (
+	topLevelOrder = []string{"log", "inbounds", "outbounds", "routing"}
+	inboundOrder  = []string{"tag", "listen", "port", "protocol", "settings", "streamSettings"}
+)
+
+func marshalStableObject(m map[string]json.RawMessage, preferred []string) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	first := true
+	emit := func(k string, v json.RawMessage) error {
+		if !first {
+			buf.WriteByte(',')
+		}
+		first = false
+		keyRaw, err := json.Marshal(k)
+		if err != nil {
+			return err
+		}
+		buf.Write(keyRaw)
+		buf.WriteByte(':')
+		buf.Write(v)
+		return nil
+	}
+	seen := make(map[string]bool, len(m))
+	for _, k := range preferred {
+		if v, ok := m[k]; ok {
+			if err := emit(k, v); err != nil {
+				return nil, err
+			}
+			seen[k] = true
+		}
+	}
+	leftovers := make([]string, 0, len(m))
+	for k := range m {
+		if !seen[k] {
+			leftovers = append(leftovers, k)
+		}
+	}
+	sortStrings(leftovers)
+	for _, k := range leftovers {
+		if err := emit(k, m[k]); err != nil {
+			return nil, err
+		}
+	}
+	buf.WriteByte('}')
+	return buf.Bytes(), nil
+}
+
+func sortStrings(s []string) {
+	for i := 1; i < len(s); i++ {
+		for j := i; j > 0 && s[j-1] > s[j]; j-- {
+			s[j-1], s[j] = s[j], s[j-1]
+		}
+	}
 }
 
 func findInbound(cfg *Config, protocol string) *Inbound {

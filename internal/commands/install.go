@@ -13,7 +13,6 @@ import (
 	"github.com/kulinh/cf-vpn/internal/subscription"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 	"github.com/kulinh/cf-vpn/internal/templates"
-	"github.com/kulinh/cf-vpn/internal/xray"
 )
 
 // InstallInputs carries the user-provided inputs to install.
@@ -85,6 +84,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 	credPath := filepath.Join(cloudflaredCredDir, tunnelID+".json")
 	if err := writeAtomicFile(credPath, creds, 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("write tunnel credentials: %w", err)
 	}
 
@@ -92,9 +92,11 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	fmt.Fprintln(stdout, "configuring dns...")
 	zoneID, err := deps.CF.GetZoneID(ctx, in.Domain)
 	if err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("get zone id for %s: %w", in.Domain, err)
 	}
 	if err := deps.CF.UpsertCNAME(ctx, zoneID, in.Domain, tunnelID+".cfargotunnel.com"); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("upsert dns cname: %w", err)
 	}
 
@@ -102,23 +104,32 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	fmt.Fprintln(stdout, "rendering configs...")
 	uuid, err := generateUUIDv4()
 	if err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("generate uuid: %w", err)
 	}
 	pass, err := generatePassword(24)
 	if err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("generate password: %w", err)
 	}
 
-	xrayCfg := xray.NewBaseConfig(in.User1Name, uuid, pass)
-	if err := xray.SaveAtomic(xrayConfigPath, xrayCfg, 0o600); err != nil {
-		return fmt.Errorf("save xray config: %w", err)
+	xrayRendered, err := templates.RenderXray(in.User1Name, uuid, pass)
+	if err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
+		return fmt.Errorf("render xray config: %w", err)
+	}
+	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
+		return fmt.Errorf("write xray config: %w", err)
 	}
 
 	cfRendered, err := templates.RenderCloudflared(tunnelID, in.Domain)
 	if err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("render cloudflared config: %w", err)
 	}
 	if err := writeAtomicFile(cloudflaredConfig, []byte(cfRendered), 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("write cloudflared config: %w", err)
 	}
 
@@ -131,6 +142,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		"UUID_USER1":        uuid,
 		"TROJAN_PASS_USER1": pass,
 	}, 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("save env: %w", err)
 	}
 
@@ -142,19 +154,24 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	xrayUnitPath := filepath.Join(systemdUnitDir, "cfvpn-xray.service")
 	cfUnitPath := filepath.Join(systemdUnitDir, "cfvpn-cloudflared.service")
 	if err := writeAtomicFile(xrayUnitPath, []byte(xrayUnit), 0o644); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("write cfvpn-xray.service: %w", err)
 	}
 	if err := writeAtomicFile(cfUnitPath, []byte(cfUnit), 0o644); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("write cfvpn-cloudflared.service: %w", err)
 	}
 
 	if err := systemd.DaemonReload(ctx, sysRunner); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
 	if err := systemd.EnableNow(ctx, sysRunner, "cfvpn-xray.service"); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("enable cfvpn-xray.service: %w", err)
 	}
 	if err := systemd.EnableNow(ctx, sysRunner, "cfvpn-cloudflared.service"); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("enable cfvpn-cloudflared.service: %w", err)
 	}
 
@@ -191,4 +208,10 @@ func probeInstall(ctx context.Context, domain string, stdout io.Writer) {
 		return
 	}
 	fmt.Fprintf(stdout, "probe: code=%d (non-fatal — tunnel may still be connecting)\n", resp.StatusCode)
+}
+
+func printRotateHint(stdout io.Writer, resumeCmd, tunnelID string) {
+	fmt.Fprintf(stdout, "operation failed after tunnel provisioning\n")
+	fmt.Fprintf(stdout, "resume command: %s\n", resumeCmd)
+	fmt.Fprintf(stdout, "cleanup command: cfvpnctl rotate-domain --cleanup %s\n", tunnelID)
 }
