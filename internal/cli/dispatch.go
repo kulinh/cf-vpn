@@ -125,6 +125,44 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "status":
+		if err := commands.RunStatus(context.Background(), systemd.ExecRunner{}, stdout); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "healthcheck":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck {run|install}")
+			return 2
+		}
+		switch args[1] {
+		case "run":
+			env, err := state.Load(paths.EnvFile)
+			if err != nil {
+				fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
+				return 1
+			}
+			domain := env["DOMAIN"]
+			if domain == "" {
+				fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck run (DOMAIN must be set)")
+				return 2
+			}
+			if err := commands.RunHealthcheckRun(domain, stdout); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		case "install":
+			if err := commands.RunHealthcheckInstall(context.Background(), systemd.ExecRunner{}, stdout); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		default:
+			fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck {run|install}")
+			return 2
+		}
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
 		return 2
