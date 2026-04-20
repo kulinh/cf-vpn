@@ -89,6 +89,12 @@ func buildSubscriptionFor(name, uuid, password, domain string) string {
 	return subscription.BuildSubscriptionB64(v, t)
 }
 
+func buildDecodedSubscriptionFor(name, uuid, password, domain string) string {
+	v := subscription.BuildVLESSURI(name, uuid, domain)
+	t := subscription.BuildTrojanURI(name, password, domain)
+	return v + "\n" + t
+}
+
 func resolveRunner(r systemd.Runner) systemd.Runner {
 	if r == nil {
 		return systemd.ExecRunner{}
@@ -198,7 +204,7 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 		if !ok {
 			return fmt.Errorf("user %q has no trojan client", in.Name)
 		}
-		fmt.Fprintln(stdout, buildSubscriptionFor(in.Name, uuid, password, in.Domain))
+		fmt.Fprintln(stdout, buildDecodedSubscriptionFor(in.Name, uuid, password, in.Domain))
 		return nil
 	}
 
@@ -216,7 +222,7 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 			fmt.Fprintln(stdout)
 		}
 		fmt.Fprintf(stdout, "# %s\n", name)
-		fmt.Fprintln(stdout, buildSubscriptionFor(name, uuid, password, in.Domain))
+		fmt.Fprintln(stdout, buildDecodedSubscriptionFor(name, uuid, password, in.Domain))
 	}
 	return nil
 }

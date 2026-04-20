@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kulinh/cf-vpn/internal/xray"
@@ -173,6 +174,10 @@ func TestRunGenSubSingleUser(t *testing.T) {
 	if out.Len() == 0 {
 		t.Fatal("expected subscription output")
 	}
+	got := out.String()
+	if !strings.Contains(got, "vless://") || !strings.Contains(got, "trojan://") {
+		t.Fatalf("expected decoded vless+trojan output, got %q", got)
+	}
 }
 
 func TestRunGenSubAllUsers(t *testing.T) {
@@ -190,6 +195,16 @@ func TestRunGenSubAllUsers(t *testing.T) {
 	}
 	if out.Len() == 0 {
 		t.Fatal("expected subscription output")
+	}
+	got := out.String()
+	if strings.Contains(got, "dmxlc3M6Ly8") {
+		t.Fatalf("expected decoded output, got base64-like text %q", got)
+	}
+	if !strings.Contains(got, "# user1") || !strings.Contains(got, "# alice") {
+		t.Fatalf("expected named decoded sections, got %q", got)
+	}
+	if !strings.Contains(got, "vless://") || !strings.Contains(got, "trojan://") {
+		t.Fatalf("expected decoded vless+trojan output, got %q", got)
 	}
 }
 
