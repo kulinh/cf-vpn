@@ -1,32 +1,7 @@
-.PHONY: lint test all install smoke clean build test-go
-
-SHELL := /bin/bash
-SCRIPTS := $(shell find scripts -name '*.sh' 2>/dev/null)
-
-lint:
-	@command -v shellcheck >/dev/null || { echo "shellcheck not installed"; exit 1; }
-	@echo "==> shellcheck"
-	@shellcheck -x $(SCRIPTS)
+build:
+	go build -o bin/cfvpnctl ./cmd/cfvpnctl
 
 test:
-	@command -v bats >/dev/null || { echo "bats not installed"; exit 1; }
-	@echo "==> bats"
-	@bats tests/
+	go test ./...
 
-all: lint test
-
-install:
-	@bash scripts/install.sh
-
-smoke:
-	@bash scripts/healthcheck.sh || true
-	@docker compose ps
-
-clean:
-	@echo "Use 'docker compose down -v' explicitly to remove state"
-
-build:
-	@go build -o bin/cfvpnctl ./cmd/cfvpnctl
-
-test-go:
-	@go test ./...
+all: test build

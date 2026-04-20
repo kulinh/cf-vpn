@@ -1,10 +1,10 @@
 # Secrets & runtime state
 .env
 .env.local
-cloudflared/*.json
-cloudflared/config.yml
-xray/config.json
-subscriptions/
+/etc/cfvpn/
+/var/lib/cfvpn/subscriptions/
+/var/lib/cfvpn/state/
+bin/cfvpnctl
 
 # Editor
 .vscode/
