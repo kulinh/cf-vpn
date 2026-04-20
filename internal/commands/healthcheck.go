@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/kulinh/cf-vpn/internal/systemd"
 )
@@ -22,8 +23,10 @@ func IsHealthyCode(code int) bool { return code == 400 || code == 426 }
 
 // RunHealthcheckRun probes https://<domain>/vless and prints OK / FAIL.
 // Returns a non-nil error on transport failure or an unhealthy response code.
-func RunHealthcheckRun(domain string, stdout io.Writer) error {
-	resp, err := http.Get("https://" + domain + "/vless")
+func RunHealthcheckRun(ctx context.Context, domain string, stdout io.Writer) error {
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+"/vless", nil)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}

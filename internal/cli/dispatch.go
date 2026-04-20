@@ -148,7 +148,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck run (DOMAIN must be set)")
 				return 2
 			}
-			if err := commands.RunHealthcheckRun(domain, stdout); err != nil {
+			if err := commands.RunHealthcheckRun(context.Background(), domain, stdout); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}

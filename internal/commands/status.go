@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
@@ -38,7 +39,9 @@ func RunStatus(ctx context.Context, runner systemd.Runner, stdout io.Writer) err
 	if env != nil {
 		domain = env["DOMAIN"]
 	}
-	resp, perr := http.Get("https://" + domain + "/vless")
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+"/vless", nil)
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, perr := client.Do(req)
 	if perr != nil {
 		fmt.Fprintf(stdout, "probe: error: %v\n", perr)
 	} else {
