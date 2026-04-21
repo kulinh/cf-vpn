@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { NodeCard } from './NodeCard'
 
 const node = {
@@ -11,10 +11,16 @@ const node = {
 }
 
 test('shows status, latency, host and rotate action', () => {
-  render(<NodeCard node={node} onRotate={vi.fn()} onOpen={vi.fn()} onHealthcheck={vi.fn()} />)
+  const onRotate = vi.fn()
+
+  render(<NodeCard node={node} onRotate={onRotate} onOpen={vi.fn()} onHealthcheck={vi.fn()} />)
 
   expect(screen.getByText(/singapore/i)).toBeInTheDocument()
+  expect(screen.getByText(/active/i)).toBeInTheDocument()
   expect(screen.getByText(/95 ms/i)).toBeInTheDocument()
   expect(screen.getByRole('button', { name: /rotate/i })).toBeInTheDocument()
   expect(screen.getByText(/b4d82e1a\.dongnat247\.com/i)).toBeInTheDocument()
+
+  fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
+  expect(onRotate).toHaveBeenCalledWith('SG')
 })
