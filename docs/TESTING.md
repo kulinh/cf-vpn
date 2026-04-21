@@ -102,3 +102,15 @@ Record for reference (ping via proxy to 1.1.1.1):
 - [ ] New subscription (regenerated via `cfvpnctl gen-sub`) works on a client
 - [ ] Old subscription still works (24h grace)
 - [ ] `sudo cfvpnctl rotate-domain --cleanup <old-tunnel-uuid>` → old tunnel deleted, old subscription stops working
+
+## 12. UI Redesign Smoke
+
+- [ ] Home command center renders status strip and node cards (desktop viewport).
+- [ ] Mobile viewport opens the Quick Users bottom sheet via the floating Users button.
+- [ ] Rotate flow: click a node Rotate button, confirm in dialog, and verify success toast appears.
+- [ ] Validate navigation workflows for Command Center, Users, and Events pages from the top nav.
+
+CLI smoke equivalent:
+- [ ] `npm --prefix panel/web build`
+- [ ] `npm --prefix panel/web test -- --run`
+- [ ] `npm --prefix panel/web e2e`

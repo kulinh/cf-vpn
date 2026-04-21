@@ -111,6 +111,15 @@ TL;DR:
 **Domain blocked in CN/UAE**
 → Rotate: `sudo cfvpnctl rotate-domain <another-domain-in-your-cf-account>`.
 
+## Control Panel Frontend
+
+```bash
+npm --prefix panel/web install
+npm --prefix panel/web dev
+npm --prefix panel/web test -- --run
+npm --prefix panel/web e2e
+```
+
 ## Development
 
 ```bash
