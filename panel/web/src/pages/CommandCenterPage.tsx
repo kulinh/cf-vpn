@@ -14,7 +14,7 @@ const demoNodes: Node[] = [
   {
     id: 'jp',
     label: 'Tokyo',
-    status: 'disabled',
+    status: 'degraded',
     latencyMs: 182,
     vpnHost: 'jp.example.com',
     lastSeenAt: Date.now(),
@@ -22,14 +22,14 @@ const demoNodes: Node[] = [
   {
     id: 'hk',
     label: 'Hong Kong',
-    status: 'unreachable',
+    status: 'down',
     latencyMs: null,
     vpnHost: 'hk.example.com',
     lastSeenAt: null,
   },
 ]
 
-const statusKeys: NodeStatus[] = ['active', 'disabled', 'unreachable']
+const statusKeys: NodeStatus[] = ['active', 'degraded', 'down']
 
 export function CommandCenterPage() {
   const [filter, setFilter] = useState<NodeFilter>('all')
@@ -41,7 +41,7 @@ export function CommandCenterPage() {
           ...acc,
           [status]: demoNodes.filter((node) => node.status === status).length,
         }),
-        { active: 0, disabled: 0, unreachable: 0 },
+        { active: 0, degraded: 0, down: 0 },
       ),
     [],
   )
@@ -63,7 +63,14 @@ export function CommandCenterPage() {
 
   return (
     <div className="space-y-4">
-      <StatusStrip counts={counts} avgLatencyMs={avgLatency} filter={filter} onFilter={setFilter} />
+      <StatusStrip
+        active={counts.active}
+        degraded={counts.degraded}
+        down={counts.down}
+        avgLatencyMs={avgLatency}
+        filter={filter}
+        onFilter={setFilter}
+      />
 
       <section className="rounded-lg bg-slate-900 p-3 text-sm text-slate-300">
         Showing {filteredNodes.length} node{filteredNodes.length === 1 ? '' : 's'}

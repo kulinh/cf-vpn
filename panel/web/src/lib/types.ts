@@ -1,4 +1,4 @@
-export type NodeStatus = 'active' | 'disabled' | 'unreachable'
+export type NodeStatus = 'active' | 'degraded' | 'down'
 
 export type NodeFilter = 'all' | NodeStatus
 
