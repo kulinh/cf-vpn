@@ -1,14 +1,8 @@
 import { Route, Routes } from 'react-router-dom'
 import { CommandCenterPage } from '../pages/CommandCenterPage'
+import { EventsPage } from '../pages/EventsPage'
+import { UsersPage } from '../pages/UsersPage'
 import { Layout } from './Layout'
-
-function UsersPage() {
-  return <h1 className="text-xl font-semibold">Users</h1>
-}
-
-function EventsPage() {
-  return <h1 className="text-xl font-semibold">Events</h1>
-}
 
 export function App() {
   return (

@@ -1,3 +1,5 @@
+import type { Event, User } from './types'
+
 type RotateNodeApiResponse = {
   new_host?: string
   vpn_host?: string
@@ -32,4 +34,24 @@ export async function rotateNode(nodeId: string): Promise<RotateNodeResponse> {
   }
 
   return parseRotateNodeResponse((await response.json()) as RotateNodeApiResponse)
+}
+
+export async function listUsers(): Promise<User[]> {
+  const response = await fetch('/api/users')
+
+  if (!response.ok) {
+    throw new Error('users failed')
+  }
+
+  return (await response.json()) as User[]
+}
+
+export async function listEvents(): Promise<Event[]> {
+  const response = await fetch('/api/events?limit=200')
+
+  if (!response.ok) {
+    throw new Error('events failed')
+  }
+
+  return (await response.json()) as Event[]
 }
