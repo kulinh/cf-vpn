@@ -17,7 +17,17 @@ test('defaults to all nodes, filters by status, and resets to all when toggling 
 })
 
 test('rotate node shows loading then success toast', async () => {
-  let resolveRotate: ((value: { vpnHost: string }) => void) | null = null
+  type RotateApiContractResponse = {
+    new_host: string
+    tunnel_uuid?: string
+  }
+
+  const rotateApiResponse: RotateApiContractResponse = {
+    new_host: 'new-host.example.com',
+    tunnel_uuid: 'tunnel-123',
+  }
+
+  let resolveRotate: ((value: api.RotateNodeResponse) => void) | null = null
 
   vi.spyOn(api, 'rotateNode').mockImplementation(
     () =>
@@ -33,7 +43,10 @@ test('rotate node shows loading then success toast', async () => {
 
   expect(screen.getByRole('button', { name: /rotating/i })).toBeDisabled()
 
-  resolveRotate?.({ vpnHost: 'new-host.example.com' })
+  resolveRotate?.({
+    vpnHost: rotateApiResponse.new_host,
+    tunnelUuid: rotateApiResponse.tunnel_uuid,
+  })
 
   expect(await screen.findByText(/rotated successfully/i)).toBeInTheDocument()
   expect(screen.getByText(/new-host\.example\.com/i)).toBeInTheDocument()

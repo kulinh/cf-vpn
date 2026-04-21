@@ -118,9 +118,9 @@ export function CommandCenterPage() {
     setRotatingNodeId(nodeId)
 
     try {
-      const result = await rotateNode(nodeId)
+      const { vpnHost } = await rotateNode(nodeId)
       setNodes((prevNodes) =>
-        prevNodes.map((node) => (node.id === nodeId ? { ...node, vpnHost: result.vpnHost } : node)),
+        prevNodes.map((node) => (node.id === nodeId ? { ...node, vpnHost } : node)),
       )
       setToastMessage('Rotated successfully')
     } catch {
