@@ -6,9 +6,10 @@ type NodeGridProps = {
   onRotate: (id: string) => void
   onHealthcheck: (id: string) => void
   onOpen: (id: string) => void
+  rotatingNodeId?: string | null
 }
 
-export function NodeGrid({ nodes, onRotate, onHealthcheck, onOpen }: NodeGridProps) {
+export function NodeGrid({ nodes, onRotate, onHealthcheck, onOpen, rotatingNodeId = null }: NodeGridProps) {
   return (
     <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
       {nodes.map((node) => (
@@ -18,6 +19,8 @@ export function NodeGrid({ nodes, onRotate, onHealthcheck, onOpen }: NodeGridPro
           onRotate={onRotate}
           onHealthcheck={onHealthcheck}
           onOpen={onOpen}
+          rotateDisabled={rotatingNodeId != null}
+          rotating={rotatingNodeId === node.id}
         />
       ))}
     </section>

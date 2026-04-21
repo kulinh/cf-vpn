@@ -5,9 +5,18 @@ type NodeCardProps = {
   onRotate: (id: string) => void
   onHealthcheck: (id: string) => void
   onOpen: (id: string) => void
+  rotateDisabled?: boolean
+  rotating?: boolean
 }
 
-export function NodeCard({ node, onRotate, onHealthcheck, onOpen }: NodeCardProps) {
+export function NodeCard({
+  node,
+  onRotate,
+  onHealthcheck,
+  onOpen,
+  rotateDisabled = false,
+  rotating = false,
+}: NodeCardProps) {
   return (
     <article className="space-y-3 rounded-xl border border-slate-800 bg-slate-900 p-4">
       <div className="flex items-center justify-between">
@@ -21,10 +30,11 @@ export function NodeCard({ node, onRotate, onHealthcheck, onOpen }: NodeCardProp
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
+          disabled={rotateDisabled}
           onClick={() => onRotate(node.id)}
-          className="rounded bg-indigo-500 px-3 py-1 text-white"
+          className="rounded bg-indigo-500 px-3 py-1 text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Rotate
+          {rotating ? 'Rotating...' : 'Rotate'}
         </button>
         <button
           type="button"

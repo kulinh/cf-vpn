@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react'
 import { CommandCenterPage } from './CommandCenterPage'
+import * as api from '../lib/api'
 
 test('defaults to all nodes, filters by status, and resets to all when toggling the selected status', () => {
   render(<CommandCenterPage />)
@@ -14,3 +15,27 @@ test('defaults to all nodes, filters by status, and resets to all when toggling 
   fireEvent.click(degradedFilter)
   expect(screen.getByText(/showing 3 nodes/i)).toBeInTheDocument()
 })
+
+test('rotate node shows loading then success toast', async () => {
+  let resolveRotate: ((value: { vpnHost: string }) => void) | null = null
+
+  vi.spyOn(api, 'rotateNode').mockImplementation(
+    () =>
+      new Promise((resolve) => {
+        resolveRotate = resolve
+      }),
+  )
+
+  render(<CommandCenterPage />)
+
+  fireEvent.click(screen.getAllByRole('button', { name: /rotate/i })[0])
+  fireEvent.click(screen.getByRole('button', { name: /confirm rotate/i }))
+
+  expect(screen.getByRole('button', { name: /rotating/i })).toBeDisabled()
+
+  resolveRotate?.({ vpnHost: 'new-host.example.com' })
+
+  expect(await screen.findByText(/rotated successfully/i)).toBeInTheDocument()
+  expect(screen.getByText(/new-host\.example\.com/i)).toBeInTheDocument()
+})
+
