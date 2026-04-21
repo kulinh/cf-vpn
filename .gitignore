@@ -22,3 +22,8 @@ Thumbs.db
 
 # Local worktrees
 .worktrees/
+
+# Frontend build and dependency outputs
+panel/web/node_modules/
+panel/web/dist/
+panel/web/.vite/

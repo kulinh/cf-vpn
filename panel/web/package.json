@@ -8,8 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest",
-    "test:run": "vitest run",
-    "e2e": "playwright test"
+    "test:run": "vitest run"
   },
   "dependencies": {
     "react": "^19.0.0",
