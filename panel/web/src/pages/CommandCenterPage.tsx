@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { NodeGrid } from '../components/nodes/NodeGrid'
 import { StatusStrip } from '../components/status/StatusStrip'
 import type { Node, NodeFilter, NodeStatus } from '../lib/types'
 
@@ -75,6 +76,13 @@ export function CommandCenterPage() {
       <section className="rounded-lg bg-slate-900 p-3 text-sm text-slate-300">
         Showing {filteredNodes.length} node{filteredNodes.length === 1 ? '' : 's'}
       </section>
+
+      <NodeGrid
+        nodes={filteredNodes}
+        onRotate={() => {}}
+        onHealthcheck={() => {}}
+        onOpen={() => {}}
+      />
     </div>
   )
 }

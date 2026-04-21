@@ -1,6 +1,6 @@
-export type NodeStatus = 'active' | 'degraded' | 'down'
+export type NodeStatus = 'active' | 'degraded' | 'down' | 'unknown'
 
-export type NodeFilter = 'all' | NodeStatus
+export type NodeFilter = 'all' | 'active' | 'degraded' | 'down'
 
 export type Node = {
   id: string
