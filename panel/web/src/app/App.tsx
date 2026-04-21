@@ -1,9 +1,6 @@
 import { Route, Routes } from 'react-router-dom'
+import { CommandCenterPage } from '../pages/CommandCenterPage'
 import { Layout } from './Layout'
-
-function CommandCenterPage() {
-  return <h1 className="text-xl font-semibold">Command Center</h1>
-}
 
 function UsersPage() {
   return <h1 className="text-xl font-semibold">Users</h1>
