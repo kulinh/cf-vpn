@@ -15,7 +15,9 @@ test('searches user and exposes copy + qr actions', () => {
 
   fireEvent.change(screen.getByPlaceholderText(/search user/i), { target: { value: 'ku' } })
   fireEvent.click(screen.getByRole('button', { name: /copy subscription/i }))
+  fireEvent.click(screen.getByRole('button', { name: /show qr/i }))
 
   expect(onCopy).toHaveBeenCalledWith('kulinh')
+  expect(onQr).toHaveBeenCalledWith('kulinh')
   expect(screen.getByRole('button', { name: /show qr/i })).toBeInTheDocument()
 })
