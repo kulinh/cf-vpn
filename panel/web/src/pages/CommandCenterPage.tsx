@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { StatusStrip } from '../components/status/StatusStrip'
-import type { Node, NodeFilter } from '../lib/types'
+import type { Node, NodeFilter, NodeStatus } from '../lib/types'
 
 const demoNodes: Node[] = [
   {
@@ -14,7 +14,7 @@ const demoNodes: Node[] = [
   {
     id: 'jp',
     label: 'Tokyo',
-    status: 'degraded',
+    status: 'disabled',
     latencyMs: 182,
     vpnHost: 'jp.example.com',
     lastSeenAt: Date.now(),
@@ -22,19 +22,29 @@ const demoNodes: Node[] = [
   {
     id: 'hk',
     label: 'Hong Kong',
-    status: 'down',
+    status: 'unreachable',
     latencyMs: null,
     vpnHost: 'hk.example.com',
     lastSeenAt: null,
   },
 ]
 
+const statusKeys: NodeStatus[] = ['active', 'disabled', 'unreachable']
+
 export function CommandCenterPage() {
   const [filter, setFilter] = useState<NodeFilter>('all')
 
-  const activeCount = demoNodes.filter((node) => node.status === 'active').length
-  const degradedCount = demoNodes.filter((node) => node.status === 'degraded').length
-  const downCount = demoNodes.filter((node) => node.status === 'down').length
+  const counts = useMemo(
+    () =>
+      statusKeys.reduce(
+        (acc, status) => ({
+          ...acc,
+          [status]: demoNodes.filter((node) => node.status === status).length,
+        }),
+        { active: 0, disabled: 0, unreachable: 0 },
+      ),
+    [],
+  )
 
   const avgLatency = useMemo(() => {
     const latencies = demoNodes
@@ -53,13 +63,7 @@ export function CommandCenterPage() {
 
   return (
     <div className="space-y-4">
-      <StatusStrip
-        active={activeCount}
-        degraded={degradedCount}
-        down={downCount}
-        avgLatencyMs={avgLatency}
-        onFilter={setFilter}
-      />
+      <StatusStrip counts={counts} avgLatencyMs={avgLatency} filter={filter} onFilter={setFilter} />
 
       <section className="rounded-lg bg-slate-900 p-3 text-sm text-slate-300">
         Showing {filteredNodes.length} node{filteredNodes.length === 1 ? '' : 's'}

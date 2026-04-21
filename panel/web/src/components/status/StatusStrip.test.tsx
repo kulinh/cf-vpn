@@ -1,21 +1,22 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { StatusStrip } from './StatusStrip'
 
-test('renders four KPI tiles and emits filter callback', () => {
+test('renders status strip and emits canonical filter values including all reset', () => {
   const onFilter = vi.fn()
 
   render(
     <StatusStrip
-      active={3}
-      degraded={1}
-      down={0}
+      counts={{ active: 3, disabled: 1, unreachable: 0 }}
       avgLatencyMs={182}
+      filter="active"
       onFilter={onFilter}
     />,
   )
 
-  screen.getByRole('button', { name: /degraded/i }).click()
+  fireEvent.click(screen.getByRole('button', { name: /degraded/i }))
+  fireEvent.click(screen.getByRole('button', { name: /all/i }))
 
-  expect(onFilter).toHaveBeenCalledWith('degraded')
+  expect(onFilter).toHaveBeenNthCalledWith(1, 'disabled')
+  expect(onFilter).toHaveBeenNthCalledWith(2, 'all')
   expect(screen.getByText(/182 ms/i)).toBeInTheDocument()
 })

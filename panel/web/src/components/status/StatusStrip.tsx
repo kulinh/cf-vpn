@@ -1,44 +1,59 @@
-import type { NodeFilter } from '../../lib/types'
+import type { NodeFilter, NodeStatus } from '../../lib/types'
+
+type StatusCount = {
+  key: NodeStatus
+  label: string
+  toneClass: string
+  count: number
+}
 
 type StatusStripProps = {
-  active: number
-  degraded: number
-  down: number
+  counts: Record<NodeStatus, number>
   avgLatencyMs: number
+  filter: NodeFilter
   onFilter: (value: NodeFilter) => void
 }
 
-export function StatusStrip({ active, degraded, down, avgLatencyMs, onFilter }: StatusStripProps) {
+const statusCountsConfig: Omit<StatusCount, 'count'>[] = [
+  { key: 'active', label: 'Active', toneClass: 'text-green-400' },
+  { key: 'disabled', label: 'Degraded', toneClass: 'text-amber-400' },
+  { key: 'unreachable', label: 'Down', toneClass: 'text-red-400' },
+]
+
+export function StatusStrip({ counts, avgLatencyMs, filter, onFilter }: StatusStripProps) {
+  const statusCards: StatusCount[] = statusCountsConfig.map((status) => ({
+    ...status,
+    count: counts[status.key],
+  }))
+
   return (
     <section className="grid grid-cols-2 gap-3 md:grid-cols-4">
       <button
         type="button"
-        onClick={() => onFilter('active')}
+        onClick={() => onFilter('all')}
+        aria-pressed={filter === 'all'}
         className="rounded-lg bg-slate-900 p-3 text-left"
       >
-        <p className="text-xs text-slate-400">Active</p>
-        <p className="text-2xl font-semibold text-green-400">{active}</p>
+        <p className="text-xs text-slate-400">All</p>
+        <p className="text-2xl font-semibold text-slate-100">
+          {statusCards.reduce((sum, status) => sum + status.count, 0)}
+        </p>
       </button>
 
-      <button
-        type="button"
-        onClick={() => onFilter('degraded')}
-        className="rounded-lg bg-slate-900 p-3 text-left"
-      >
-        <p className="text-xs text-slate-400">Degraded</p>
-        <p className="text-2xl font-semibold text-amber-400">{degraded}</p>
-      </button>
+      {statusCards.map((status) => (
+        <button
+          key={status.key}
+          type="button"
+          onClick={() => onFilter(status.key)}
+          aria-pressed={filter === status.key}
+          className="rounded-lg bg-slate-900 p-3 text-left"
+        >
+          <p className="text-xs text-slate-400">{status.label}</p>
+          <p className={`text-2xl font-semibold ${status.toneClass}`}>{status.count}</p>
+        </button>
+      ))}
 
-      <button
-        type="button"
-        onClick={() => onFilter('down')}
-        className="rounded-lg bg-slate-900 p-3 text-left"
-      >
-        <p className="text-xs text-slate-400">Down</p>
-        <p className="text-2xl font-semibold text-red-400">{down}</p>
-      </button>
-
-      <div className="rounded-lg bg-slate-900 p-3">
+      <div className="rounded-lg bg-slate-900 p-3 md:col-span-2">
         <p className="text-xs text-slate-400">Avg latency</p>
         <p className="text-2xl font-semibold text-slate-100">{avgLatencyMs} ms</p>
       </div>
