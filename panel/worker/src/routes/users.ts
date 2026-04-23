@@ -1,0 +1,151 @@
+import type { AgentAddUserResponse, Env } from "../types";
+import { all, nowTs, one, userIDFromName } from "../lib/db";
+import { callAgent } from "../lib/agent-client";
+import { error, isRecord, json, readJSON } from "../lib/http";
+import { logEvent } from "../lib/events";
+import { buildSubscriptionForClient } from "../lib/subscription";
+
+interface NodeMini {
+  id: string;
+  admin_host: string;
+}
+
+interface UserWithNodes {
+  id: string;
+  name: string;
+  created_at: number;
+  nodes: string[];
+}
+
+export async function listUsers(env: Env): Promise<Response> {
+  const users = await all<{ id: string; name: string; created_at: number }>(
+    env.DB.prepare("SELECT id,name,created_at FROM users ORDER BY id")
+  );
+  const rows = await all<{ user_id: string; node_id: string }>(
+    env.DB.prepare("SELECT user_id,node_id FROM user_nodes ORDER BY user_id,node_id")
+  );
+
+  const byUser = new Map<string, string[]>();
+  for (const row of rows) {
+    const items = byUser.get(row.user_id) ?? [];
+    items.push(row.node_id);
+    byUser.set(row.user_id, items);
+  }
+
+  const out: UserWithNodes[] = users.map((u) => ({
+    ...u,
+    nodes: byUser.get(u.id) ?? []
+  }));
+  return json(out);
+}
+
+export async function createUser(env: Env, request: Request, actor: string): Promise<Response> {
+  let body: { name: string };
+  try {
+    body = await readJSON<{ name: string }>(request);
+  } catch {
+    return error(400, { error: "invalid_json", detail: "request body must be valid JSON" });
+  }
+  if (!isRecord(body)) {
+    return error(400, { error: "invalid_user", detail: "request body must be a JSON object" });
+  }
+  const name = body.name?.trim();
+  if (!name) {
+    return error(400, { error: "invalid_user", detail: "name is required" });
+  }
+  const id = userIDFromName(name);
+  if (!id) {
+    return error(400, { error: "invalid_user", detail: "name is invalid" });
+  }
+
+  const existing = await one<{ id: string }>(env.DB.prepare("SELECT id FROM users WHERE id=?").bind(id));
+  if (existing) {
+    return error(409, { error: "user_exists", detail: id });
+  }
+
+  await env.DB.prepare("INSERT INTO users (id,name,created_at) VALUES (?, ?, ?)").bind(id, name, nowTs()).run();
+  const nodes = await all<NodeMini>(
+    env.DB.prepare("SELECT id,admin_host FROM nodes WHERE status='active' ORDER BY id")
+  );
+
+  const results = await Promise.allSettled(
+    nodes.map(async (node) => {
+      const creds = await callAgent<AgentAddUserResponse>(
+        env,
+        node.admin_host,
+        "/admin/v1/users",
+        { method: "POST", body: JSON.stringify({ name: id }) },
+        120000
+      );
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,trojan_pw,created_at) VALUES (?, ?, ?, ?, ?)"
+      )
+        .bind(id, node.id, creds.vless_uuid, creds.trojan_pw, nowTs())
+        .run();
+      return { node_id: node.id, ok: true };
+    })
+  );
+
+  const summary = results.map((r, i) => {
+    if (r.status === "fulfilled") {
+      return r.value;
+    }
+    return { node_id: nodes[i]?.id, ok: false, error: String(r.reason) };
+  });
+  const failed = summary.some((x) => !x.ok);
+  const succeeded = summary.some((x) => x.ok);
+  const outcome = failed ? (succeeded ? "partial" : "error") : "ok";
+  await logEvent(env, actor, "user.add", outcome, { user_id: id, results: summary }, undefined, id);
+
+  return json({ id, name, results: summary }, failed ? 207 : 201);
+}
+
+export async function deleteUser(env: Env, id: string, actor: string): Promise<Response> {
+  const user = await one<{ id: string; name: string }>(env.DB.prepare("SELECT id,name FROM users WHERE id=?").bind(id));
+  if (!user) {
+    return error(404, { error: "user_not_found", detail: id });
+  }
+
+  const nodes = await all<NodeMini>(
+    env.DB.prepare("SELECT n.id,n.admin_host FROM user_nodes un JOIN nodes n ON n.id = un.node_id WHERE un.user_id = ? ORDER BY n.id").bind(id)
+  );
+
+  const results = await Promise.allSettled(
+    nodes.map(async (node) => {
+      await callAgent(env, node.admin_host, `/admin/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" }, 120000);
+      await env.DB.prepare("DELETE FROM user_nodes WHERE user_id = ? AND node_id = ?").bind(id, node.id).run();
+      return { node_id: node.id, ok: true };
+    })
+  );
+
+  const summary = results.map((r, i) => {
+    if (r.status === "fulfilled") {
+      return r.value;
+    }
+    return { node_id: nodes[i]?.id, ok: false, error: String(r.reason) };
+  });
+  const failed = summary.some((x) => !x.ok);
+  const succeeded = summary.some((x) => x.ok);
+  const outcome = failed ? (succeeded ? "partial" : "error") : "ok";
+  if (!failed) {
+    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
+  }
+
+  await logEvent(env, actor, "user.remove", outcome, { user_id: id, results: summary }, undefined, id);
+  return json({ ok: !failed, results: summary }, failed ? 207 : 200);
+}
+
+export async function userSubscription(env: Env, id: string): Promise<Response> {
+  const user = await one<{ id: string; name: string }>(env.DB.prepare("SELECT id,name FROM users WHERE id=?").bind(id));
+  if (!user) {
+    return error(404, { error: "user_not_found", detail: id });
+  }
+
+  const rows = await all<{ vless_uuid: string; trojan_pw: string; vpn_host: string; node_id: string }>(
+    env.DB.prepare(
+      "SELECT un.vless_uuid, un.trojan_pw, n.vpn_host, un.node_id FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
+    ).bind(id)
+  );
+  const out = buildSubscriptionForClient(user.id, rows);
+  return json(out);
+}
