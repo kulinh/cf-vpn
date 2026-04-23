@@ -1,4 +1,4 @@
-export type NodeStatus = 'active' | 'degraded' | 'down' | 'unknown'
+export type NodeStatus = 'active' | 'degraded' | 'down' | 'unreachable' | 'unknown'
 
 export type NodeFilter = 'all' | 'active' | 'degraded' | 'down'
 
@@ -8,7 +8,10 @@ export type Node = {
   status: NodeStatus
   latencyMs: number | null
   vpnHost: string
+  adminHost: string
   lastSeenAt: number | null
+  zone: string
+  createdAt: number
 }
 
 export type User = {
@@ -23,4 +26,12 @@ export type Event = {
   actor: string
   outcome: string
   ts: number
+}
+
+export type UpgradeUserNodesResponse = {
+  userId: string
+  addedNodes: string[]
+  addedCount: number
+  alreadyPresentCount: number
+  totalNodesAfterUpgrade: number
 }

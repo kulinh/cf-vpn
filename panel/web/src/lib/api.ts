@@ -1,9 +1,21 @@
-import type { Event, User } from './types'
+import type { Event, Node, UpgradeUserNodesResponse, User } from './types'
 
 type RotateNodeApiResponse = {
   new_host?: string
   vpn_host?: string
   tunnel_uuid?: string
+}
+
+type NodeApiResponse = {
+  id: string
+  label: string
+  admin_host: string
+  vpn_host: string
+  zone: string
+  status: string
+  last_seen_at: number | null
+  latency_ms: number | null
+  created_at: number
 }
 
 export type RotateNodeResponse = {
@@ -21,6 +33,21 @@ function parseRotateNodeResponse(raw: RotateNodeApiResponse): RotateNodeResponse
   return {
     vpnHost,
     tunnelUuid: raw.tunnel_uuid,
+  }
+}
+
+function parseNode(raw: NodeApiResponse): Node {
+  const status = raw.status as Node['status']
+  return {
+    id: raw.id,
+    label: raw.label,
+    status: status === 'unreachable' || status === 'degraded' ? status : status === 'active' || status === 'down' ? status : 'unknown',
+    latencyMs: raw.latency_ms ?? null,
+    vpnHost: raw.vpn_host,
+    adminHost: raw.admin_host,
+    lastSeenAt: raw.last_seen_at ?? null,
+    zone: raw.zone,
+    createdAt: raw.created_at,
   }
 }
 
@@ -46,6 +73,17 @@ export async function listUsers(): Promise<User[]> {
   return (await response.json()) as User[]
 }
 
+export async function listNodes(): Promise<Node[]> {
+  const response = await fetch('/api/nodes')
+
+  if (!response.ok) {
+    throw new Error('nodes failed')
+  }
+
+  const rows = (await response.json()) as NodeApiResponse[]
+  return rows.map(parseNode)
+}
+
 export async function listEvents(): Promise<Event[]> {
   const response = await fetch('/api/events?limit=200')
 
@@ -54,4 +92,92 @@ export async function listEvents(): Promise<Event[]> {
   }
 
   return (await response.json()) as Event[]
+}
+
+export async function upgradeUserNodes(userId: string): Promise<UpgradeUserNodesResponse> {
+  const response = await fetch(`/api/users/${encodeURIComponent(userId)}/upgrade-nodes`, {
+    method: 'POST',
+  })
+
+  if (!response.ok) {
+    throw new Error('upgrade user nodes failed')
+  }
+
+  return (await response.json()) as UpgradeUserNodesResponse
+}
+
+export async function getUserSubscription(userId: string): Promise<string> {
+  const response = await fetch(`/api/users/${encodeURIComponent(userId)}/subscription`)
+
+  if (!response.ok) {
+    throw new Error('subscription failed')
+  }
+
+  const data = (await response.json()) as { subscription_url: string }
+  return data.subscription_url
+}
+
+export async function healthcheckNode(nodeId: string): Promise<{ latency_ms: number }> {
+  const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/healthcheck`, {
+    method: 'POST',
+  })
+
+  if (!response.ok) {
+    const err = await response.text()
+    throw new Error(`healthcheck failed: ${response.status} ${err}`)
+  }
+
+  return (await response.json()) as { latency_ms: number }
+}
+
+export type NodeInput = {
+  id: string
+  label: string
+  admin_host: string
+  vpn_host: string
+  zone: string
+}
+
+export async function createNode(input: NodeInput): Promise<void> {
+  const response = await fetch('/api/nodes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+
+  if (!response.ok) {
+    const err = (await response.json().catch(() => ({}))) as { error?: string; detail?: string }
+    throw new Error(err.detail ?? err.error ?? 'create node failed')
+  }
+}
+
+export async function patchNode(
+  nodeId: string,
+  input: Partial<NodeInput & { status: string }>,
+): Promise<void> {
+  const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+
+  if (!response.ok) {
+    throw new Error('patch node failed')
+  }
+}
+
+export type UserInput = {
+  name: string
+}
+
+export async function createUser(input: UserInput): Promise<void> {
+  const response = await fetch('/api/users', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+  })
+
+  if (!response.ok) {
+    throw new Error('create user failed')
+  }
 }
