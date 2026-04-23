@@ -6,8 +6,10 @@ export function Layout() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="flex gap-2 border-b border-slate-800 p-3">
-        <button onClick={() => navigate('/')}>Command Center</button>
+        <button onClick={() => navigate('/')}>Home</button>
+        <button onClick={() => navigate('/nodes')}>Nodes</button>
         <button onClick={() => navigate('/users')}>Users</button>
+        <button onClick={() => navigate('/quick-add')}>Quick Add</button>
         <button onClick={() => navigate('/events')}>Events</button>
       </header>
       <main className="p-4">

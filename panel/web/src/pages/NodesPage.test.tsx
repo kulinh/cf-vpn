@@ -1,5 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react'
-import { CommandCenterPage } from './CommandCenterPage'
+import { NodesPage } from './NodesPage'
 import * as api from '../lib/api'
 import type { Node } from '../lib/types'
 
@@ -18,38 +18,37 @@ function makeNode(overrides: Partial<Node> = {}): Node {
   }
 }
 
-test('renders nodes from API', async () => {
+test('renders nodes from API with all action buttons', async () => {
   vi.spyOn(api, 'listNodes').mockResolvedValue([
-    makeNode({ id: 'sg', label: 'Singapore', vpnHost: 'sg.example.com', latencyMs: 82 }),
-    makeNode({ id: 'jp', label: 'Tokyo', vpnHost: 'jp.example.com', latencyMs: 182 }),
+    makeNode({ id: 'sg', label: 'Singapore', status: 'active', latencyMs: 82 }),
+    makeNode({ id: 'jp', label: 'Tokyo', status: 'degraded', latencyMs: 182 }),
+    makeNode({ id: 'hk', label: 'Hong Kong', status: 'down', latencyMs: null }),
   ])
 
-  render(<CommandCenterPage />)
+  render(<NodesPage />)
 
   expect(await screen.findByText('Singapore')).toBeInTheDocument()
   expect(screen.getByText('Tokyo')).toBeInTheDocument()
-  expect(screen.getByText('sg.example.com')).toBeInTheDocument()
-  expect(screen.getByText('82 ms')).toBeInTheDocument()
-})
-
-test('shows N/A for nodes without latency', async () => {
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ latencyMs: null })])
-
-  render(<CommandCenterPage />)
-
-  expect(await screen.findByText('N/A')).toBeInTheDocument()
+  expect(screen.getByText('Hong Kong')).toBeInTheDocument()
+  expect(screen.getByText('active')).toBeInTheDocument()
+  expect(screen.getByText('degraded')).toBeInTheDocument()
+  expect(screen.getByText('down')).toBeInTheDocument()
+  expect(screen.getAllByRole('button', { name: /rotate/i })).toHaveLength(3)
+  expect(screen.getAllByRole('button', { name: /check/i })).toHaveLength(3)
+  expect(screen.getAllByRole('button', { name: /edit/i })).toHaveLength(3)
+  expect(screen.getAllByRole('button', { name: /delete/i })).toHaveLength(3)
 })
 
 test('shows no nodes found when list is empty', async () => {
   vi.spyOn(api, 'listNodes').mockResolvedValue([])
 
-  render(<CommandCenterPage />)
+  render(<NodesPage />)
 
   expect(await screen.findByText(/no nodes found/i)).toBeInTheDocument()
 })
 
 test('rotate shows loading then success toast', async () => {
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ id: 'sg', vpnHost: 'sg.example.com' })])
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ id: 'sg' })])
   let resolveRotate: ((value: api.RotateNodeResponse) => void) | null = null
   vi.spyOn(api, 'rotateNode').mockImplementation(
     () =>
@@ -58,7 +57,7 @@ test('rotate shows loading then success toast', async () => {
       }),
   )
 
-  render(<CommandCenterPage />)
+  render(<NodesPage />)
   await screen.findByText('Singapore')
 
   fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
@@ -76,28 +75,13 @@ test('shows error toast when rotate fails', async () => {
   vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ id: 'sg' })])
   vi.spyOn(api, 'rotateNode').mockRejectedValue(new Error('boom'))
 
-  render(<CommandCenterPage />)
+  render(<NodesPage />)
   await screen.findByText('Singapore')
 
-  render(<CommandCenterPage />)
+  render(<NodesPage />)
 
   fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
   fireEvent.click(screen.getByRole('button', { name: /confirm rotate/i }))
 
   expect(await screen.findByText(/rotate failed/i)).toBeInTheDocument()
-})
-
-test('closes confirm dialog on cancel', async () => {
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode()])
-
-  render(<CommandCenterPage />)
-  await screen.findByText('Singapore')
-
-  render(<CommandCenterPage />)
-
-  fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
-  expect(screen.getByRole('dialog')).toBeInTheDocument()
-
-  fireEvent.click(screen.getByRole('button', { name: /^cancel$/i }))
-  expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
 })

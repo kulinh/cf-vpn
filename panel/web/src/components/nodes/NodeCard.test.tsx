@@ -7,7 +7,10 @@ const node = {
   status: 'active',
   latencyMs: 95,
   vpnHost: 'b4d82e1a.dongnat247.com',
+  adminHost: 'b4d82e1a-admin.dongnat247.com',
   lastSeenAt: 1710000000000,
+  zone: 'dongnat247.com',
+  createdAt: 0,
 }
 
 test('shows status, latency, host and rotate action', () => {

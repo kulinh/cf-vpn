@@ -1,10 +1,27 @@
+import { useEffect, useRef } from 'react'
+import QRCode from 'qrcode'
+
 type QrModalProps = {
   open: boolean
   userId: string | null
+  subscriptionUrl: string | null
   onClose: () => void
 }
 
-export function QrModal({ open, userId, onClose }: QrModalProps) {
+export function QrModal({ open, userId, subscriptionUrl, onClose }: QrModalProps) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    if (!open || !subscriptionUrl || !canvasRef.current) return
+    QRCode.toCanvas(canvasRef.current, subscriptionUrl, {
+      width: 256,
+      margin: 2,
+      color: { dark: '#e2e8f0', light: '#1e293b' },
+    }).catch(() => {
+      // ignore
+    })
+  }, [open, subscriptionUrl])
+
   if (!open || !userId) {
     return null
   }
@@ -18,11 +35,11 @@ export function QrModal({ open, userId, onClose }: QrModalProps) {
         <h2 className="text-lg font-semibold text-slate-100">Subscription QR</h2>
         <p className="mt-1 text-sm text-slate-400">User: {userId}</p>
 
-        <div className="mt-4 rounded-lg border border-dashed border-slate-600 bg-slate-800 p-6 text-center text-xs text-slate-300">
-          QR placeholder for {userId}
+        <div className="mt-4 flex justify-center rounded-lg border border-slate-700 bg-slate-800 p-4">
+          <canvas ref={canvasRef} className="block" />
         </div>
 
-        <div className="mt-4 flex justify-end">
+        <div className="mt-3 flex justify-end">
           <button
             type="button"
             onClick={onClose}
