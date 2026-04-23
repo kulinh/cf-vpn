@@ -1,0 +1,17 @@
+name = "cfvpn-panel-api"
+main = "src/index.ts"
+compatibility_date = "2026-04-21"
+
+[observability]
+enabled = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "cfvpn_panel_prod"
+database_id = "0649f07f-e2c0-47f3-b84a-273f7f67332e"
+preview_database_id = "7b2b5a09-3c4d-45e2-aff4-6a414e734500"
+
+[vars]
+SERVICE_TOKEN_HEADER_ID = "CF-Access-Client-Id"
+SERVICE_TOKEN_HEADER_SECRET = "CF-Access-Client-Secret"
+ADMIN_HOST_ALLOWED_SUFFIXES = "rwl265.com,888vn.net,dongnat247.com,rwl247.dev,rwl265.org"

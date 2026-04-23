@@ -9,14 +9,11 @@ function buildTrojanURI(name: string, password: string, domain: string): string 
 export function buildSubscriptionForClient(
   username: string,
   rows: Array<{ vless_uuid: string; trojan_pw: string; vpn_host: string; node_id: string }>
-): { text: string; qr_data: string } {
+): { subscription_url: string } {
   const lines: string[] = [];
   for (const row of rows) {
     lines.push(buildVLESSURI(`${username}-${row.node_id}`, row.vless_uuid, row.vpn_host));
     lines.push(buildTrojanURI(`${username}-${row.node_id}`, row.trojan_pw, row.vpn_host));
   }
-  const text = lines.join("\n");
-  // text: plain subscription text (for clipboard copy)
-  // qr_data: base64-encoded text (for QR code generation - QrModal will decode with atob)
-  return { text, qr_data: btoa(text) };
+  return { subscription_url: lines.join("\n") };
 }
