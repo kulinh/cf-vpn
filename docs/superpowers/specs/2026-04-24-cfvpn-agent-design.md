@@ -18,7 +18,7 @@ Panel muốn quản lý nhiều VPS nodes từ giao diện web. Mỗi node cần
 
 - Build Go binary trên máy hiện tại (không Docker)
 - Agent chạy dưới systemd service, tự start khi boot
-- Port 8080, localhost only (cloudflared forward traffic)
+- Port 6788, localhost only (cloudflared forward traffic)
 - Share config với CLI qua `/etc/cfvpn/cfvpn.env`
 - Auth bằng Cloudflare Access Service Token
 - Panel sync được users, healthcheck, rotate domain
