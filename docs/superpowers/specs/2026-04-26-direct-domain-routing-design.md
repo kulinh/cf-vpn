@@ -261,20 +261,204 @@ Existing VPS đang ở tunnel mode → upgrade path qua lệnh CLI mới:
 sudo cfvpnctl install --upgrade
 ```
 
-Lệnh này thực hiện:
+Lệnh này thực hiện (atomic flow):
 
-1. Cài acme.sh (script 1-liner từ get.acme.sh, hoặc bundled).
-2. Issue wildcard cert cho zone hiện tại (zone của `DOMAIN` trong env).
-3. Detect public IP, tạo subdomain mới direct-mode (vd `7f3a.example.com`), upsert A record.
-4. Render lại `xray/config.json` ở TLS-mode 443, **giữ nguyên UUID + password** của tất cả user → sub link không invalidate.
-5. Render lại `cloudflared/config.yml` chỉ còn admin ingress.
-6. `ufw allow 443/tcp`.
-7. Restart `cfvpn-xray.service`, reload `cfvpn-cloudflared.service`.
-8. Xoá CNAME proxied cũ.
-9. Update env: `DOMAIN=<new direct host>`, thêm `MODE=direct`, lưu `PUBLIC_IP`.
-10. **Đẩy domain mới về panel:** lệnh in ra hướng dẫn admin update `nodes.vpn_host` qua panel, hoặc nếu agent đã chạy thì panel có thể GET `/admin/v1/status` để pull host hiện tại và sync vào DB.
+1. Pre-flight check: verify env có `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `DOMAIN`, `TUNNEL_UUID`. Verify scope token đủ. Verify zone của domain hiện tại tồn tại trên CF.
+2. Backup: copy `/etc/cfvpn/` sang `/etc/cfvpn.backup-<timestamp>/`.
+3. Cài acme.sh (script 1-liner từ get.acme.sh, hoặc bundled binary).
+4. Issue wildcard cert cho zone hiện tại (zone của `DOMAIN` trong env).
+5. Detect public IP, tạo subdomain mới direct-mode (vd `7f3a.example.com`), upsert A record DNS-only.
+6. Render lại `xray/config.json` ở TLS-mode 443, **giữ nguyên UUID + password** của tất cả user → sub link không invalidate.
+7. Render lại `cloudflared/config.yml` chỉ còn admin ingress.
+8. `ufw allow 443/tcp` (idempotent — kiểm tra trước khi add rule).
+9. Restart `cfvpn-xray.service`, reload `cfvpn-cloudflared.service`.
+10. Xoá CNAME proxied cũ trên CF DNS.
+11. Update env: `DOMAIN=<new direct host>`, thêm `MODE=direct`, lưu `PUBLIC_IP=<detected IP>`.
+12. Self-test: `curl https://<new_host>/vless` từ chính VPS, expect HTTP 400/426 (TLS handshake OK, WS upgrade thiếu auth).
+13. Print: hướng dẫn admin sync host về panel (xem Migration Runbook bên dưới).
 
-Sau upgrade, app pull sub link → host trong sub đã là direct domain → app reconnect → ping thấp. Không cần user bấm rotate thêm.
+Sau upgrade, app pull sub link → host trong sub đã là direct domain → app reconnect → ping thấp. **Không cần user bấm rotate thêm**, miễn là panel đã sync `nodes.vpn_host` mới.
+
+### Rollback
+
+Nếu bất kỳ bước 4-12 fail, lệnh tự động:
+
+1. Khôi phục `/etc/cfvpn/` từ backup `/etc/cfvpn.backup-<timestamp>/`.
+2. Xoá A record direct vừa tạo (nếu đã tạo).
+3. Khôi phục CNAME proxied cũ (nếu đã xoá).
+4. Restart cfvpn-xray và cfvpn-cloudflared với config cũ.
+5. Exit non-zero với log lỗi rõ ràng.
+
+Sau rollback, VPS quay về tunnel mode hoạt động bình thường — admin có thể fix nguyên nhân lỗi rồi chạy lại `--upgrade`.
+
+### Sync host về panel sau upgrade
+
+Sau khi VPS đã ở direct mode, panel vẫn lưu `nodes.vpn_host = <old proxied domain>`. Cần sync. Có 2 cách:
+
+**Cách A — Auto sync khi click Status (panel sửa nhẹ):**
+
+`routes/nodes.ts` `nodeStatus` được mở rộng: nếu `agent_response.vpn_host !== row.vpn_host`, tự `UPDATE nodes SET vpn_host=?` và log event `node.host_synced`. Admin chỉ cần click nút "Status" trên Node card sau upgrade, panel tự cập nhật.
+
+**Cách B — Manual edit qua panel:**
+
+Admin vào Nodes tab → edit node → set `vpn_host` thủ công sang domain direct mới. Backup nếu Cách A không hoạt động.
+
+Spec này chọn **Cách A** — minor change, không cần thêm endpoint.
+
+## Migration Runbook (Operational Guide)
+
+Hướng dẫn step-by-step cho admin migrate từ tunnel mode → direct mode trên VPS đang chạy.
+
+### Trước khi bắt đầu
+
+**Yêu cầu:**
+
+- SSH access vào VPS với quyền root/sudo.
+- Panel hoạt động bình thường, biết `node.id` của VPS này trong panel.
+- Mobile clients đã import `https://<panel>/sub/<token>` qua Shadowrocket/v2rayNG (không phải import URI thẳng).
+- Có 5-10 phút downtime chấp nhận được (data plane sẽ ngắt ngắn khi restart Xray).
+
+**Kiểm tra version:**
+
+```bash
+sudo cfvpnctl version
+```
+
+Nếu binary cũ chưa có flag `--upgrade`, build lại trên dev machine và copy:
+
+```bash
+# trên dev machine
+cd /opt/cf-vpn
+make build
+
+# copy lên VPS
+scp bin/cfvpnctl root@<vps>:/usr/local/bin/cfvpnctl.new
+ssh root@<vps> 'install -m 0755 /usr/local/bin/cfvpnctl.new /usr/local/bin/cfvpnctl && rm /usr/local/bin/cfvpnctl.new'
+```
+
+### Step 1 — Add zone vào panel (nếu chưa có)
+
+Vào panel → Settings/Zones tab → verify zone của `DOMAIN` hiện tại có trong DB và `enabled=1`. Nếu chưa, thêm:
+
+- Name: ví dụ `example.com`
+- CF Zone ID: lấy từ Cloudflare dashboard → Zone → Overview → Zone ID
+- Enabled: ✓
+
+### Step 2 — Pre-flight check trên VPS
+
+```bash
+sudo cfvpnctl install --upgrade --check
+```
+
+Lệnh này dry-run: validate env, validate CF token scope, resolve zone, detect IP. KHÔNG đụng vào file/service. In ra plan execution và exit. Nếu thấy lỗi (ví dụ thiếu scope, hoặc DOMAIN không thuộc zone nào CF), fix trước khi chạy thật.
+
+### Step 3 — Run upgrade
+
+```bash
+sudo cfvpnctl install --upgrade 2>&1 | tee /tmp/cfvpn-upgrade.log
+```
+
+Quan sát log. Lệnh sẽ in:
+
+```
+[1/12] backing up /etc/cfvpn/ → /etc/cfvpn.backup-20260426-143022/
+[2/12] installing acme.sh ...
+[3/12] issuing wildcard cert *.example.com (DNS-01, ~30-60s) ... done
+[4/12] detected public IP: 203.0.113.42
+[5/12] creating A record 7f3a.example.com → 203.0.113.42 (proxied:false)
+[6/12] rendering xray/config.json (TLS, port 443) ...
+[7/12] rendering cloudflared/config.yml (admin only) ...
+[8/12] ufw: opening 443/tcp ...
+[9/12] restarting cfvpn-xray.service ...
+[10/12] reloading cfvpn-cloudflared.service ...
+[11/12] deleting old CNAME proxied.example.com ...
+[12/12] self-test https://7f3a.example.com/vless → 400 OK
+
+UPGRADE COMPLETE.
+  old domain (deleted): proxied.example.com
+  new domain (direct):  7f3a.example.com
+  public IP:            203.0.113.42
+
+Next: open panel → click "Status" on this node to sync vpn_host into DB.
+```
+
+### Step 4 — Sync panel
+
+Panel → Nodes tab → tìm node vừa upgrade → click "Status".
+
+Panel sẽ:
+- Gọi agent qua admin tunnel (vẫn hoạt động sau upgrade).
+- Phát hiện `vpn_host` mới khác DB.
+- Tự update `nodes.vpn_host = "7f3a.example.com"`, log event `node.host_synced`.
+- Hiển thị badge "Direct" + IP `203.0.113.42` trên Node card.
+
+### Step 5 — Verify từ client
+
+Trên 1 thiết bị mobile:
+
+1. Mở Shadowrocket/v2rayNG, vào subscription, bấm "Update" thủ công (thay vì chờ 24h).
+2. Verify config mới hiện hostname là `7f3a.example.com:443`.
+3. Connect → ping VPS → expect <100ms ở các vùng không bị CF edge xa.
+
+### Step 6 — Optional: rotate ngay để verify rotate flow
+
+Panel → Nodes → click "Rotate" → confirm. Expect ~5s, nodes.vpn_host đổi sang subdomain khác. Apps lần pull tiếp theo sẽ pick up.
+
+### Trouble-shooting
+
+**Pre-flight fail "CF token thiếu scope Zone:DNS:Edit":**
+
+Recreate token trên Cloudflare → My Profile → API Tokens. Scope cần: `Zone:DNS:Edit` (cho zone target) + `Account:Cloudflare Tunnel:Edit` (cho admin tunnel hiện tại).
+
+**Step 3 fail tại "issuing wildcard cert":**
+
+- Check `journalctl -u cfvpn-agent --since "5 min ago"` (nếu agent đã chạy).
+- Hoặc chạy thủ công `sudo /root/.acme.sh/acme.sh --issue --dns dns_cf -d example.com -d '*.example.com' --debug` để xem lỗi DNS-01.
+- Common: token thiếu scope, hoặc zone chưa active trên CF.
+
+**Step 9 fail "restart cfvpn-xray":**
+
+Auto-rollback đã trigger. VPS quay về tunnel mode. Check `journalctl -u cfvpn-xray` để xem lỗi config (thường là cert path sai hoặc port 443 đang bị process khác chiếm).
+
+**Step 12 self-test fail:**
+
+- Verify ufw rule: `sudo ufw status | grep 443`.
+- Verify Xray listening: `sudo ss -tlnp | grep 443`.
+- Verify DNS propagate: `dig 7f3a.example.com @1.1.1.1` (TTL 60, nên propagate <2 phút).
+
+**Sau upgrade, panel "Status" trả lỗi "agent_unreachable":**
+
+Admin tunnel có thể đang reload. Đợi 30s, retry. Nếu vẫn lỗi: `sudo systemctl status cfvpn-cloudflared` + `journalctl -u cfvpn-cloudflared`.
+
+**App vẫn ping cao sau migration:**
+
+- Verify DNS resolve về IP VPS thật, không qua CF: `dig <new_domain>` từ máy có VPN/proxy giống user. Nếu trả IP CF range (104.x, 172.67.x), tức A record vẫn proxied. Vào CF dashboard → DNS → tìm record → tắt orange cloud (gray).
+- Verify A record TTL ≤ 300 và đã propagate.
+
+### Backup & cleanup sau khi ổn định
+
+Sau 1-2 tuần direct mode hoạt động ổn:
+
+```bash
+sudo rm -rf /etc/cfvpn.backup-*
+```
+
+Backup chiếm vài MB, có thể giữ lâu hơn nếu thích.
+
+### Áp dụng cho VPS mới (fresh install)
+
+Lệnh `cfvpnctl install` (không có `--upgrade`) đã được rewrite theo direct mode, áp dụng cho VPS mới:
+
+```bash
+sudo cfvpnctl install
+```
+
+Flow tương tự `--upgrade` nhưng:
+
+- Skip backup (chưa có gì để back).
+- Skip xoá CNAME cũ.
+- Tạo cả admin tunnel mới (`cfvpn-admin-<random>`) và domain direct.
+- Print sub link cho `user1` mặc định khi xong.
 
 ## Security Considerations
 
