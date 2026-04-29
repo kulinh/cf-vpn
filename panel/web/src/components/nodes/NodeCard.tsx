@@ -25,7 +25,28 @@ export function NodeCard({
       </div>
 
       <p className="text-sm text-slate-300">{node.latencyMs == null ? 'N/A' : `${node.latencyMs} ms`}</p>
-      <p className="break-all text-xs text-slate-400">{node.vpnHost}</p>
+      <dl className="space-y-1 text-xs text-slate-400">
+        <div>
+          <dt className="inline text-slate-500">VLESS </dt>
+          <dd className="inline break-all font-mono">{node.vpnHost}</dd>
+        </div>
+        {node.hy2Host && (
+          <div>
+            <dt className="inline text-slate-500">HY2 </dt>
+            <dd className="inline break-all font-mono">{node.hy2Host}:{node.hy2Port ?? 'N/A'}</dd>
+          </div>
+        )}
+        {node.publicIp && (
+          <div>
+            <dt className="inline text-slate-500">IP </dt>
+            <dd className="inline font-mono">{node.publicIp}</dd>
+          </div>
+        )}
+        <div>
+          <dt className="inline text-slate-500">Mode </dt>
+          <dd className="inline font-mono">{node.mode}</dd>
+        </div>
+      </dl>
 
       <div className="flex flex-wrap gap-2">
         <button

@@ -74,7 +74,11 @@ export function UsersPage() {
         ),
       )
 
-      setToastMessage(result.addedCount > 0 ? `Added ${result.addedCount} nodes` : 'User is already up-to-date')
+      setToastMessage(
+        result.addedCount > 0 || (result.failedCount ?? 0) > 0
+          ? `Added ${result.addedCount} nodes, failed ${result.failedCount ?? 0}, total ${result.totalNodesAfterUpgrade}`
+          : 'User is already up-to-date',
+      )
     } catch {
       setToastMessage('Sync failed')
     } finally {

@@ -12,6 +12,11 @@ export type Node = {
   lastSeenAt: number | null
   zone: string
   createdAt: number
+  publicIp?: string | null
+  mode?: string
+  hy2Host?: string | null
+  hy2Port?: number | null
+  hy2ObfsPw?: string | null
 }
 
 export type User = {
@@ -32,6 +37,7 @@ export type UpgradeUserNodesResponse = {
   userId: string
   addedNodes: string[]
   addedCount: number
+  failedCount?: number
   alreadyPresentCount: number
   totalNodesAfterUpgrade: number
 }

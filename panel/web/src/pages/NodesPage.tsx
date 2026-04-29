@@ -106,7 +106,7 @@ export function NodesPage() {
               <tr>
                 <th className="px-4 py-2 text-left">ID</th>
                 <th className="px-4 py-2 text-left">Name</th>
-                <th className="px-4 py-2 text-left">VPN Host</th>
+                <th className="px-4 py-2 text-left">Direct Hosts</th>
                 <th className="px-4 py-2 text-left">Latency</th>
                 <th className="px-4 py-2 text-left">Status</th>
                 <th className="px-4 py-2"></th>
@@ -117,7 +117,12 @@ export function NodesPage() {
                 <tr key={node.id} className="border-t border-slate-800">
                   <td className="px-4 py-2 font-mono text-xs text-slate-400">{node.id}</td>
                   <td className="px-4 py-2 text-slate-100">{node.label}</td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-400">{node.vpnHost}</td>
+                  <td className="px-4 py-2 text-xs text-slate-400">
+                    <div className="font-mono">{node.vpnHost}</div>
+                    {node.hy2Host && <div className="font-mono">HY2 {node.hy2Host}:{node.hy2Port ?? 'N/A'}</div>}
+                    {node.publicIp && <div className="font-mono">IP {node.publicIp}</div>}
+                    <div className="font-mono">Mode {node.mode ?? 'direct'}</div>
+                  </td>
                   <td className="px-4 py-2 text-slate-300">
                     {checkingNodeId === node.id
                       ? '...'
