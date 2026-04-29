@@ -259,13 +259,16 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
     return row;
   }
   try {
+    const startedAt = Date.now();
     const out = await callAgent<AgentHealthcheckResponse>(env, row.admin_host, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+    const latencyMs = Math.max(1, Date.now() - startedAt);
     const now = nowTs();
+    const measured = { ...out, latency_ms: latencyMs };
     await env.DB.prepare("UPDATE nodes SET last_seen_at=?, latency_ms=? WHERE id=?")
-      .bind(now, out.latency_ms, id)
+      .bind(now, latencyMs, id)
       .run();
-    await logEvent(env, actor, "node.healthcheck", "ok", out, id);
-    return json(out);
+    await logEvent(env, actor, "node.healthcheck", "ok", measured, id);
+    return json(measured);
   } catch (e) {
     await logEvent(env, actor, "node.healthcheck", "error", { message: String(e) }, id);
     return error(502, { error: "healthcheck_failed", detail: String(e) });
@@ -343,6 +346,7 @@ export async function nodeRotate(env: Env, id: string, request: Request, actor: 
           old_host: row.vpn_host,
           old_zone_id: oldZone?.cf_zone_id ?? "",
           new_hy2_host: newHy2Host,
+          new_hy2_zone: newZoneName,
           new_hy2_zone_id: newZoneID,
           old_hy2_host: row.hy2_host ?? "",
           old_hy2_zone_id: oldZone?.cf_zone_id ?? ""

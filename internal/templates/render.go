@@ -95,13 +95,49 @@ func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, e
 }
 
 func RenderXray(user, uuid, password string) (string, error) {
-	t, err := template.New("xray").Parse(xrayTemplate)
+	return RenderXrayCloudflare([]XrayUser{{Name: user, UUID: uuid}})
+}
+
+func RenderXrayCloudflare(users []XrayUser) (string, error) {
+	clients := make([]map[string]string, 0, len(users))
+	for _, u := range users {
+		clients = append(clients, map[string]string{"id": u.UUID, "email": u.Name + "@vpn"})
+	}
+	cfg := map[string]any{
+		"log": map[string]string{"loglevel": "warning"},
+		"inbounds": []any{
+			map[string]any{
+				"tag":      "vless-ws",
+				"listen":   "127.0.0.1",
+				"port":     10001,
+				"protocol": "vless",
+				"settings": map[string]any{
+					"clients":    clients,
+					"decryption": "none",
+				},
+				"streamSettings": map[string]any{
+					"network": "ws",
+					"wsSettings": map[string]any{
+						"path": "/vless",
+					},
+				},
+			},
+		},
+		"outbounds": []map[string]any{
+			{"tag": "direct", "protocol": "freedom"},
+			{"tag": "block", "protocol": "blackhole"},
+		},
+		"routing": map[string]any{
+			"rules": []any{
+				map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return "", err
 	}
-	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"User": user, "UUID": uuid, "Password": password})
-	return b.String(), err
+	return string(data), nil
 }
 
 func RenderHysteriaConfig(in HysteriaInputs) ([]byte, error) {

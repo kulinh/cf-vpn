@@ -4,7 +4,7 @@ import * as api from '../lib/api'
 import type { Node } from '../lib/types'
 
 const testSubscription: api.UserSubscription = {
-  urls: 'vless://u1@hk.example.com:443\ntrojan://p1@hk.example.com:443',
+  urls: 'vless://u1@hk.example.com:443\nhysteria2://p1@hy2.example.com:21000',
   token: 'a'.repeat(32),
   subUrl: `http://localhost:3000/sub/${'a'.repeat(32)}`,
 }
@@ -186,7 +186,8 @@ test('Shadowrocket button navigates to shadowrocket deep link with base64 sub UR
 
     fireEvent.click(screen.getByRole('button', { name: /shadowrocket/i }))
 
-    expect(hrefSetter).toHaveBeenCalledWith(`shadowrocket://add/sub/${btoa(testSubscription.subUrl)}`)
+    const encoded = btoa(testSubscription.subUrl).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    expect(hrefSetter).toHaveBeenCalledWith(`shadowrocket://add/sub/${encoded}`)
   } finally {
     Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
   }

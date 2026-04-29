@@ -10,6 +10,7 @@ export function NodesPage() {
   const [confirmNodeId, setConfirmNodeId] = useState<string | null>(null)
   const [rotatingNodeId, setRotatingNodeId] = useState<string | null>(null)
   const [checkingNodeId, setCheckingNodeId] = useState<string | null>(null)
+  const [checkingAll, setCheckingAll] = useState(false)
   const [editingNode, setEditingNode] = useState<Node | null>(null)
   const [editValues, setEditValues] = useState<Partial<NodeInput>>({})
   const [savingNode, setSavingNode] = useState(false)
@@ -31,12 +32,43 @@ export function NodesPage() {
     setCheckingNodeId(nodeId)
     try {
       const { latency_ms } = await healthcheckNode(nodeId)
-      setNodes((prev) => prev.map((n) => (n.id === nodeId ? { ...n, latencyMs: latency_ms } : n)))
-      setToastMessage(`Latency: ${latency_ms} ms`)
+      const latencyMs = latency_ms > 0 ? latency_ms : null
+      setNodes((prev) => prev.map((n) => (n.id === nodeId ? { ...n, latencyMs, status: 'active' } : n)))
+      setToastMessage(latencyMs == null ? 'Latency unavailable' : `Latency: ${latencyMs} ms`)
     } catch {
+      setNodes((prev) => prev.map((n) => (n.id === nodeId ? { ...n, status: 'unreachable' } : n)))
       setToastMessage('Healthcheck failed')
     } finally {
       setCheckingNodeId(null)
+    }
+  }
+
+  const handleCheckAll = async () => {
+    if (nodes.length === 0) {
+      setToastMessage('No nodes to check')
+      return
+    }
+    setCheckingAll(true)
+    try {
+      const results = await Promise.allSettled(
+        nodes.map(async (node) => {
+          const { latency_ms } = await healthcheckNode(node.id)
+          return { id: node.id, latencyMs: latency_ms > 0 ? latency_ms : null }
+        }),
+      )
+      setNodes((prev) =>
+        prev.map((node, index) => {
+          const result = results[index]
+          if (result.status === 'fulfilled') {
+            return { ...node, latencyMs: result.value.latencyMs, status: 'active' }
+          }
+          return { ...node, status: 'unreachable' }
+        }),
+      )
+      const alive = results.filter((result) => result.status === 'fulfilled').length
+      setToastMessage(`Checked ${results.length} nodes, ${alive} alive`)
+    } finally {
+      setCheckingAll(false)
     }
   }
 
@@ -99,14 +131,27 @@ export function NodesPage() {
   return (
     <>
       <section className="space-y-3">
-        <h1 className="text-xl font-semibold">Nodes</h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h1 className="text-xl font-semibold">Nodes</h1>
+            <p className="mt-1 text-sm text-slate-400">Manage node hosts and run latency checks.</p>
+          </div>
+          <button
+            type="button"
+            disabled={checkingAll || checkingNodeId != null}
+            onClick={() => void handleCheckAll()}
+            className="rounded bg-indigo-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {checkingAll ? 'Checking all...' : 'Check all'}
+          </button>
+        </div>
         <div className="overflow-x-auto rounded-lg border border-slate-800">
           <table className="w-full min-w-[640px] text-sm">
             <thead className="bg-slate-900 text-slate-400">
               <tr>
                 <th className="px-4 py-2 text-left">ID</th>
                 <th className="px-4 py-2 text-left">Name</th>
-                <th className="px-4 py-2 text-left">Direct Hosts</th>
+                <th className="px-4 py-2 text-left">Info</th>
                 <th className="px-4 py-2 text-left">Latency</th>
                 <th className="px-4 py-2 text-left">Status</th>
                 <th className="px-4 py-2"></th>
@@ -126,7 +171,7 @@ export function NodesPage() {
                   <td className="px-4 py-2 text-slate-300">
                     {checkingNodeId === node.id
                       ? '...'
-                      : node.latencyMs == null
+                      : node.latencyMs == null || node.latencyMs <= 0
                         ? 'N/A'
                         : `${node.latencyMs} ms`}
                   </td>
@@ -157,7 +202,7 @@ export function NodesPage() {
                       </button>
                       <button
                         type="button"
-                        disabled={checkingNodeId != null}
+                        disabled={checkingAll || checkingNodeId != null}
                         onClick={() => void handleCheck(node.id)}
                         className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
                       >

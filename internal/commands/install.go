@@ -112,6 +112,7 @@ func ensureRuntimeBinaries(ctx context.Context, runner binary.Runner) error {
 
 type UpgradeInputs struct {
 	BackupRoot string
+	Mode       string
 	Now        func() time.Time
 }
 
@@ -174,6 +175,12 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 	if in.BackupRoot == "" {
 		in.BackupRoot = "/etc"
 	}
+	if in.Mode == "" {
+		in.Mode = "direct"
+	}
+	if in.Mode != "direct" && in.Mode != "cloudflare" {
+		return UpgradeResult{}, fmt.Errorf("MODE must be direct or cloudflare")
+	}
 	if deps.CF == nil {
 		return UpgradeResult{}, fmt.Errorf("cloudflare client is required")
 	}
@@ -203,18 +210,23 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 		return UpgradeResult{}, err
 	}
 
-	// Idempotent HY2 backfill: if HY2_HOST already exists, skip HY2 generation
-	// and do not run the domain-rotation core (no env mutation, no DNS mutation).
 	if env["HY2_HOST"] != "" {
-		if stdout != nil {
-			fmt.Fprintln(stdout, "HY2 already configured; upgrade is a no-op")
+		currentMode := env["MODE"]
+		if currentMode == "" {
+			currentMode = "direct"
 		}
-		return UpgradeResult{
-			OldHost:  env["DOMAIN"],
-			NewHost:  env["DOMAIN"],
-			PublicIP: env["PUBLIC_IP"],
-			Skipped:  true,
-		}, nil
+		if currentMode == in.Mode {
+			if stdout != nil {
+				fmt.Fprintln(stdout, "HY2 already configured; upgrade is a no-op")
+			}
+			return UpgradeResult{
+				OldHost:  env["DOMAIN"],
+				NewHost:  env["DOMAIN"],
+				PublicIP: env["PUBLIC_IP"],
+				Skipped:  true,
+			}, nil
+		}
+		return runUpgradeCore(ctx, in, deps, env, rng, stdout, stderr)
 	}
 
 	// --- HY2 backfill: generate and persist missing HY2 fields ---
@@ -309,16 +321,7 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 	return runUpgradeCore(ctx, in, deps, env, rng, stdout, stderr)
 }
 
-// runUpgradeCore is the inner upgrade path that assumes HY2 env fields
-// are already present (or being added atomically). It handles:
-// - generating new direct-mode host
-// - issuing new certs
-// - re-rendering xray config (VLESS-only, no Trojan inbound)
-// - writing cloudflared admin config
-// - upserting DNS
-// - restarting services
-// - persisting env with MODE=direct
-// - regenerating subscriptions
+// runUpgradeCore is the inner upgrade path that assumes HY2 env fields are already present or being added atomically.
 func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env map[string]string, rng io.Reader, stdout, stderr io.Writer) (UpgradeResult, error) {
 	oldHost := env["DOMAIN"]
 	zone := zoneOfDomain(oldHost)
@@ -348,13 +351,13 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	runner := resolveRunner(deps.SystemdRunner)
 	rb := &rollbacker{cf: deps.CF, runner: runner, backupDir: backupDir, configDir: cfgDir}
 	fail := func(e error) (UpgradeResult, error) { rb.run(ctx, stderr); return UpgradeResult{}, e }
-	newHost, err := zones.GenerateHost(rand.Reader, zone)
-	if err != nil {
-		return fail(fmt.Errorf("generate host: %w", err))
-	}
-	certPath, keyPath := CertPathsForHost(newHost)
-	if err := deps.Cert.Issue(ctx, newHost, certPath, keyPath, env["CF_API_TOKEN"]); err != nil {
-		return fail(fmt.Errorf("issue cert for %s: %w", newHost, err))
+
+	newHost := oldHost
+	if in.Mode == "direct" {
+		newHost, err = zones.GenerateHost(rng, zone)
+		if err != nil {
+			return fail(fmt.Errorf("generate host: %w", err))
+		}
 	}
 	ip, err := deps.IP.Detect(ctx)
 	if err != nil {
@@ -368,33 +371,58 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	if err != nil {
 		return fail(err)
 	}
-	xrayRendered, err := templates.RenderXrayDirect(templates.XrayDirectInputs{Users: users, Certs: []templates.XrayCert{{Zone: zone, CertFile: certPath, KeyFile: keyPath}}})
-	if err != nil {
-		return fail(fmt.Errorf("render xray direct config: %w", err))
+
+	var xrayRendered string
+	if in.Mode == "direct" {
+		certPath, keyPath := CertPathsForHost(newHost)
+		if err := deps.Cert.Issue(ctx, newHost, certPath, keyPath, env["CF_API_TOKEN"]); err != nil {
+			return fail(fmt.Errorf("issue cert for %s: %w", newHost, err))
+		}
+		xrayRendered, err = templates.RenderXrayDirect(templates.XrayDirectInputs{Users: users, Certs: []templates.XrayCert{{Zone: zone, CertFile: certPath, KeyFile: keyPath}}})
+		if err != nil {
+			return fail(fmt.Errorf("render xray direct config: %w", err))
+		}
+	} else {
+		xrayRendered, err = templates.RenderXrayCloudflare(users)
+		if err != nil {
+			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
+		}
 	}
 	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return fail(fmt.Errorf("write xray config: %w", err))
 	}
+
 	oldTunnel := env["ADMIN_TUNNEL_UUID"]
 	if oldTunnel == "" {
 		oldTunnel = env["TUNNEL_UUID"]
 	}
-	cfRendered, err := templates.RenderCloudflaredAdmin(oldTunnel, adminHost)
-	if err != nil {
-		return fail(fmt.Errorf("render cloudflared admin config: %w", err))
+	var cfRendered string
+	if in.Mode == "direct" {
+		cfRendered, err = templates.RenderCloudflaredAdmin(oldTunnel, adminHost)
+		if err != nil {
+			return fail(fmt.Errorf("render cloudflared admin config: %w", err))
+		}
+	} else {
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(oldTunnel, newHost, adminHost)
+		if err != nil {
+			return fail(fmt.Errorf("render cloudflared config: %w", err))
+		}
 	}
 	if err := writeAtomicFile(cloudflaredConfig, []byte(cfRendered), 0o600); err != nil {
 		return fail(fmt.Errorf("write cloudflared config: %w", err))
 	}
-	if err := deps.UFW.Allow(ctx, "443/tcp"); err != nil && stderr != nil {
-		fmt.Fprintf(stderr, "warning: ufw allow 443/tcp failed: %v\n", err)
+
+	if in.Mode == "direct" {
+		if err := deps.UFW.Allow(ctx, "443/tcp"); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: ufw allow 443/tcp failed: %v\n", err)
+		}
+		if err := deps.CF.UpsertARecord(ctx, zoneID, newHost, ip); err != nil {
+			return fail(fmt.Errorf("upsert dns a record: %w", err))
+		}
+		rb.addCreatedA(zoneID, newHost)
+	} else if err := deps.CF.UpsertCNAME(ctx, zoneID, newHost, oldTunnel+".cfargotunnel.com"); err != nil {
+		return fail(fmt.Errorf("upsert vpn dns cname: %w", err))
 	}
-	if err := deps.CF.UpsertARecord(ctx, zoneID, newHost, ip); err != nil {
-		return fail(fmt.Errorf("upsert dns a record: %w", err))
-	}
-	rb.addCreatedA(zoneID, newHost)
-	// HY2_HOST shares the same zone as DOMAIN today (both generated from `zone`).
-	// Without this A record, hysteria clients cannot resolve HY2_HOST and time out.
 	if hy2Host := env["HY2_HOST"]; hy2Host != "" {
 		if err := deps.CF.UpsertARecord(ctx, zoneID, hy2Host, ip); err != nil {
 			return fail(fmt.Errorf("upsert hy2 dns a record: %w", err))
@@ -410,14 +438,13 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	} else if err == nil {
 		rb.markServiceMutated("cfvpn-cloudflared.service")
 	}
-	// Restart Hysteria so new config (written during HY2 backfill) takes effect.
 	if err := hysteria.ReloadService(ctx, runner); err != nil && stderr != nil {
 		fmt.Fprintf(stderr, "warning: restart cfvpn-hysteria.service failed: %v\n", err)
 	} else if err == nil {
 		rb.markServiceMutated("cfvpn-hysteria.service")
 	}
 	env["DOMAIN"] = newHost
-	env["MODE"] = "direct"
+	env["MODE"] = in.Mode
 	env["PUBLIC_IP"] = ip
 	env["ADMIN_HOST"] = adminHost
 	env["ADMIN_TUNNEL_UUID"] = oldTunnel
@@ -436,7 +463,6 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 		return fail(fmt.Errorf("upsert admin dns cname: %w", err))
 	}
 
-	// Write and enable Hysteria systemd units if not already present.
 	units := map[string]string{
 		"cfvpn-hysteria.service":   systemd.HysteriaService(hysteriaConfigPath),
 		"cfvpn-cert-renew.service": systemd.CertRenewService(),
@@ -456,7 +482,6 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 		}
 	}
 
-	// Open HY2 UDP port in firewall.
 	hy2Port := env["HY2_PORT"]
 	if hy2Port != "" {
 		if err := deps.UFW.Allow(ctx, hy2Port+"/udp"); err != nil && stderr != nil {
@@ -465,7 +490,7 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	}
 
 	if stdout != nil {
-		fmt.Fprintf(stdout, "upgrade complete: %s -> %s (%s)\n", oldHost, newHost, ip)
+		fmt.Fprintf(stdout, "upgrade complete: %s -> %s mode %s (%s)\n", oldHost, newHost, in.Mode, ip)
 	}
 	return UpgradeResult{OldHost: oldHost, NewHost: newHost, PublicIP: ip}, nil
 }

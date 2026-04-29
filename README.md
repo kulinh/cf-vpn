@@ -1,13 +1,14 @@
 # cf-vpn
 
-Multi-VPS VPN control system for direct VLESS + Hysteria2 nodes, with Cloudflare used for DNS, the admin tunnel, the Worker API, D1 storage, and the React management panel.
+Multi-VPS VPN control system for VLESS + Hysteria2 nodes, with Cloudflare used for DNS, the admin tunnel, the Worker API, D1 storage, and the React management panel.
 
 ## Architecture
 
-- Clients connect directly to each VPS public IP through Cloudflare DNS-only hostnames.
-- VLESS runs on Xray over TCP 443 with TLS and WebSocket path `/vless`.
+- Direct-mode clients connect to each VPS public IP through Cloudflare DNS-only hostnames.
+- Cloudflare-mode VLESS clients connect through Cloudflare Tunnel when a VPS cannot expose TCP 443 directly.
+- VLESS runs on Xray with WebSocket path `/vless`; direct mode uses TCP 443 with TLS, and cloudflare mode uses local `127.0.0.1:10001` behind cloudflared.
 - Hysteria2 runs over UDP on a generated high port with salamander obfs.
-- Cloudflare Tunnel is used only for node admin/control traffic to the local `cfvpn-agent` on `127.0.0.1:6788`.
+- Cloudflare Tunnel always carries node admin/control traffic to the local `cfvpn-agent` on `127.0.0.1:6788`.
 - The Worker stores nodes, users, per-user node credentials, public subscription tokens, zones, and events in D1.
 - The panel calls authenticated `/api/*` routes; mobile clients fetch unauthenticated token subscriptions from `/sub/:token`.
 
@@ -44,13 +45,23 @@ The installer writes Xray, Hysteria2, cloudflared admin tunnel, systemd units, T
 
 ## Upgrade an existing VPS
 
-Use upgrade for nodes already deployed by older cf-vpn builds:
+Use upgrade for nodes already deployed by older cf-vpn builds. Direct is the default and preferred mode:
 
 ```bash
 sudo cfvpnctl upgrade --mode direct
+# equivalent legacy entrypoint:
+sudo cfvpnctl install --upgrade --mode direct
 ```
 
-Upgrade preserves existing users where possible, keeps the admin tunnel, renders direct VLESS config, backfills Hysteria2 config and credentials, and removes old data-plane tunnel assumptions from the active runtime.
+Use Cloudflare tunnel mode when the VPS cannot expose direct TCP 443:
+
+```bash
+sudo cfvpnctl upgrade --mode cloudflare
+# equivalent legacy entrypoint:
+sudo cfvpnctl install --upgrade --mode cloudflare
+```
+
+Upgrade preserves existing users where possible, keeps the admin tunnel, backfills Hysteria2 config and credentials, and renders VLESS either as direct TCP 443 or as a Cloudflare Tunnel ingress depending on `--mode`.
 
 ## Daily ops
 

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,9 +22,12 @@ import (
 	"github.com/kulinh/cf-vpn/internal/paths"
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
+	"github.com/kulinh/cf-vpn/internal/templates"
 	"github.com/kulinh/cf-vpn/internal/xray"
 	"github.com/kulinh/cf-vpn/internal/zones"
 )
+
+const hysteriaConfigPath = "/etc/cfvpn/hysteria/config.yaml"
 
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
@@ -76,6 +81,16 @@ type syncRequest struct {
 	Users []syncUser `json:"users"`
 }
 
+type addUserRequest struct {
+	Name string `json:"name"`
+}
+
+type addUserResponse struct {
+	Name      string `json:"name"`
+	VlessUUID string `json:"vless_uuid"`
+	Hy2PW     string `json:"hy2_pw"`
+}
+
 func main() {
 	addr := strings.TrimSpace(os.Getenv("CFVPN_AGENT_ADDR"))
 	if addr == "" {
@@ -87,6 +102,8 @@ func main() {
 	mux.HandleFunc("/admin/v1/healthcheck", handleHealthcheck)
 	mux.HandleFunc("/admin/v1/rotate-domain", handleRotateDomain)
 	mux.HandleFunc("/admin/v1/sync", handleSync)
+	mux.HandleFunc("/admin/v1/users", handleUsers)
+	mux.HandleFunc("/admin/v1/users/", handleUser)
 
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("cfvpn-agent listening on %s", addr)
@@ -171,7 +188,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "xray_user_invalid", fmt.Sprintf("%s missing vless uuid", name))
 			return
 		}
-		users = append(users, commands.ExistingUser{Name: name, UUID: uuid})
+		users = append(users, commands.ExistingUser{Name: strings.TrimSuffix(name, "@vpn"), UUID: uuid})
 	}
 	result, err := commands.RunRotateDirect(
 		r.Context(),
@@ -221,50 +238,219 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	users := make([]commands.ExistingUser, 0, len(req.Users))
-	for _, u := range req.Users {
-		users = append(users, commands.ExistingUser{Name: u.Name, UUID: u.VlessUUID})
-	}
-	env, err := state.Load(paths.EnvFile)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "env_load_failed", err.Error())
-		return
-	}
-	result, err := commands.RunRotateDirect(
-		r.Context(),
-		commands.RotateDirectInputs{
-			NewHost:       env["DOMAIN"],
-			NewZone:       zoneForHost(env["DOMAIN"]),
-			NewZoneID:     zoneIDForHost(env["DOMAIN"]),
-			CFAPIToken:    env["CF_API_TOKEN"],
-			ExistingUsers: users,
-		},
-		commands.RotateDirectDeps{
-			CF:     &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient},
-			IP:     netinfo.NewDefault(),
-			Cert:   cert.NewDefault(),
-			Runner: systemd.ExecRunner{},
-		},
-		io.Discard,
-		io.Discard,
-	)
+	env, result, err := applyUsers(r.Context(), req.Users)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "sync_failed", err.Error())
 		return
 	}
-	hy2Users := make([]hysteria.User, len(req.Users))
-	for i, u := range req.Users {
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "vpn_host": result.VpnHost, "public_ip": result.PublicIP, "hy2_host": env["HY2_HOST"], "users": len(req.Users)})
+}
+
+func handleUsers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	var req addUserRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if err := xray.ValidateUserName(name); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_user", err.Error())
+		return
+	}
+	records, err := currentSyncUsers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "load_users_failed", err.Error())
+		return
+	}
+	for _, u := range records {
+		if u.Name == name {
+			if _, _, err := applyUsers(r.Context(), records); err != nil {
+				writeError(w, http.StatusInternalServerError, "apply_users_failed", err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, addUserResponse{Name: u.Name, VlessUUID: u.VlessUUID, Hy2PW: u.Hy2PW})
+			return
+		}
+	}
+	uuid, err := generateUUIDv4()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "generate_uuid_failed", err.Error())
+		return
+	}
+	hy2PW, err := generatePassword(24)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "generate_password_failed", err.Error())
+		return
+	}
+	records = append(records, syncUser{Name: name, VlessUUID: uuid, Hy2PW: hy2PW})
+	if _, _, err := applyUsers(r.Context(), records); err != nil {
+		writeError(w, http.StatusInternalServerError, "apply_users_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusCreated, addUserResponse{Name: name, VlessUUID: uuid, Hy2PW: hy2PW})
+}
+
+func handleUser(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "DELETE required")
+		return
+	}
+	name := strings.TrimPrefix(r.URL.Path, "/admin/v1/users/")
+	name = strings.TrimSpace(name)
+	if err := xray.ValidateUserName(name); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_user", err.Error())
+		return
+	}
+	records, err := currentSyncUsers()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "load_users_failed", err.Error())
+		return
+	}
+	filtered := records[:0]
+	found := false
+	for _, u := range records {
+		if u.Name == name {
+			found = true
+			continue
+		}
+		filtered = append(filtered, u)
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "user_not_found", name)
+		return
+	}
+	if _, _, err := applyUsers(r.Context(), filtered); err != nil {
+		writeError(w, http.StatusInternalServerError, "apply_users_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+func generateUUIDv4() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+func generatePassword(nBytes int) (string, error) {
+	b := make([]byte, nBytes)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func currentSyncUsers() ([]syncUser, error) {
+	cfg, err := xray.Load(paths.XrayConfigFile)
+	if err != nil {
+		return nil, fmt.Errorf("load xray config: %w", err)
+	}
+	hy2Users, err := hysteria.ListUsers(hysteriaConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load hysteria config: %w", err)
+	}
+	hy2ByName := make(map[string]string, len(hy2Users))
+	for _, u := range hy2Users {
+		hy2ByName[u.Name] = u.Password
+	}
+	records := make([]syncUser, 0, len(xray.ListUserNames(cfg)))
+	for _, xrayName := range xray.ListUserNames(cfg) {
+		uuid, ok := xray.GetVLESSClient(cfg, xrayName)
+		if !ok {
+			return nil, fmt.Errorf("%s missing vless uuid", xrayName)
+		}
+		name := strings.TrimSuffix(xrayName, "@vpn")
+		hy2PW := hy2ByName[name]
+		if hy2PW == "" {
+			var err error
+			hy2PW, err = generatePassword(24)
+			if err != nil {
+				return nil, fmt.Errorf("generate hy2 password for %s: %w", name, err)
+			}
+		}
+		records = append(records, syncUser{Name: name, VlessUUID: uuid, Hy2PW: hy2PW})
+	}
+	return records, nil
+}
+
+func toTemplateUsers(users []commands.ExistingUser) []templates.XrayUser {
+	out := make([]templates.XrayUser, 0, len(users))
+	for _, u := range users {
+		out = append(out, templates.XrayUser{Name: u.Name, UUID: u.UUID})
+	}
+	return out
+}
+
+func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, commands.RotateDirectResult, error) {
+	users := make([]commands.ExistingUser, 0, len(reqUsers))
+	for _, u := range reqUsers {
+		if err := xray.ValidateUserName(u.Name); err != nil {
+			return nil, commands.RotateDirectResult{}, err
+		}
+		if strings.TrimSpace(u.VlessUUID) == "" || strings.TrimSpace(u.Hy2PW) == "" {
+			return nil, commands.RotateDirectResult{}, fmt.Errorf("user %s missing credentials", u.Name)
+		}
+		users = append(users, commands.ExistingUser{Name: u.Name, UUID: u.VlessUUID})
+	}
+	env, err := state.Load(paths.EnvFile)
+	if err != nil {
+		return nil, commands.RotateDirectResult{}, fmt.Errorf("load env: %w", err)
+	}
+	result := commands.RotateDirectResult{VpnHost: env["DOMAIN"], PublicIP: env["PUBLIC_IP"], Hy2Host: env["HY2_HOST"], Hy2Port: parseInt(env["HY2_PORT"]), Hy2ObfsPW: env["HY2_OBFS_PW"]}
+	if strings.TrimSpace(env["MODE"]) == "cloudflare" {
+		rendered, err := templates.RenderXrayCloudflare(toTemplateUsers(users))
+		if err != nil {
+			return nil, commands.RotateDirectResult{}, fmt.Errorf("render cloudflare xray: %w", err)
+		}
+		if err := os.WriteFile(paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
+			return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
+		}
+		if err := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); err != nil {
+			return nil, commands.RotateDirectResult{}, fmt.Errorf("restart xray: %w", err)
+		}
+	} else {
+		var err error
+		result, err = commands.RunRotateDirect(
+			ctx,
+			commands.RotateDirectInputs{
+				NewHost:       env["DOMAIN"],
+				NewZone:       zoneForHost(env["DOMAIN"]),
+				NewZoneID:     zoneIDForHost(env["DOMAIN"]),
+				CFAPIToken:    env["CF_API_TOKEN"],
+				ExistingUsers: users,
+			},
+			commands.RotateDirectDeps{
+				CF:     &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient},
+				IP:     netinfo.NewDefault(),
+				Cert:   cert.NewDefault(),
+				Runner: systemd.ExecRunner{},
+			},
+			io.Discard,
+			io.Discard,
+		)
+		if err != nil {
+			return nil, commands.RotateDirectResult{}, err
+		}
+	}
+	hy2Users := make([]hysteria.User, len(reqUsers))
+	for i, u := range reqUsers {
 		hy2Users[i] = hysteria.User{Name: u.Name, Password: u.Hy2PW}
 	}
-	if err := hysteria.SetUsers("/etc/cfvpn/hysteria/config.yaml", hy2Users); err != nil {
-		writeError(w, http.StatusInternalServerError, "hysteria_set_users_failed", err.Error())
-		return
+	if err := hysteria.SetUsers(hysteriaConfigPath, hy2Users); err != nil {
+		return nil, commands.RotateDirectResult{}, fmt.Errorf("set hysteria users: %w", err)
 	}
-	if err := hysteria.ReloadService(r.Context(), systemd.ExecRunner{}); err != nil {
-		writeError(w, http.StatusInternalServerError, "hysteria_reload_failed", err.Error())
-		return
+	if err := hysteria.ReloadService(ctx, systemd.ExecRunner{}); err != nil {
+		return nil, commands.RotateDirectResult{}, fmt.Errorf("reload hysteria: %w", err)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "vpn_host": result.VpnHost, "public_ip": result.PublicIP, "hy2_host": env["HY2_HOST"], "users": len(users)})
+	return env, result, nil
 }
 
 func probeHealth(ctx context.Context, domain string, mode string) (int, error) {

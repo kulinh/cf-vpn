@@ -1,6 +1,6 @@
 # Testing Checklist — cf-vpn
 
-Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl upgrade --mode direct` completes and before declaring a node healthy.
+Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl upgrade --mode direct` completes and before declaring a direct node healthy. For VPSs that cannot expose TCP 443, run the same checklist with `sudo cfvpnctl upgrade --mode cloudflare` and use the Cloudflare-mode notes below.
 
 ## 0. Prerequisites
 
@@ -18,6 +18,7 @@ Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl u
 - [ ] `/etc/cfvpn/cfvpn.env` exists with Cloudflare credentials and node inputs, chmod 600
 - [ ] Fresh deploy: `sudo cfvpnctl install --mode direct` completes without error
 - [ ] Existing deploy: `sudo cfvpnctl upgrade --mode direct` completes without error
+- [ ] Restricted VPS deploy: `sudo cfvpnctl upgrade --mode cloudflare` completes without error when TCP 443 cannot be exposed directly
 
 ## 2. Local smoke test on VPS
 
@@ -31,10 +32,11 @@ Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl u
 
 From a machine outside the VPS:
 
-- [ ] `dig +short ${DOMAIN}` resolves to the VPS public IP
-- [ ] `nmap -Pn -p 22,443 <vps-ip>` shows SSH and TCP 443 as expected
+- [ ] Direct mode: `dig +short ${DOMAIN}` resolves to the VPS public IP
+- [ ] Direct mode: `nmap -Pn -p 22,443 <vps-ip>` shows SSH and TCP 443 as expected
+- [ ] Cloudflare mode: `${DOMAIN}` routes through cloudflared and `journalctl -u cfvpn-cloudflared` shows registered tunnel connections
 - [ ] UDP Hysteria2 port from `cfvpnctl status` is reachable from a client network that supports UDP
-- [ ] Cloudflare DNS records for client hostnames are DNS-only, not proxied
+- [ ] Direct-mode client hostnames are DNS-only, not proxied
 
 ## 4. End-to-end client test
 

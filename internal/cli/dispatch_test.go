@@ -78,13 +78,37 @@ func TestRunInstallUpgradeCheckDispatches(t *testing.T) {
 		}
 		return commands.InstallDeps{}
 	}
-	runUpgradeCheck = func(_ context.Context, _ commands.UpgradeInputs, _ commands.InstallDeps, _, _ io.Writer) error {
+	runUpgradeCheck = func(_ context.Context, in commands.UpgradeInputs, _ commands.InstallDeps, _, _ io.Writer) error {
 		called = true
+		if in.Mode != "cloudflare" {
+			t.Fatalf("mode = %q, want cloudflare", in.Mode)
+		}
 		return nil
 	}
 	t.Cleanup(func() { envFile, buildInstallDeps, runUpgradeCheck = oldEnv, oldBuild, oldCheck })
 	var out, errBuf bytes.Buffer
-	exit := Run([]string{"install", "--upgrade", "--check"}, &out, &errBuf)
+	exit := Run([]string{"install", "--upgrade", "--check", "--mode", "cloudflare"}, &out, &errBuf)
+	if exit != 0 || !called {
+		t.Fatalf("exit=%d called=%v stderr=%q", exit, called, errBuf.String())
+	}
+}
+
+func TestRunInstallUpgradeDefaultsToDirect(t *testing.T) {
+	envPath := writeDispatchEnv(t)
+	oldEnv, oldBuild, oldRun := envFile, buildInstallDeps, runUpgrade
+	envFile = envPath
+	called := false
+	buildInstallDeps = func(map[string]string) commands.InstallDeps { return commands.InstallDeps{} }
+	runUpgrade = func(_ context.Context, in commands.UpgradeInputs, _ commands.InstallDeps, _, _ io.Writer) (commands.UpgradeResult, error) {
+		called = true
+		if in.Mode != "direct" {
+			t.Fatalf("mode = %q, want direct", in.Mode)
+		}
+		return commands.UpgradeResult{}, nil
+	}
+	t.Cleanup(func() { envFile, buildInstallDeps, runUpgrade = oldEnv, oldBuild, oldRun })
+	var out, errBuf bytes.Buffer
+	exit := Run([]string{"install", "--upgrade"}, &out, &errBuf)
 	if exit != 0 || !called {
 		t.Fatalf("exit=%d called=%v stderr=%q", exit, called, errBuf.String())
 	}
@@ -101,13 +125,16 @@ func TestRunUpgradeAliasDispatches(t *testing.T) {
 		}
 		return commands.InstallDeps{}
 	}
-	runUpgrade = func(_ context.Context, _ commands.UpgradeInputs, _ commands.InstallDeps, _, _ io.Writer) (commands.UpgradeResult, error) {
+	runUpgrade = func(_ context.Context, in commands.UpgradeInputs, _ commands.InstallDeps, _, _ io.Writer) (commands.UpgradeResult, error) {
 		called = true
+		if in.Mode != "cloudflare" {
+			t.Fatalf("mode = %q, want cloudflare", in.Mode)
+		}
 		return commands.UpgradeResult{}, nil
 	}
 	t.Cleanup(func() { envFile, buildInstallDeps, runUpgrade = oldEnv, oldBuild, oldRun })
 	var out, errBuf bytes.Buffer
-	exit := Run([]string{"upgrade"}, &out, &errBuf)
+	exit := Run([]string{"upgrade", "--mode", "cloudflare"}, &out, &errBuf)
 	if exit != 0 || !called {
 		t.Fatalf("exit=%d called=%v stderr=%q", exit, called, errBuf.String())
 	}

@@ -12,9 +12,10 @@ describe('subscriptionLinks', () => {
     )
   })
 
-  it('builds shadowrocket deep link with base64 subscription url', () => {
+  it('builds shadowrocket deep link with URL-safe base64 subscription url', () => {
     const subUrl = 'https://panel.example.com/sub/abc123'
-    expect(buildShadowrocketDeepLink(subUrl)).toBe(`shadowrocket://add/sub/${btoa(subUrl)}`)
+    const encoded = btoa(subUrl).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+    expect(buildShadowrocketDeepLink(subUrl)).toBe(`shadowrocket://add/sub/${encoded}`)
   })
 
   it('builds v2rayng deep link with encoded subscription url and remarks', () => {

@@ -48,6 +48,29 @@ func installFromEnv(env map[string]string) (commands.InstallInputs, error) {
 	}, nil
 }
 
+func parseUpgradeArgs(args []string, allowCheck bool) (commands.UpgradeInputs, bool, bool) {
+	in := commands.UpgradeInputs{Mode: "direct", Now: time.Now}
+	check := false
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--check":
+			if !allowCheck {
+				return commands.UpgradeInputs{}, false, false
+			}
+			check = true
+		case "--mode":
+			if i+1 >= len(args) || (args[i+1] != "direct" && args[i+1] != "cloudflare") {
+				return commands.UpgradeInputs{}, false, false
+			}
+			in.Mode = args[i+1]
+			i++
+		default:
+			return commands.UpgradeInputs{}, false, false
+		}
+	}
+	return in, check, true
+}
+
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stdout, "usage: cfvpnctl <command>")
@@ -59,20 +82,18 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "usage: cfvpnctl <command>")
 		return 0
 	case "install":
-		upgrade, check := false, false
+		upgrade := false
+		upgradeArgs := make([]string, 0, len(args[1:]))
 		for _, arg := range args[1:] {
-			switch arg {
-			case "--upgrade":
+			if arg == "--upgrade" {
 				upgrade = true
-			case "--check":
-				check = true
-			default:
-				fmt.Fprintln(stderr, "usage: cfvpnctl install [--upgrade [--check]]")
-				return 2
+				continue
 			}
+			upgradeArgs = append(upgradeArgs, arg)
 		}
-		if check && !upgrade {
-			fmt.Fprintln(stderr, "usage: cfvpnctl install [--upgrade [--check]]")
+		upgradeIn, check, ok := parseUpgradeArgs(upgradeArgs, true)
+		if !ok || check && !upgrade || !upgrade && len(upgradeArgs) > 0 {
+			fmt.Fprintln(stderr, "usage: cfvpnctl install [--upgrade [--check] [--mode direct|cloudflare]]")
 			return 2
 		}
 		if upgrade {
@@ -83,13 +104,13 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 			deps := buildInstallDeps(env)
 			if check {
-				if err := runUpgradeCheck(context.Background(), commands.UpgradeInputs{}, deps, stdout, stderr); err != nil {
+				if err := runUpgradeCheck(context.Background(), upgradeIn, deps, stdout, stderr); err != nil {
 					fmt.Fprintln(stderr, err)
 					return 1
 				}
 				return 0
 			}
-			if _, err := runUpgrade(context.Background(), commands.UpgradeInputs{Now: time.Now}, deps, stdout, stderr); err != nil {
+			if _, err := runUpgrade(context.Background(), upgradeIn, deps, stdout, stderr); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
@@ -112,13 +133,18 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		return 0
 	case "upgrade":
+		upgradeIn, check, ok := parseUpgradeArgs(args[1:], false)
+		if !ok || check {
+			fmt.Fprintln(stderr, "usage: cfvpnctl upgrade [--mode direct|cloudflare]")
+			return 2
+		}
 		env, err := state.Load(envFile)
 		if err != nil {
 			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", envFile, err)
 			return 1
 		}
 		deps := buildInstallDeps(env)
-		if _, err := runUpgrade(context.Background(), commands.UpgradeInputs{Now: time.Now}, deps, stdout, stderr); err != nil {
+		if _, err := runUpgrade(context.Background(), upgradeIn, deps, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

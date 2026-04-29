@@ -389,7 +389,7 @@ func rotateDirectUsers(existing []ExistingUser) ([]templates.XrayUser, error) {
 		if !ok {
 			return nil, fmt.Errorf("user %q has no vless client", name)
 		}
-		users = append(users, templates.XrayUser{Name: name, UUID: uuid})
+		users = append(users, templates.XrayUser{Name: strings.TrimSuffix(name, "@vpn"), UUID: uuid})
 	}
 	return users, nil
 }

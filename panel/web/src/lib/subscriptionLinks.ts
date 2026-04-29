@@ -2,8 +2,12 @@ export function buildPublicSubscriptionUrl(origin: string, token: string): strin
   return `${origin}/sub/${token}`
 }
 
+function base64Url(input: string): string {
+  return btoa(input).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
+}
+
 export function buildShadowrocketDeepLink(subUrl: string): string {
-  return `shadowrocket://add/sub/${btoa(subUrl)}`
+  return `shadowrocket://add/sub/${base64Url(subUrl)}`
 }
 
 export function buildV2rayNgDeepLink(subUrl: string, remarks: string): string {

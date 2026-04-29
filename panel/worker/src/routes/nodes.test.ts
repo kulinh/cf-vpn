@@ -10,7 +10,7 @@ vi.mock("../lib/events", () => ({
 
 import { callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
-import { nodeRotate } from "./nodes";
+import { nodeHealthcheck, nodeRotate } from "./nodes";
 import type { Env, NodeRow } from "../types";
 
 type ZoneRow = { name: string; cf_zone_id: string; enabled?: number };
@@ -53,6 +53,10 @@ function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
           node.hy2_obfs_pw = hy2_obfs_pw;
           node.public_ip = public_ip;
           node.zone = zone;
+        }
+        if (/UPDATE nodes SET last_seen_at=\?, latency_ms=\?/.test(sql)) {
+          const [, latency_ms] = state.args as [number, number, string];
+          node.latency_ms = latency_ms;
         }
         return { success: true } as never;
       }
@@ -128,6 +132,7 @@ describe("nodeRotate", () => {
     const body = JSON.parse(init.body as string) as Record<string, unknown>;
     expect(body).toMatchObject({
       new_zone_id: "new-zone",
+      new_hy2_zone: "example.net",
       old_host: "cdn-old.example.com",
       old_zone_id: "old-zone",
       old_hy2_host: "hy-old.example.com",
@@ -137,5 +142,51 @@ describe("nodeRotate", () => {
     expect(body.new_hy2_host).toEqual(expect.stringMatching(/\.example\.net$/));
     expect(body).not.toHaveProperty("new_vpn_host");
     expect(body).not.toHaveProperty("new_vpn_zone_id");
+  });
+});
+
+describe("nodeHealthcheck", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("stores Worker-to-agent round-trip latency instead of agent loopback latency", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    vi.mocked(callAgent).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 42));
+      return { ok: true, code: 200, latency_ms: 0 };
+    });
+
+    const env = makeEnv({
+      node: {
+        id: "sin-01",
+        label: "SIN 01",
+        admin_host: "sin-01.rwl247.dev",
+        vpn_host: "cdn-old.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "cloudflare",
+        hy2_host: "hy-old.example.com",
+        hy2_port: 22333,
+        hy2_obfs_pw: "old-obfs"
+      },
+      zones: []
+    });
+
+    const responsePromise = nodeHealthcheck(env, "sin-01", "operator@example.com");
+    await vi.advanceTimersByTimeAsync(42);
+    const res = await responsePromise;
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, code: 200, latency_ms: 42 });
+
+    vi.useRealTimers();
   });
 });
