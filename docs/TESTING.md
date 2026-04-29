@@ -1,116 +1,126 @@
 # Testing Checklist — cf-vpn
 
-Run these checks after `sudo cfvpnctl install` completes and before declaring a deploy healthy.
+Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl upgrade --mode direct` completes and before declaring a direct node healthy. For VPSs that cannot expose TCP 443, run the same checklist with `sudo cfvpnctl upgrade --mode cloudflare` and use the Cloudflare-mode notes below.
 
 ## 0. Prerequisites
 
 - [ ] Debian/Ubuntu VPS with systemd
 - [ ] `curl`, `jq`, `openssl`, `uuidgen`, `qrencode` installed
-- [ ] Cloudflare account with zone configured
-- [ ] CF API token with scopes `Zone:DNS:Edit` + `Account:Cloudflare Tunnel:Edit`
+- [ ] Cloudflare account with DNS zones configured
+- [ ] Cloudflare API token with `Zone:DNS:Edit` and `Account:Cloudflare Tunnel:Edit`
 - [ ] root access
 
 ## 1. Bootstrap
 
-- [ ] `make build` succeeds (produces `bin/cfvpnctl`)
+- [ ] `make build` succeeds and produces `bin/cfvpnctl` plus `bin/cfvpn-agent`
 - [ ] `sudo install -m 0755 bin/cfvpnctl /usr/local/bin/cfvpnctl`
-- [ ] `/etc/cfvpn/cfvpn.env` populated with `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `DOMAIN`, `USER1_NAME` (chmod 600)
-- [ ] `sudo cfvpnctl install` completes without error
+- [ ] `sudo install -m 0755 bin/cfvpn-agent /usr/local/bin/cfvpn-agent`
+- [ ] `/etc/cfvpn/cfvpn.env` exists with Cloudflare credentials and node inputs, chmod 600
+- [ ] Fresh deploy: `sudo cfvpnctl install --mode direct` completes without error
+- [ ] Existing deploy: `sudo cfvpnctl upgrade --mode direct` completes without error
+- [ ] Restricted VPS deploy: `sudo cfvpnctl upgrade --mode cloudflare` completes without error when TCP 443 cannot be exposed directly
 
-## 2. Local Smoke Test (on VPS)
+## 2. Local smoke test on VPS
 
-- [ ] `systemctl is-active cfvpn-xray cfvpn-cloudflared` — both report `active`
-- [ ] `sudo cfvpnctl status` — reports both services active and tunnel registered
-- [ ] `journalctl -u cfvpn-cloudflared 2>&1 | grep -c "Registered tunnel connection"` — returns ≥1 (typically 2-4)
-- [ ] `curl -I -s https://${DOMAIN}/` — returns HTTP 404
-- [ ] `curl -I -s https://${DOMAIN}/vless` — returns HTTP 400 or 426
-- [ ] `curl -I -s https://${DOMAIN}/trojan` — returns HTTP 400 or 426
-- [ ] `sudo cfvpnctl healthcheck run` — prints "OK code=400" or "OK code=426"
+- [ ] `systemctl is-active cfvpn-xray cfvpn-hysteria cfvpn-cloudflared` reports `active`
+- [ ] `sudo cfvpnctl status` reports VLESS, Hysteria2, admin tunnel, direct host, public IP, HY2 host, and HY2 port
+- [ ] `journalctl -u cfvpn-cloudflared 2>&1 | grep -c "Registered tunnel connection"` returns at least 1
+- [ ] `curl -k -I -s https://${DOMAIN}/vless` returns a WebSocket/TLS rejection such as HTTP 400 or 426
+- [ ] `sudo cfvpnctl healthcheck run` prints an OK health result
 
-## 3. Port Scan Check
+## 3. Public reachability and port check
 
-From a machine **outside** the VPS:
-- [ ] `nmap -Pn -p- <vps-ip>` — only SSH port open, nothing else
+From a machine outside the VPS:
 
-## 4. End-to-End Client Test (at least one platform)
+- [ ] Direct mode: `dig +short ${DOMAIN}` resolves to the VPS public IP
+- [ ] Direct mode: `nmap -Pn -p 22,443 <vps-ip>` shows SSH and TCP 443 as expected
+- [ ] Cloudflare mode: `${DOMAIN}` routes through cloudflared and `journalctl -u cfvpn-cloudflared` shows registered tunnel connections
+- [ ] UDP Hysteria2 port from `cfvpnctl status` is reachable from a client network that supports UDP
+- [ ] Direct-mode client hostnames are DNS-only, not proxied
 
-**Windows (v2rayN):**
-- [ ] Import subscription from `/var/lib/cfvpn/subscriptions/<user>.txt` (paste base64)
-- [ ] Enable VLESS outbound → `curl https://ifconfig.me` via proxy — IP differs from VPS IP
-- [ ] Switch to Trojan outbound → same test, different CF egress IP possible but not same as VPS
-- [ ] Browse to `https://www.youtube.com` — loads
+## 4. End-to-end client test
 
-**iOS (Shadowrocket):**
-- [ ] Scan VLESS QR → connect → `ifconfig.me` in Safari
-- [ ] Scan Trojan QR → connect → same test
+**VLESS:**
 
-**Android (v2rayNG):**
-- [ ] Import VLESS URI → connect → `Connection test` in app returns 200
-- [ ] Import Trojan URI → same test
+- [ ] Import the user subscription from `sudo cfvpnctl gen-sub <user>` or panel `/sub/:token`
+- [ ] Connect with v2rayN, v2rayNG, Shadowrocket, or another VLESS client
+- [ ] `https://ifconfig.me` through the proxy returns the VPS egress IP
+- [ ] `https://www.youtube.com` loads through the proxy
 
-## 5. DNS Leak Test
+**Hysteria2:**
 
-- [ ] Connect via VPN on any client → visit `https://dnsleaktest.com/` → only Cloudflare DNS shown
+- [ ] Confirm the subscription includes a `hysteria2://` line for the node
+- [ ] Connect with a Hysteria2-capable client using the generated port and obfs password
+- [ ] `https://ifconfig.me` through the proxy returns the VPS egress IP
+- [ ] A UDP-sensitive workload works on a client network that allows UDP
 
-## 6. Latency Baseline
+## 5. DNS leak test
 
-Record for reference (ping via proxy to 1.1.1.1):
-- From VN/SG: target <100ms
-- From CN: target <150ms
-- From UAE: target <200ms
+- [ ] Connect through either protocol and visit `https://dnsleaktest.com/`
+- [ ] DNS results do not expose the local ISP resolver
 
-| Region | Latency | Date tested |
-|---|---|---|
-| VN | TBD | TBD |
-| CN | TBD | TBD |
-| UAE | TBD | TBD |
+## 6. Latency baseline
 
-## 7. Bypass Verification
+Record for reference:
+
+| Region | VLESS latency | HY2 latency | Date tested |
+|---|---:|---:|---|
+| VN |  |  |  |
+| CN |  |  |  |
+| UAE |  |  |  |
+
+## 7. Bypass verification
 
 **China:**
+
 - [ ] google.com loads
 - [ ] youtube.com plays video
-- [ ] 24h stability: check again after 24 hours — still connects
+- [ ] 24h stability check still connects
 
 **UAE:**
+
 - [ ] facebook.com loads
-- [ ] WhatsApp calls work (if UDP not required; WhatsApp chat only here)
-- [ ] 24h stability
+- [ ] WhatsApp chat works
+- [ ] 24h stability check still connects
 
-## 8. Command Idempotency
+## 8. Command idempotency
 
-- [ ] `sudo cfvpnctl install` twice in a row — second run completes without creating a new tunnel
-- [ ] `sudo cfvpnctl add-user alice` then again — second fails with "already exists"
-- [ ] `sudo cfvpnctl remove-user alice` then again — second fails with "not found"
+- [ ] `sudo cfvpnctl install --mode direct` twice in a row does not create duplicate runtime state
+- [ ] `sudo cfvpnctl upgrade --mode direct` twice in a row preserves users and remains healthy
+- [ ] `sudo cfvpnctl add-user alice` then again fails with `already exists`
+- [ ] `sudo cfvpnctl remove-user alice` then again fails with `not found`
 
-## 9. Failure Recovery
+## 9. Failure recovery
 
-- [ ] `sudo systemctl stop cfvpn-cloudflared` → wait 30s → probe `curl -I https://${DOMAIN}/vless` returns 5xx → `sudo systemctl start cfvpn-cloudflared` → probe OK within 1 min
-- [ ] `sudo systemctl stop cfvpn-xray` → wait 30s → probe returns 502 → `cfvpnctl healthcheck run` reports failure; timer-driven recovery restarts unit
-- [ ] `sudo systemctl reboot` the VPS → after boot, `systemctl is-active cfvpn-xray cfvpn-cloudflared` both `active` within 60s
+- [ ] `sudo systemctl stop cfvpn-cloudflared` makes admin control unavailable; restarting it restores admin connectivity
+- [ ] `sudo systemctl stop cfvpn-xray` makes VLESS fail; restarting it restores VLESS
+- [ ] `sudo systemctl stop cfvpn-hysteria` makes HY2 fail; restarting it restores HY2
+- [ ] `sudo systemctl reboot` returns all cfvpn services to `active` within 60 seconds
 
-## 10. User Management
+## 10. User management
 
-- [ ] `sudo cfvpnctl add-user alice` → alice receives working subscription via `sudo cfvpnctl gen-sub alice`
-- [ ] Add 4 more users (total 5) → all 5 work
-- [ ] `sudo cfvpnctl add-user sixth` → fails with "user cap reached"
-- [ ] `sudo cfvpnctl remove-user alice` → alice's old config no longer authenticates (verify by trying old URI → connection fails)
+- [ ] `sudo cfvpnctl add-user alice` creates VLESS and HY2 credentials
+- [ ] `sudo cfvpnctl gen-sub alice` prints both VLESS and HY2 subscription lines
+- [ ] Removing a user revokes both protocol credentials after service reload
 
-## 11. Domain Rotation
+## 11. Domain rotation
 
-- [ ] `sudo cfvpnctl rotate-domain vpn.b.com` → new tunnel + DNS created
-- [ ] New subscription (regenerated via `cfvpnctl gen-sub`) works on a client
-- [ ] Old subscription still works (24h grace)
-- [ ] `sudo cfvpnctl rotate-domain --cleanup <old-tunnel-uuid>` → old tunnel deleted, old subscription stops working
+- [ ] `sudo cfvpnctl rotate-domain <new-domain>` creates new VLESS and HY2 hosts
+- [ ] New subscription works on clients after refresh
+- [ ] Old DNS records are removed or cleaned according to rotation output
+- [ ] Panel node row reflects the new direct hosts, public IP, HY2 port, and status after sync/refresh
 
-## 12. UI Redesign Smoke
+## 12. Control panel smoke
 
-- [ ] Home command center renders status strip and node cards (desktop viewport).
-- [ ] Mobile viewport opens the Quick Users bottom sheet via the floating Users button.
-- [ ] Rotate flow: click a node Rotate button, confirm in dialog, and verify success toast appears.
-- [ ] Validate navigation workflows for Command Center, Users, and Events pages from the top nav.
+- [ ] Command Center renders node status, direct hosts, latency, and rotate action
+- [ ] Nodes page renders VLESS host, HY2 host:port, public IP, and mode
+- [ ] Users page can copy the public subscription URL and show the QR modal
+- [ ] User node sync reports added, failed, and total counts
+- [ ] Events page loads recent audit events
 
 CLI smoke equivalent:
-- [ ] `npm --prefix panel/web build`
-- [ ] `npm --prefix panel/web test -- --run`
-- [ ] `npm --prefix panel/web e2e`
+
+- [ ] `npm --prefix panel/worker run check`
+- [ ] `npm --prefix panel/worker test`
+- [ ] `npm --prefix panel/web run test:run`
+- [ ] `npm --prefix panel/web run build`

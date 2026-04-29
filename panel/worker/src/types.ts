@@ -10,6 +10,7 @@ export interface Env {
 export interface ApiError {
   error: string;
   detail?: string;
+  [key: string]: unknown;
 }
 
 export interface AgentError {
@@ -20,19 +21,26 @@ export interface AgentError {
 export interface AgentUserRecord {
   name: string;
   vless_uuid: string;
-  trojan_pw: string;
+  hy2_pw: string;
 }
 
 export interface AgentAddUserResponse {
   name: string;
   vless_uuid: string;
-  trojan_pw: string;
+  hy2_pw: string;
 }
 
 export interface AgentStatusResponse {
   xray: string;
   cloudflared: string;
+  hysteria: string;
   vpn_host: string;
+  zone?: string;
+  public_ip?: string;
+  mode?: string;
+  hy2_host?: string;
+  hy2_port?: number;
+  hy2_obfs_pw?: string;
   tunnel_uuid: string;
   last_rotate_at: number;
 }
@@ -44,13 +52,21 @@ export interface AgentHealthcheckResponse {
 }
 
 export interface AgentRotateResponse {
-  tunnel_uuid: string;
   vpn_host: string;
+  public_ip: string;
+  hy2_host: string;
+  hy2_port: number;
+  hy2_obfs_pw: string;
 }
 
 export interface AgentSyncResponse {
-  added: string[];
-  removed: string[];
+  ok: boolean;
+  vpn_host: string;
+  public_ip: string;
+  hy2_host: string;
+  hy2_port?: number;
+  hy2_obfs_pw?: string;
+  users: number;
 }
 
 export interface NodeRow {
@@ -63,6 +79,11 @@ export interface NodeRow {
   last_seen_at: number | null;
   latency_ms: number | null;
   created_at: number;
+  public_ip: string | null;
+  mode: string;
+  hy2_host: string | null;
+  hy2_port: number | null;
+  hy2_obfs_pw: string | null;
 }
 
 export interface UserRow {

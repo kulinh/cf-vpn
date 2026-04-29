@@ -31,8 +31,13 @@ func RunStatus(ctx context.Context, runner systemd.Runner, stdout io.Writer) err
 	if err != nil {
 		fmt.Fprintf(stdout, "DOMAIN: (unavailable: %v)\n", err)
 	} else {
+		adminTunnel := env["ADMIN_TUNNEL_UUID"]
+		if adminTunnel == "" {
+			adminTunnel = env["TUNNEL_UUID"]
+		}
 		fmt.Fprintf(stdout, "DOMAIN: %s\n", env["DOMAIN"])
-		fmt.Fprintf(stdout, "TUNNEL_UUID: %s\n", env["TUNNEL_UUID"])
+		fmt.Fprintf(stdout, "ADMIN_HOST: %s\n", env["ADMIN_HOST"])
+		fmt.Fprintf(stdout, "ADMIN_TUNNEL_UUID: %s\n", adminTunnel)
 	}
 
 	domain := ""

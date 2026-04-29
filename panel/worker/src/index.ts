@@ -13,9 +13,10 @@ import {
   nodeSync,
   patchNode
 } from "./routes/nodes";
-import { createUser, deleteUser, listUsers, userSubscription } from "./routes/users";
+import { createUser, deleteUser, listUsers, userSubscription, userUpgradeNodes } from "./routes/users";
 import { createZone, deleteZone, listZones, patchZone } from "./routes/zones";
 import { listEvents } from "./routes/events";
+import { publicSubscription } from "./routes/sub";
 
 function parseNodeID(pathname: string): string {
   const m = pathname.match(/^\/api\/nodes\/([^/]+)$/);
@@ -37,8 +38,18 @@ function parseUserSubscriptionID(pathname: string): string {
   return m ? decodeURIComponent(m[1]) : "";
 }
 
+function parseUserUpgradeNodesID(pathname: string): string {
+  const m = pathname.match(/^\/api\/users\/([^/]+)\/upgrade-nodes$/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
 function parseZoneName(pathname: string): string {
   const m = pathname.match(/^\/api\/zones\/([^/]+)$/);
+  return m ? decodeURIComponent(m[1]) : "";
+}
+
+function parseSubToken(pathname: string): string {
+  const m = pathname.match(/^\/sub\/([^/]+)$/);
   return m ? decodeURIComponent(m[1]) : "";
 }
 
@@ -46,6 +57,11 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
+
+    const subToken = parseSubToken(pathname);
+    if (subToken && request.method === "GET") {
+      return publicSubscription(env, subToken);
+    }
 
     if (!pathname.startsWith("/api/")) {
       return notFound(pathname);
@@ -88,7 +104,7 @@ export default {
 
     const nodeRotateID = parseNodeAction(pathname, "rotate");
     if (nodeRotateID && request.method === "POST") {
-      return nodeRotate(env, nodeRotateID, actor);
+      return nodeRotate(env, nodeRotateID, request, actor);
     }
 
     const nodeSyncID = parseNodeAction(pathname, "sync");
@@ -109,6 +125,11 @@ export default {
     const userSubscriptionID = parseUserSubscriptionID(pathname);
     if (userSubscriptionID && request.method === "GET") {
       return userSubscription(env, userSubscriptionID);
+    }
+
+    const userUpgradeNodesID = parseUserUpgradeNodesID(pathname);
+    if (userUpgradeNodesID && request.method === "POST") {
+      return userUpgradeNodes(env, userUpgradeNodesID, actor);
     }
 
     if (pathname === "/api/zones") {

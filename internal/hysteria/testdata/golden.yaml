@@ -1,0 +1,15 @@
+listen: ":34567"
+tls:
+  cert: "/etc/cfvpn/hysteria/cert.pem"
+  key: "/etc/cfvpn/hysteria/key.pem"
+obfs:
+  type: salamander
+  salamander:
+    password: "obfs-XXXX"
+bandwidth:
+  up: 100mbps
+  down: 1000mbps
+auth:
+  type: userpass
+  userpass:
+    "user1": "pw1"

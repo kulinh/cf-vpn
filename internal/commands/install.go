@@ -2,25 +2,47 @@ package commands
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io"
+	"io/fs"
+	"math/big"
+	"net"
 	"net/http"
+	"net/netip"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kulinh/cf-vpn/internal/binary"
+	"github.com/kulinh/cf-vpn/internal/cert"
+	"github.com/kulinh/cf-vpn/internal/hysteria"
+	"github.com/kulinh/cf-vpn/internal/netinfo"
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/subscription"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 	"github.com/kulinh/cf-vpn/internal/templates"
+	"github.com/kulinh/cf-vpn/internal/xray"
+	"github.com/kulinh/cf-vpn/internal/zones"
 )
+
+const adminHostZone = "rwl247.dev"
 
 // InstallInputs carries the user-provided inputs to install.
 type InstallInputs struct {
-	CFAPIToken  string
-	CFAccountID string
-	Domain      string
-	User1Name   string
+	CFAPIToken   string
+	CFAccountID  string
+	Domain       string
+	NodeID       string
+	User1Name    string
+	Mode         string
+	Hy2Host      string
+	Hy2Port      string
+	Hy2ObfsPW    string
+	Hy2PassUser1 string
 }
 
 // InstallCFClient is the Cloudflare dependency required by RunInstall.
@@ -28,11 +50,32 @@ type InstallCFClient interface {
 	GetZoneID(ctx context.Context, domain string) (string, error)
 	CreateTunnel(ctx context.Context, name string) (id string, creds []byte, err error)
 	UpsertCNAME(ctx context.Context, zoneID, name, target string) error
+	UpsertARecord(ctx context.Context, zoneID, name, ip string) error
+	DeleteARecordByName(ctx context.Context, zoneID, name string) error
+	DeleteTunnel(ctx context.Context, id string) error
+}
+
+type UFWRunner interface {
+	Allow(ctx context.Context, rule string) error
+}
+
+type PortProber interface {
+	Probe(ctx context.Context) error
+}
+
+type UDPProber interface {
+	ProbeUDP(ctx context.Context, port int) error
 }
 
 // InstallDeps are injected collaborators for RunInstall.
 type InstallDeps struct {
 	CF            InstallCFClient
+	IP            IPDetector
+	Cert          cert.Manager
+	UFW           UFWRunner
+	PortProber    PortProber
+	UDPProber     UDPProber
+	Random        io.Reader
 	BinaryRunner  binary.Runner
 	SystemdRunner systemd.Runner
 }
@@ -47,35 +90,663 @@ func resolveBinaryRunner(r binary.Runner) binary.Runner {
 	return r
 }
 
-// RunInstall performs the full install orchestration per section 6 of the
-// standalone design spec.
-func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout, stderr io.Writer) error {
-	_ = stderr
-	if in.CFAPIToken == "" || in.CFAccountID == "" || in.Domain == "" {
-		return fmt.Errorf("CF_API_TOKEN, CF_ACCOUNT_ID, and DOMAIN are required")
+func ensureRuntimeBinaries(ctx context.Context, runner binary.Runner) error {
+	if err := binary.EnsureXray(ctx, runner, binary.Exists("xray")); err != nil {
+		return fmt.Errorf("ensure xray: %w", err)
 	}
-	if in.User1Name == "" {
-		in.User1Name = "user1"
+	if err := binary.EnsureCloudflared(ctx, runner, binary.Exists("cloudflared")); err != nil {
+		return fmt.Errorf("ensure cloudflared: %w", err)
+	}
+	if err := binary.EnsureHysteria(ctx, runner, binary.Exists("hysteria")); err != nil {
+		return fmt.Errorf("ensure hysteria: %w", err)
+	}
+	if err := binary.EnsureLego(ctx, runner, binary.Exists("lego")); err != nil {
+		return fmt.Errorf("ensure lego: %w", err)
+	}
+	return nil
+}
+
+// hysteriaConfigPath is defined in rotate.go to share the constant with
+// rotateHy2Config. It is package-level so tests can redirect it.
+// systemdUnitDir is defined in healthcheck.go.
+
+type UpgradeInputs struct {
+	BackupRoot string
+	Mode       string
+	Now        func() time.Time
+}
+
+type UpgradeResult struct {
+	OldHost  string
+	NewHost  string
+	PublicIP string
+	Skipped  bool // true when HY2 was already present (idempotent no-op)
+}
+
+func RunUpgradeCheck(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout, stderr io.Writer) error {
+	env, err := loadUpgradeEnv()
+	if err != nil {
+		return err
+	}
+	if in.BackupRoot == "" {
+		in.BackupRoot = "/etc"
 	}
 	if deps.CF == nil {
 		return fmt.Errorf("cloudflare client is required")
 	}
+	if deps.IP == nil {
+		deps.IP = netinfo.NewDefault()
+	}
+	if zoneOfDomain(env["DOMAIN"]) == "" {
+		return fmt.Errorf("resolve zone for %s: invalid domain", env["DOMAIN"])
+	}
+	if _, err := deps.CF.GetZoneID(ctx, env["DOMAIN"]); err != nil {
+		return fmt.Errorf("get zone id for %s: %w", env["DOMAIN"], err)
+	}
+	ip, err := deps.IP.Detect(ctx)
+	if err != nil {
+		return fmt.Errorf("detect public ip: %w", err)
+	}
+	if err := validateIPv4(ip); err != nil {
+		return err
+	}
+	if _, err := usersFromCurrentXray(); err != nil {
+		return err
+	}
+	cfgDir := filepath.Dir(envFilePath)
+	if st, err := os.Stat(cfgDir); err != nil {
+		return fmt.Errorf("read config dir: %w", err)
+	} else if !st.IsDir() {
+		return fmt.Errorf("read config dir: %s is not a directory", cfgDir)
+	}
+	if err := os.MkdirAll(in.BackupRoot, 0o755); err != nil {
+		return fmt.Errorf("access backup root: %w", err)
+	}
+	if stdout != nil {
+		fmt.Fprintln(stdout, "pre-flight OK; ready to run cfvpnctl install --upgrade")
+	}
+	return nil
+}
+
+func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout, stderr io.Writer) (UpgradeResult, error) {
+	if in.Now == nil {
+		in.Now = time.Now
+	}
+	if in.BackupRoot == "" {
+		in.BackupRoot = "/etc"
+	}
+	if in.Mode == "" {
+		in.Mode = "direct"
+	}
+	if in.Mode != "direct" && in.Mode != "cloudflare" {
+		return UpgradeResult{}, fmt.Errorf("MODE must be direct or cloudflare")
+	}
+	if deps.CF == nil {
+		return UpgradeResult{}, fmt.Errorf("cloudflare client is required")
+	}
+	if deps.IP == nil {
+		deps.IP = netinfo.NewDefault()
+	}
+	if deps.Cert == nil {
+		deps.Cert = cert.NewDefault()
+	}
+	if deps.UFW == nil {
+		deps.UFW = NewExecUFW()
+	}
+	if deps.UDPProber == nil {
+		deps.UDPProber = UDPListenProber{}
+	}
+	rng := deps.Random
+	if rng == nil {
+		rng = rand.Reader
+	}
+	binRunner := resolveBinaryRunner(deps.BinaryRunner)
+	if err := ensureRuntimeBinaries(ctx, binRunner); err != nil {
+		return UpgradeResult{}, err
+	}
+
+	env, err := loadUpgradeEnv()
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+
+	if env["HY2_HOST"] != "" {
+		currentMode := env["MODE"]
+		if currentMode == "" {
+			currentMode = "direct"
+		}
+		if currentMode == in.Mode {
+			if stdout != nil {
+				fmt.Fprintln(stdout, "HY2 already configured; upgrade is a no-op")
+			}
+			return UpgradeResult{
+				OldHost:  env["DOMAIN"],
+				NewHost:  env["DOMAIN"],
+				PublicIP: env["PUBLIC_IP"],
+				Skipped:  true,
+			}, nil
+		}
+		return runUpgradeCore(ctx, in, deps, env, rng, stdout, stderr)
+	}
+
+	// --- HY2 backfill: generate and persist missing HY2 fields ---
+	zone := zoneOfDomain(env["DOMAIN"])
+	if zone == "" {
+		return UpgradeResult{}, fmt.Errorf("resolve zone for %s: invalid domain", env["DOMAIN"])
+	}
+
+	hy2Host, err := zones.GenerateHy2Host(rng, zone)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("generate hy2 host: %w", err)
+	}
+
+	hy2Port, err := pickHy2UDPPort(ctx, rng, deps.UDPProber)
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+
+	hy2ObfsPW, err := generatePasswordFrom(rng, 24)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("generate hy2 obfs password: %w", err)
+	}
+
+	// Migrate password: TROJAN_PASS_USER1 -> HY2_PASS_USER1
+	var hy2PassUser1 string
+	if oldPW := env["TROJAN_PASS_USER1"]; oldPW != "" {
+		hy2PassUser1 = oldPW
+	} else {
+		hy2PassUser1, err = generatePasswordFrom(rng, 24)
+		if err != nil {
+			return UpgradeResult{}, fmt.Errorf("generate hy2 user password: %w", err)
+		}
+	}
+
+	// Issue HY2 certificate and write hysteria config.
+	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
+	if err := deps.Cert.Issue(ctx, hy2Host, hy2CertPath, hy2KeyPath, env["CF_API_TOKEN"]); err != nil {
+		return UpgradeResult{}, fmt.Errorf("issue cert for %s: %w", hy2Host, err)
+	}
+
+	// Get existing user name for hysteria config.
+	userName := env["USER1_NAME"]
+	if userName == "" {
+		userName = "alice"
+	}
+
+	// Read existing users from xray config to populate hysteria config.
+	// ListUserNames returns email-formatted names (e.g. "alice@vpn"); match by
+	// the base name (strip the @vpn suffix) or by exact match on userName.
+	xrayCfg, _ := xray.Load(xrayConfigPath)
+	var hysteriaUsers []templates.HysteriaUser
+	baseUserName := strings.TrimSuffix(userName, "@vpn")
+	for _, name := range xray.ListUserNames(xrayCfg) {
+		nameBase := strings.TrimSuffix(name, "@vpn")
+		var pass string
+		if nameBase == baseUserName && hy2PassUser1 != "" {
+			pass = hy2PassUser1
+		} else {
+			pass, _ = generatePasswordFrom(rng, 24)
+		}
+		// Use base name (without @vpn) for hysteria config.
+		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: nameBase, Password: pass})
+	}
+	if len(hysteriaUsers) == 0 {
+		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: baseUserName, Password: hy2PassUser1})
+	}
+
+	hyInputs := templates.HysteriaInputs{
+		Listen:   ":" + strconv.Itoa(hy2Port),
+		TLSCert:  hy2CertPath,
+		TLSKey:   hy2KeyPath,
+		ObfsPW:   hy2ObfsPW,
+		UpMbps:   100,
+		DownMbps: 100,
+		Users:    hysteriaUsers,
+	}
+	hyBody, err := templates.RenderHysteriaConfig(hyInputs)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("render hysteria config: %w", err)
+	}
+	if err := writeAtomicFile(hysteriaConfigPath, hyBody, 0o600); err != nil {
+		return UpgradeResult{}, fmt.Errorf("write hysteria config: %w", err)
+	}
+
+	// Persist HY2 fields into env (but defer saving until runUpgradeCore).
+	env["HY2_HOST"] = hy2Host
+	env["HY2_PORT"] = strconv.Itoa(hy2Port)
+	env["HY2_OBFS_PW"] = hy2ObfsPW
+	env["HY2_PASS_USER1"] = hy2PassUser1
+	delete(env, "TROJAN_PASS_USER1")
+
+	return runUpgradeCore(ctx, in, deps, env, rng, stdout, stderr)
+}
+
+// runUpgradeCore is the inner upgrade path that assumes HY2 env fields are already present or being added atomically.
+func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env map[string]string, rng io.Reader, stdout, stderr io.Writer) (UpgradeResult, error) {
+	oldHost := env["DOMAIN"]
+	zone := zoneOfDomain(oldHost)
+	if zone == "" {
+		return UpgradeResult{}, fmt.Errorf("resolve zone for %s: invalid domain", oldHost)
+	}
+	adminHost := env["ADMIN_HOST"]
+	if env["NODE_ID"] != "" {
+		var err error
+		adminHost, err = generateAdminHost(env["NODE_ID"])
+		if err != nil {
+			return UpgradeResult{}, err
+		}
+	}
+	if adminHost == "" {
+		return UpgradeResult{}, fmt.Errorf("NODE_ID or ADMIN_HOST is required")
+	}
+	zoneID, err := deps.CF.GetZoneID(ctx, zone)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("get zone id for %s: %w", zone, err)
+	}
+	backupDir := filepath.Join(in.BackupRoot, fmt.Sprintf("cfvpn.backup-%d", in.Now().Unix()))
+	cfgDir := filepath.Dir(envFilePath)
+	if err := copyTree(cfgDir, backupDir); err != nil {
+		return UpgradeResult{}, fmt.Errorf("backup config: %w", err)
+	}
+	runner := resolveRunner(deps.SystemdRunner)
+	rb := &rollbacker{cf: deps.CF, runner: runner, backupDir: backupDir, configDir: cfgDir}
+	fail := func(e error) (UpgradeResult, error) { rb.run(ctx, stderr); return UpgradeResult{}, e }
+
+	newHost := oldHost
+	if in.Mode == "direct" {
+		newHost, err = zones.GenerateHost(rng, zone)
+		if err != nil {
+			return fail(fmt.Errorf("generate host: %w", err))
+		}
+	}
+	ip, err := deps.IP.Detect(ctx)
+	if err != nil {
+		return fail(fmt.Errorf("detect public ip: %w", err))
+	}
+	ip = strings.TrimSpace(ip)
+	if err := validateIPv4(ip); err != nil {
+		return fail(err)
+	}
+	users, err := usersFromCurrentXray()
+	if err != nil {
+		return fail(err)
+	}
+
+	var xrayRendered string
+	if in.Mode == "direct" {
+		certPath, keyPath := CertPathsForHost(newHost)
+		if err := deps.Cert.Issue(ctx, newHost, certPath, keyPath, env["CF_API_TOKEN"]); err != nil {
+			return fail(fmt.Errorf("issue cert for %s: %w", newHost, err))
+		}
+		xrayRendered, err = templates.RenderXrayDirect(templates.XrayDirectInputs{Users: users, Certs: []templates.XrayCert{{Zone: zone, CertFile: certPath, KeyFile: keyPath}}})
+		if err != nil {
+			return fail(fmt.Errorf("render xray direct config: %w", err))
+		}
+	} else {
+		xrayRendered, err = templates.RenderXrayCloudflare(users)
+		if err != nil {
+			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
+		}
+	}
+	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+		return fail(fmt.Errorf("write xray config: %w", err))
+	}
+
+	oldTunnel := env["ADMIN_TUNNEL_UUID"]
+	if oldTunnel == "" {
+		oldTunnel = env["TUNNEL_UUID"]
+	}
+	var cfRendered string
+	if in.Mode == "direct" {
+		cfRendered, err = templates.RenderCloudflaredAdmin(oldTunnel, adminHost)
+		if err != nil {
+			return fail(fmt.Errorf("render cloudflared admin config: %w", err))
+		}
+	} else {
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(oldTunnel, newHost, adminHost)
+		if err != nil {
+			return fail(fmt.Errorf("render cloudflared config: %w", err))
+		}
+	}
+	if err := writeAtomicFile(cloudflaredConfig, []byte(cfRendered), 0o600); err != nil {
+		return fail(fmt.Errorf("write cloudflared config: %w", err))
+	}
+
+	if in.Mode == "direct" {
+		if err := deps.UFW.Allow(ctx, "443/tcp"); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: ufw allow 443/tcp failed: %v\n", err)
+		}
+		if err := deps.CF.UpsertARecord(ctx, zoneID, newHost, ip); err != nil {
+			return fail(fmt.Errorf("upsert dns a record: %w", err))
+		}
+		rb.addCreatedA(zoneID, newHost)
+	} else if err := deps.CF.UpsertCNAME(ctx, zoneID, newHost, oldTunnel+".cfargotunnel.com"); err != nil {
+		return fail(fmt.Errorf("upsert vpn dns cname: %w", err))
+	}
+	if hy2Host := env["HY2_HOST"]; hy2Host != "" {
+		if err := deps.CF.UpsertARecord(ctx, zoneID, hy2Host, ip); err != nil {
+			return fail(fmt.Errorf("upsert hy2 dns a record: %w", err))
+		}
+		rb.addCreatedA(zoneID, hy2Host)
+	}
+	if err := systemd.Restart(ctx, runner, "cfvpn-xray.service"); err != nil {
+		return fail(fmt.Errorf("restart cfvpn-xray.service: %w", err))
+	}
+	rb.markServiceMutated("cfvpn-xray.service")
+	if err := systemd.Restart(ctx, runner, "cfvpn-cloudflared.service"); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: restart cfvpn-cloudflared.service failed: %v\n", err)
+	} else if err == nil {
+		rb.markServiceMutated("cfvpn-cloudflared.service")
+	}
+	if err := hysteria.ReloadService(ctx, runner); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: restart cfvpn-hysteria.service failed: %v\n", err)
+	} else if err == nil {
+		rb.markServiceMutated("cfvpn-hysteria.service")
+	}
+	env["DOMAIN"] = newHost
+	env["MODE"] = in.Mode
+	env["PUBLIC_IP"] = ip
+	env["ADMIN_HOST"] = adminHost
+	env["ADMIN_TUNNEL_UUID"] = oldTunnel
+	delete(env, "TUNNEL_UUID")
+	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
+		return fail(fmt.Errorf("save env: %w", err))
+	}
+	if err := regenerateSubscriptions(newHost); err != nil {
+		return fail(err)
+	}
+	adminZoneID, err := deps.CF.GetZoneID(ctx, adminHostZone)
+	if err != nil {
+		return fail(fmt.Errorf("get zone id for %s: %w", adminHostZone, err))
+	}
+	if err := deps.CF.UpsertCNAME(ctx, adminZoneID, adminHost, oldTunnel+".cfargotunnel.com"); err != nil {
+		return fail(fmt.Errorf("upsert admin dns cname: %w", err))
+	}
+
+	units := map[string]string{
+		"cfvpn-hysteria.service":   systemd.HysteriaService(hysteriaConfigPath),
+		"cfvpn-cert-renew.service": systemd.CertRenewService(),
+		"cfvpn-cert-renew.timer":   systemd.CertRenewTimer(),
+	}
+	for name, content := range units {
+		if err := writeAtomicFile(filepath.Join(systemdUnitDir, name), []byte(content), 0o644); err != nil {
+			return fail(fmt.Errorf("write %s: %w", name, err))
+		}
+	}
+	if err := systemd.DaemonReload(ctx, runner); err != nil {
+		return fail(fmt.Errorf("systemctl daemon-reload: %w", err))
+	}
+	for _, svc := range []string{"cfvpn-hysteria.service", "cfvpn-cert-renew.timer"} {
+		if err := systemd.EnableNow(ctx, runner, svc); err != nil {
+			return fail(fmt.Errorf("enable %s: %w", svc, err))
+		}
+	}
+
+	hy2Port := env["HY2_PORT"]
+	if hy2Port != "" {
+		if err := deps.UFW.Allow(ctx, hy2Port+"/udp"); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: ufw allow %s/udp failed: %v\n", hy2Port, err)
+		}
+	}
+
+	if stdout != nil {
+		fmt.Fprintf(stdout, "upgrade complete: %s -> %s mode %s (%s)\n", oldHost, newHost, in.Mode, ip)
+	}
+	return UpgradeResult{OldHost: oldHost, NewHost: newHost, PublicIP: ip}, nil
+}
+
+func loadUpgradeEnv() (map[string]string, error) {
+	env, err := state.Load(envFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("load env: %w", err)
+	}
+	for _, k := range []string{"CF_API_TOKEN", "CF_ACCOUNT_ID", "DOMAIN"} {
+		if env[k] == "" {
+			return nil, fmt.Errorf("CF_API_TOKEN, CF_ACCOUNT_ID, and DOMAIN are required")
+		}
+	}
+	if env["ADMIN_TUNNEL_UUID"] == "" && env["TUNNEL_UUID"] == "" {
+		return nil, fmt.Errorf("ADMIN_TUNNEL_UUID or TUNNEL_UUID is required")
+	}
+	return env, nil
+}
+
+func validateIPv4(ip string) error {
+	addr, err := netip.ParseAddr(strings.TrimSpace(ip))
+	if err != nil || !addr.Is4() {
+		return fmt.Errorf("detect public ip: expected IPv4 address, got %q", strings.TrimSpace(ip))
+	}
+	return nil
+}
+
+func usersFromCurrentXray() ([]templates.XrayUser, error) {
+	cfg, err := xray.Load(xrayConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("load xray config: %w", err)
+	}
+	var users []templates.XrayUser
+	for _, name := range xray.ListUserNames(cfg) {
+		uuid, ok := xray.GetVLESSClient(cfg, name)
+		if !ok {
+			return nil, fmt.Errorf("user %q has no vless client", name)
+		}
+		users = append(users, templates.XrayUser{Name: strings.TrimSuffix(name, "@vpn"), UUID: uuid})
+	}
+	return users, nil
+}
+
+type rollbacker struct {
+	cf                   InstallCFClient
+	runner               systemd.Runner
+	createdA             [][2]string
+	mutatedServices      []string
+	backupDir, configDir string
+}
+
+func (r *rollbacker) addCreatedA(zoneID, name string) {
+	r.createdA = append(r.createdA, [2]string{zoneID, name})
+}
+
+func (r *rollbacker) markServiceMutated(unit string) {
+	for _, existing := range r.mutatedServices {
+		if existing == unit {
+			return
+		}
+	}
+	r.mutatedServices = append(r.mutatedServices, unit)
+}
+
+func (r *rollbacker) run(ctx context.Context, stderr io.Writer) {
+	for _, a := range r.createdA {
+		if err := r.cf.DeleteARecordByName(ctx, a[0], a[1]); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: rollback delete A record %s failed: %v\n", a[1], err)
+		}
+	}
+	restored := false
+	if !safeRollbackConfigDir(r.configDir) {
+		if stderr != nil {
+			fmt.Fprintf(stderr, "warning: rollback skipped unsafe config dir %q\n", r.configDir)
+		}
+	} else {
+		if err := os.RemoveAll(r.configDir); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: rollback remove config failed: %v\n", err)
+		} else if err == nil {
+			if err := copyTree(r.backupDir, r.configDir); err != nil && stderr != nil {
+				fmt.Fprintf(stderr, "warning: rollback restore config failed: %v\n", err)
+			} else if err == nil {
+				restored = true
+			}
+		}
+	}
+	if restored && r.runner != nil {
+		for _, unit := range r.mutatedServices {
+			if err := systemd.Restart(ctx, r.runner, unit); err != nil && stderr != nil {
+				fmt.Fprintf(stderr, "warning: rollback restart %s failed: %v\n", unit, err)
+			}
+		}
+	}
+}
+
+func safeRollbackConfigDir(dir string) bool {
+	if dir == "" || dir == "." || dir == string(filepath.Separator) || dir == "/etc" {
+		return false
+	}
+	clean := filepath.Clean(dir)
+	if clean != dir || clean == "." || clean == string(filepath.Separator) || clean == "/etc" {
+		return false
+	}
+	if filepath.VolumeName(clean) == clean {
+		return false
+	}
+	return filepath.Base(clean) == "cfvpn"
+}
+
+func copyTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		to := filepath.Join(dst, rel)
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return os.MkdirAll(to, info.Mode().Perm())
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+			return err
+		}
+		return os.WriteFile(to, data, info.Mode().Perm())
+	})
+}
+
+// RunInstall performs the full install orchestration per section 6 of the
+// standalone design spec.
+func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout, stderr io.Writer) error {
+	if in.Mode != "direct" && in.Mode != "cloudflare" {
+		return fmt.Errorf("MODE must be direct or cloudflare")
+	}
+	if in.CFAPIToken == "" || in.CFAccountID == "" || in.User1Name == "" || in.NodeID == "" {
+		return fmt.Errorf("CF_API_TOKEN, CF_ACCOUNT_ID, NODE_ID, and USER1_NAME are required")
+	}
+	adminHost, err := generateAdminHost(in.NodeID)
+	if err != nil {
+		return err
+	}
+	if deps.CF == nil {
+		return fmt.Errorf("cloudflare client is required")
+	}
+	if deps.IP == nil {
+		deps.IP = netinfo.NewDefault()
+	}
+	if deps.Cert == nil {
+		deps.Cert = cert.NewDefault()
+	}
+	if deps.UFW == nil {
+		deps.UFW = NewExecUFW()
+	}
+	if deps.PortProber == nil {
+		deps.PortProber = TCP443Prober{}
+	}
+	if deps.UDPProber == nil {
+		deps.UDPProber = UDPListenProber{}
+	}
+	rng := deps.Random
+	if rng == nil {
+		rng = rand.Reader
+	}
+	if in.Mode == "direct" {
+		if err := deps.PortProber.Probe(ctx); err != nil {
+			return fmt.Errorf("port_443_busy: %w", err)
+		}
+	}
 
 	binRunner := resolveBinaryRunner(deps.BinaryRunner)
 	sysRunner := resolveRunner(deps.SystemdRunner)
+	domain := strings.TrimSpace(in.Domain)
+	zone := ""
+	zoneID := ""
+	if domain != "" {
+		zone = zoneOfDomain(domain)
+		if zone == "" {
+			return fmt.Errorf("resolve zone for %s: invalid domain", domain)
+		}
+	} else {
+		picked, err := zones.PickZone(rng, zones.DefaultPool, "")
+		if err != nil {
+			return fmt.Errorf("pick zone: %w", err)
+		}
+		generated, err := zones.GenerateHost(rng, picked.Name)
+		if err != nil {
+			return fmt.Errorf("generate host: %w", err)
+		}
+		if _, err := deps.CF.GetZoneID(ctx, picked.Name); err != nil {
+			return fmt.Errorf("zone %s not found via CF token; check internal/zones/pool.go matches the token's account: %w", picked.Name, err)
+		}
+		domain = generated
+		zone = picked.Name
+		zoneID = picked.CFZoneID
+	}
 
-	// 1) Ensure binaries.
+	hy2Host := in.Hy2Host
+	if hy2Host == "" {
+		hy2Host, err = zones.GenerateHy2Host(rng, zone)
+		if err != nil {
+			return fmt.Errorf("generate hy2 host: %w", err)
+		}
+	}
+	hy2Port := in.Hy2Port
+	if hy2Port == "" {
+		port, err := pickHy2UDPPort(ctx, rng, deps.UDPProber)
+		if err != nil {
+			return err
+		}
+		hy2Port = strconv.Itoa(port)
+	} else if _, err := validateHy2Port(hy2Port); err != nil {
+		return err
+	}
+	hy2ObfsPW := in.Hy2ObfsPW
+	if hy2ObfsPW == "" {
+		hy2ObfsPW, err = generatePasswordFrom(rng, 24)
+		if err != nil {
+			return fmt.Errorf("generate hy2 obfs password: %w", err)
+		}
+	}
+
 	fmt.Fprintln(stdout, "ensuring binaries...")
-	if err := binary.EnsureXray(ctx, binRunner, binary.Exists("xray")); err != nil {
-		return fmt.Errorf("ensure xray: %w", err)
+	if err := ensureRuntimeBinaries(ctx, binRunner); err != nil {
+		return err
 	}
-	if err := binary.EnsureCloudflared(ctx, binRunner, binary.Exists("cloudflared")); err != nil {
-		return fmt.Errorf("ensure cloudflared: %w", err)
+	fmt.Fprintln(stdout, "issuing certificates...")
+	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
+	if err := deps.Cert.Issue(ctx, hy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {
+		return fmt.Errorf("issue cert for %s: %w", hy2Host, err)
+	}
+	certPath, keyPath := XrayCertPaths()
+	if in.Mode == "direct" {
+		if err := deps.Cert.Issue(ctx, domain, certPath, keyPath, in.CFAPIToken); err != nil {
+			return fmt.Errorf("issue cert for %s: %w", domain, err)
+		}
 	}
 
-	// 2) Create tunnel and persist credentials.
-	fmt.Fprintln(stdout, "creating tunnel...")
-	tunnelID, creds, err := deps.CF.CreateTunnel(ctx, "cfvpn-"+in.Domain)
+	fmt.Fprintln(stdout, "creating admin tunnel...")
+	suffix, err := generatePassword(4)
+	if err != nil {
+		return fmt.Errorf("generate tunnel suffix: %w", err)
+	}
+	tunnelID, creds, err := deps.CF.CreateTunnel(ctx, "cfvpn-admin-"+strings.ToLower(suffix[:4]))
 	if err != nil {
 		return fmt.Errorf("create tunnel: %w", err)
 	}
@@ -88,103 +759,244 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		return fmt.Errorf("write tunnel credentials: %w", err)
 	}
 
-	// 3) Configure DNS.
-	fmt.Fprintln(stdout, "configuring dns...")
-	zoneID, err := deps.CF.GetZoneID(ctx, in.Domain)
+	fmt.Fprintln(stdout, "detecting public ip...")
+	ip, err := deps.IP.Detect(ctx)
 	if err != nil {
 		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("get zone id for %s: %w", in.Domain, err)
+		return fmt.Errorf("detect public ip: %w", err)
 	}
-	if err := deps.CF.UpsertCNAME(ctx, zoneID, in.Domain, tunnelID+".cfargotunnel.com"); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("upsert dns cname: %w", err)
+	ip = strings.TrimSpace(ip)
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || !addr.Is4() {
+		return fmt.Errorf("detect public ip: expected IPv4 address, got %q", ip)
 	}
 
-	// 4) Render configs and persist env.
-	fmt.Fprintln(stdout, "rendering configs...")
-	uuid, err := generateUUIDv4()
+	userUUID, err := generateUUIDv4()
 	if err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("generate uuid: %w", err)
 	}
-	pass, err := generatePassword(24)
-	if err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("generate password: %w", err)
+	hy2PassUser1 := in.Hy2PassUser1
+	if hy2PassUser1 == "" {
+		hy2PassUser1, err = generatePassword(24)
+		if err != nil {
+			return fmt.Errorf("generate hy2 user password: %w", err)
+		}
 	}
 
-	xrayRendered, err := templates.RenderXray(in.User1Name, uuid, pass)
+	fmt.Fprintln(stdout, "configuring dns...")
+	if zoneID == "" {
+		zone := zoneOfDomain(domain)
+		var err error
+		zoneID, err = deps.CF.GetZoneID(ctx, zone)
+		if err != nil {
+			printRotateHint(stdout, "cfvpnctl install", tunnelID)
+			return fmt.Errorf("get zone id for %s: %w", zone, err)
+		}
+	}
+	if in.Mode == "direct" {
+		if err := deps.CF.UpsertARecord(ctx, zoneID, domain, ip); err != nil {
+			return fmt.Errorf("upsert dns a record: %w", err)
+		}
+	} else {
+		if err := deps.CF.UpsertCNAME(ctx, zoneID, domain, tunnelID+".cfargotunnel.com"); err != nil {
+			return fmt.Errorf("upsert vpn dns cname: %w", err)
+		}
+	}
+	adminZoneID, err := deps.CF.GetZoneID(ctx, adminHostZone)
 	if err != nil {
 		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("render xray config: %w", err)
+		return fmt.Errorf("get zone id for %s: %w", adminHostZone, err)
+	}
+	if err := deps.CF.UpsertCNAME(ctx, adminZoneID, adminHost, tunnelID+".cfargotunnel.com"); err != nil {
+		return fmt.Errorf("upsert admin dns cname: %w", err)
+	}
+
+	fmt.Fprintln(stdout, "rendering configs...")
+	var xrayRendered string
+	if in.Mode == "direct" {
+		xrayRendered, err = templates.RenderXrayDirect(templates.XrayDirectInputs{Users: []templates.XrayUser{{Name: in.User1Name, UUID: userUUID}}, Certs: []templates.XrayCert{{Zone: zone, CertFile: certPath, KeyFile: keyPath}}})
+		if err != nil {
+			return fmt.Errorf("render xray direct config: %w", err)
+		}
+	} else {
+		xrayRendered, err = templates.RenderXray(in.User1Name, userUUID, hy2PassUser1)
+		if err != nil {
+			return fmt.Errorf("render xray cloudflare config: %w", err)
+		}
 	}
 	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("write xray config: %w", err)
 	}
-
-	cfRendered, err := templates.RenderCloudflared(tunnelID, in.Domain)
+	hyRendered, err := templates.RenderHysteriaConfig(templates.HysteriaInputs{Listen: ":" + hy2Port, TLSCert: hy2CertPath, TLSKey: hy2KeyPath, ObfsPW: hy2ObfsPW, UpMbps: 100, DownMbps: 100, Users: []templates.HysteriaUser{{Name: in.User1Name, Password: hy2PassUser1}}})
 	if err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("render cloudflared config: %w", err)
+		return fmt.Errorf("render hysteria config: %w", err)
+	}
+	if err := writeAtomicFile(hysteriaConfigPath, hyRendered, 0o600); err != nil {
+		return fmt.Errorf("write hysteria config: %w", err)
+	}
+	var cfRendered string
+	if in.Mode == "direct" {
+		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelID, adminHost)
+		if err != nil {
+			return fmt.Errorf("render cloudflared admin config: %w", err)
+		}
+	} else {
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelID, domain, adminHost)
+		if err != nil {
+			return fmt.Errorf("render cloudflared config: %w", err)
+		}
 	}
 	if err := writeAtomicFile(cloudflaredConfig, []byte(cfRendered), 0o600); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("write cloudflared config: %w", err)
 	}
 
-	if err := state.SaveAtomic(envFilePath, map[string]string{
-		"CF_API_TOKEN":      in.CFAPIToken,
-		"CF_ACCOUNT_ID":     in.CFAccountID,
-		"DOMAIN":            in.Domain,
-		"USER1_NAME":        in.User1Name,
-		"TUNNEL_UUID":       tunnelID,
-		"UUID_USER1":        uuid,
-		"TROJAN_PASS_USER1": pass,
-	}, 0o600); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
+	if err := state.SaveAtomic(envFilePath, map[string]string{"CF_API_TOKEN": in.CFAPIToken, "CF_ACCOUNT_ID": in.CFAccountID, "NODE_ID": in.NodeID, "DOMAIN": domain, "USER1_NAME": in.User1Name, "MODE": in.Mode, "PUBLIC_IP": ip, "ADMIN_HOST": adminHost, "ADMIN_TUNNEL_UUID": tunnelID, "UUID_USER1": userUUID, "HY2_HOST": hy2Host, "HY2_PORT": hy2Port, "HY2_OBFS_PW": hy2ObfsPW, "HY2_PASS_USER1": hy2PassUser1}, 0o600); err != nil {
 		return fmt.Errorf("save env: %w", err)
 	}
 
-	// 5) Install systemd units and enable them.
+	fmt.Fprintln(stdout, "configuring dns (hy2)...")
+	if err := deps.CF.UpsertARecord(ctx, zoneID, hy2Host, ip); err != nil {
+		return fmt.Errorf("upsert hy2 dns a record: %w", err)
+	}
+
 	fmt.Fprintln(stdout, "installing systemd units...")
-	xrayUnit := systemd.XrayService(xrayConfigPath)
-	cfUnit := systemd.CloudflaredService(cloudflaredConfig)
-
-	xrayUnitPath := filepath.Join(systemdUnitDir, "cfvpn-xray.service")
-	cfUnitPath := filepath.Join(systemdUnitDir, "cfvpn-cloudflared.service")
-	if err := writeAtomicFile(xrayUnitPath, []byte(xrayUnit), 0o644); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("write cfvpn-xray.service: %w", err)
+	units := map[string]string{
+		"cfvpn-xray.service":        systemd.XrayService(xrayConfigPath),
+		"cfvpn-cloudflared.service": systemd.CloudflaredService(cloudflaredConfig),
+		"cfvpn-agent.service":       systemd.AgentService(),
+		"cfvpn-hysteria.service":    systemd.HysteriaService(hysteriaConfigPath),
+		"cfvpn-cert-renew.service":  systemd.CertRenewService(),
+		"cfvpn-cert-renew.timer":    systemd.CertRenewTimer(),
 	}
-	if err := writeAtomicFile(cfUnitPath, []byte(cfUnit), 0o644); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("write cfvpn-cloudflared.service: %w", err)
+	for name, content := range units {
+		if err := writeAtomicFile(filepath.Join(systemdUnitDir, name), []byte(content), 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
+		}
 	}
-
 	if err := systemd.DaemonReload(ctx, sysRunner); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
-	if err := systemd.EnableNow(ctx, sysRunner, "cfvpn-xray.service"); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("enable cfvpn-xray.service: %w", err)
+	for _, svc := range []string{"cfvpn-xray.service", "cfvpn-cloudflared.service", "cfvpn-agent.service", "cfvpn-hysteria.service", "cfvpn-cert-renew.timer"} {
+		if err := systemd.EnableNow(ctx, sysRunner, svc); err != nil {
+			return fmt.Errorf("enable %s: %w", svc, err)
+		}
 	}
-	if err := systemd.EnableNow(ctx, sysRunner, "cfvpn-cloudflared.service"); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("enable cfvpn-cloudflared.service: %w", err)
+	if in.Mode == "direct" {
+		if err := deps.UFW.Allow(ctx, "443/tcp"); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: ufw allow 443/tcp failed: %v\n", err)
+		}
+	}
+	if err := deps.UFW.Allow(ctx, hy2Port+"/udp"); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: ufw allow %s/udp failed: %v\n", hy2Port, err)
 	}
 
-	// 6) Probe; non-fatal — the tunnel may still be coming up.
-	probeInstall(ctx, in.Domain, stdout)
-
-	// 7) Print user1 subscription.
-	sub := subscription.BuildSubscriptionB64(
-		subscription.BuildVLESSURI(in.User1Name, uuid, in.Domain),
-		subscription.BuildTrojanURI(in.User1Name, pass, in.Domain),
-	)
+	fmt.Fprintf(stdout, "install complete: %s mode %s -> %s, admin %s\n", in.Mode, domain, ip, adminHost)
+	sub := base64.StdEncoding.EncodeToString([]byte(subscription.BuildVLESSURI(in.User1Name, userUUID, domain)))
 	fmt.Fprintln(stdout, sub)
 	return nil
+}
+
+func generateAdminHost(nodeID string) (string, error) {
+	normalized := normalizeNodeIDForHost(nodeID)
+	if normalized == "" {
+		return "", fmt.Errorf("NODE_ID must be a DNS label")
+	}
+	return normalized + "." + adminHostZone, nil
+}
+
+func normalizeNodeIDForHost(nodeID string) string {
+	normalized := strings.ToLower(strings.TrimSpace(nodeID))
+	if len(normalized) == 0 || len(normalized) > 63 || normalized[0] == '-' || normalized[len(normalized)-1] == '-' {
+		return ""
+	}
+	for _, r := range normalized {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return ""
+	}
+	return normalized
+}
+
+func zoneOfDomain(domain string) string {
+	parts := strings.Split(strings.Trim(strings.ToLower(domain), "."), ".")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.Join(parts[len(parts)-2:], ".")
+}
+
+type execUFW struct{}
+
+func NewExecUFW() UFWRunner { return execUFW{} }
+func (execUFW) Allow(ctx context.Context, rule string) error {
+	return systemd.ExecRunner{}.Run(ctx, "ufw", "allow", rule)
+}
+
+type TCP443Prober struct{}
+
+func (TCP443Prober) Probe(ctx context.Context) error {
+	lc := net.ListenConfig{}
+	ln, err := lc.Listen(ctx, "tcp", ":443")
+	if err != nil {
+		return err
+	}
+	return ln.Close()
+}
+
+type UDPListenProber struct{}
+
+func (UDPListenProber) ProbeUDP(ctx context.Context, port int) error {
+	lc := net.ListenConfig{}
+	pc, err := lc.ListenPacket(ctx, "udp", ":"+strconv.Itoa(port))
+	if err != nil {
+		return err
+	}
+	return pc.Close()
+}
+
+func pickHy2UDPPort(ctx context.Context, rng io.Reader, prober UDPProber) (int, error) {
+	var lastErr error
+	for attempt := 0; attempt < 5; attempt++ {
+		port, err := randomPortInRange(rng, 20000, 60000)
+		if err != nil {
+			return 0, fmt.Errorf("generate hy2 port: %w", err)
+		}
+		if err := prober.ProbeUDP(ctx, port); err != nil {
+			lastErr = err
+			continue
+		}
+		return port, nil
+	}
+	return 0, fmt.Errorf("hy2_udp_port_busy: %w", lastErr)
+}
+
+func randomPortInRange(rng io.Reader, min, max int) (int, error) {
+	if min > max {
+		return 0, fmt.Errorf("invalid port range [%d,%d]", min, max)
+	}
+	span := big.NewInt(int64(max - min + 1))
+	n, err := rand.Int(rng, span)
+	if err != nil {
+		return 0, err
+	}
+	return min + int(n.Int64()), nil
+}
+
+func validateHy2Port(raw string) (int, error) {
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 20000 || port > 60000 {
+		return 0, fmt.Errorf("HY2_PORT must be in [20000,60000]")
+	}
+	return port, nil
+}
+
+func generatePasswordFrom(rng io.Reader, nBytes int) (string, error) {
+	b := make([]byte, nBytes)
+	if _, err := io.ReadFull(rng, b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // probeInstall attempts an HTTPS GET to https://<domain>/vless. The tunnel
@@ -214,4 +1026,16 @@ func printRotateHint(stdout io.Writer, resumeCmd, tunnelID string) {
 	fmt.Fprintf(stdout, "operation failed after tunnel provisioning\n")
 	fmt.Fprintf(stdout, "resume command: %s\n", resumeCmd)
 	fmt.Fprintf(stdout, "cleanup command: cfvpnctl rotate-domain --cleanup %s\n", tunnelID)
+}
+
+func CertPathsForHost(host string) (certPath, keyPath string) {
+	return filepath.Join("/etc/cfvpn/certs", host, "fullchain.pem"), filepath.Join("/etc/cfvpn/certs", host, "privkey.pem")
+}
+
+func HysteriaCertPaths() (certPath, keyPath string) {
+	return "/etc/cfvpn/hysteria/cert.pem", "/etc/cfvpn/hysteria/key.pem"
+}
+
+func XrayCertPaths() (certPath, keyPath string) {
+	return "/etc/cfvpn/xray/cert.pem", "/etc/cfvpn/xray/key.pem"
 }

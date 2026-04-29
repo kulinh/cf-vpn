@@ -1,3 +1,4 @@
+import { buildPublicSubscriptionUrl } from './subscriptionLinks'
 import type { Event, Node, UpgradeUserNodesResponse, User } from './types'
 
 type RotateNodeApiResponse = {
@@ -16,6 +17,11 @@ type NodeApiResponse = {
   last_seen_at: number | null
   latency_ms: number | null
   created_at: number
+  public_ip?: string | null
+  mode?: string | null
+  hy2_host?: string | null
+  hy2_port?: number | null
+  hy2_obfs_pw?: string | null
 }
 
 export type RotateNodeResponse = {
@@ -48,6 +54,11 @@ function parseNode(raw: NodeApiResponse): Node {
     lastSeenAt: raw.last_seen_at ?? null,
     zone: raw.zone,
     createdAt: raw.created_at,
+    publicIp: raw.public_ip ?? null,
+    mode: raw.mode ?? 'direct',
+    hy2Host: raw.hy2_host ?? null,
+    hy2Port: raw.hy2_port ?? null,
+    hy2ObfsPw: raw.hy2_obfs_pw ?? null,
   }
 }
 
@@ -106,15 +117,25 @@ export async function upgradeUserNodes(userId: string): Promise<UpgradeUserNodes
   return (await response.json()) as UpgradeUserNodesResponse
 }
 
-export async function getUserSubscription(userId: string): Promise<string> {
+export type UserSubscription = {
+  urls: string
+  token: string
+  subUrl: string
+}
+
+export async function getUserSubscription(userId: string): Promise<UserSubscription> {
   const response = await fetch(`/api/users/${encodeURIComponent(userId)}/subscription`)
 
   if (!response.ok) {
     throw new Error('subscription failed')
   }
 
-  const data = (await response.json()) as { subscription_url: string }
-  return data.subscription_url
+  const data = (await response.json()) as { subscription_url: string; sub_token: string }
+  return {
+    urls: data.subscription_url,
+    token: data.sub_token,
+    subUrl: buildPublicSubscriptionUrl(window.location.origin, data.sub_token),
+  }
 }
 
 export async function healthcheckNode(nodeId: string): Promise<{ latency_ms: number }> {
@@ -133,9 +154,12 @@ export async function healthcheckNode(nodeId: string): Promise<{ latency_ms: num
 export type NodeInput = {
   id: string
   label: string
-  admin_host: string
-  vpn_host: string
-  zone: string
+  admin_host?: string
+  adminHost?: string
+  vpn_host?: string
+  host?: string
+  zone?: string
+  hy2_host?: string
 }
 
 export async function createNode(input: NodeInput): Promise<void> {

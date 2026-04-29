@@ -1,0 +1,192 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../lib/agent-client", () => ({
+  callAgent: vi.fn()
+}));
+
+vi.mock("../lib/events", () => ({
+  logEvent: vi.fn().mockResolvedValue(undefined)
+}));
+
+import { callAgent } from "../lib/agent-client";
+import { logEvent } from "../lib/events";
+import { nodeHealthcheck, nodeRotate } from "./nodes";
+import type { Env, NodeRow } from "../types";
+
+type ZoneRow = { name: string; cf_zone_id: string; enabled?: number };
+
+function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
+  const node = { ...seed.node };
+  const zones = seed.zones.slice();
+
+  const makePrepared = (sql: string): D1PreparedStatement => {
+    const state: { args: unknown[] } = { args: [] };
+
+    const stmt: D1PreparedStatement = {
+      bind(...args: unknown[]) {
+        state.args = args;
+        return stmt;
+      },
+      async first() {
+        if (/FROM nodes WHERE id = \?/.test(sql)) {
+          return (state.args[0] === node.id ? node : null) as never;
+        }
+        if (/FROM zones WHERE name = \?/.test(sql)) {
+          const name = state.args[0] as string;
+          return (zones.find((z) => z.name === name) ?? null) as never;
+        }
+        return null as never;
+      },
+      async all() {
+        if (/FROM zones WHERE enabled = 1 AND name != \?/.test(sql)) {
+          const excluded = state.args[0] as string;
+          return { results: zones.filter((z) => z.enabled !== 0 && z.name !== excluded) } as never;
+        }
+        return { results: [] } as never;
+      },
+      async run() {
+        if (/UPDATE nodes SET vpn_host=\?, hy2_host=\?/.test(sql)) {
+          const [vpn_host, hy2_host, hy2_port, hy2_obfs_pw, public_ip, zone] = state.args as [string, string, number, string, string, string];
+          node.vpn_host = vpn_host;
+          node.hy2_host = hy2_host;
+          node.hy2_port = hy2_port;
+          node.hy2_obfs_pw = hy2_obfs_pw;
+          node.public_ip = public_ip;
+          node.zone = zone;
+        }
+        if (/UPDATE nodes SET last_seen_at=\?, latency_ms=\?/.test(sql)) {
+          const [, latency_ms] = state.args as [number, number, string];
+          node.latency_ms = latency_ms;
+        }
+        return { success: true } as never;
+      }
+    } as unknown as D1PreparedStatement;
+
+    return stmt;
+  };
+
+  const db = {
+    prepare(sql: string) {
+      return makePrepared(sql);
+    },
+    async batch() {
+      return [] as never;
+    },
+    async exec() {
+      return { count: 0, duration: 0 } as never;
+    },
+    withSession() {
+      return this as never;
+    },
+    async dump() {
+      return new ArrayBuffer(0);
+    }
+  } as unknown as D1Database;
+
+  return { DB: db };
+}
+
+describe("nodeRotate", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("uses the direct agent rotate payload contract", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      vpn_host: "cdn-new.example.net",
+      public_ip: "203.0.113.10",
+      hy2_host: "hy-new.example.net",
+      hy2_port: 23456,
+      hy2_obfs_pw: "obfs"
+    });
+
+    const env = makeEnv({
+      node: {
+        id: "sin-01",
+        label: "SIN 01",
+        admin_host: "sin-01.rwl247.dev",
+        vpn_host: "cdn-old.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "direct",
+        hy2_host: "hy-old.example.com",
+        hy2_port: 22333,
+        hy2_obfs_pw: "old-obfs"
+      },
+      zones: [
+        { name: "example.com", cf_zone_id: "old-zone", enabled: 1 },
+        { name: "example.net", cf_zone_id: "new-zone", enabled: 1 }
+      ]
+    });
+
+    const res = await nodeRotate(env, "sin-01", new Request("https://panel.test/api/nodes/sin-01/rotate", { method: "POST" }), "operator@example.com");
+
+    expect(res.status).toBe(200);
+    const init = vi.mocked(callAgent).mock.calls[0]?.[3] as RequestInit;
+    const body = JSON.parse(init.body as string) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      new_zone_id: "new-zone",
+      new_hy2_zone: "example.net",
+      old_host: "cdn-old.example.com",
+      old_zone_id: "old-zone",
+      old_hy2_host: "hy-old.example.com",
+      old_hy2_zone_id: "old-zone"
+    });
+    expect(body.new_host).toEqual(expect.stringMatching(/\.example\.net$/));
+    expect(body.new_hy2_host).toEqual(expect.stringMatching(/\.example\.net$/));
+    expect(body).not.toHaveProperty("new_vpn_host");
+    expect(body).not.toHaveProperty("new_vpn_zone_id");
+  });
+});
+
+describe("nodeHealthcheck", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("stores Worker-to-agent round-trip latency instead of agent loopback latency", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    vi.mocked(callAgent).mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 42));
+      return { ok: true, code: 200, latency_ms: 0 };
+    });
+
+    const env = makeEnv({
+      node: {
+        id: "sin-01",
+        label: "SIN 01",
+        admin_host: "sin-01.rwl247.dev",
+        vpn_host: "cdn-old.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "cloudflare",
+        hy2_host: "hy-old.example.com",
+        hy2_port: 22333,
+        hy2_obfs_pw: "old-obfs"
+      },
+      zones: []
+    });
+
+    const responsePromise = nodeHealthcheck(env, "sin-01", "operator@example.com");
+    await vi.advanceTimersByTimeAsync(42);
+    const res = await responsePromise;
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, code: 200, latency_ms: 42 });
+
+    vi.useRealTimers();
+  });
+});

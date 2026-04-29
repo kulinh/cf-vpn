@@ -26,6 +26,41 @@ func TestAddAndRemoveUser(t *testing.T) {
 	}
 }
 
+func TestAddUserSucceedsWithoutTrojanInbound(t *testing.T) {
+	cfg := Config{Inbounds: []Inbound{vlessInbound("user1", "uuid-1")}}
+
+	if err := AddUser(&cfg, "alice", "uuid-a", "pass-a"); err != nil {
+		t.Fatalf("AddUser without trojan inbound: %v", err)
+	}
+
+	if _, ok := GetVLESSClient(cfg, "alice"); !ok {
+		t.Fatalf("expected alice in vless clients")
+	}
+	if len(cfg.Inbounds) != 1 {
+		t.Fatalf("expected no trojan inbound to be added, got %d inbounds", len(cfg.Inbounds))
+	}
+}
+
+func TestRemoveUserSucceedsWithoutTrojanInbound(t *testing.T) {
+	cfg := Config{Inbounds: []Inbound{vlessInbound("user1", "uuid-1")}}
+
+	if err := RemoveUser(&cfg, "user1"); err != nil {
+		t.Fatalf("RemoveUser without trojan inbound: %v", err)
+	}
+
+	if _, ok := GetVLESSClient(cfg, "user1"); ok {
+		t.Fatalf("expected user1 removed from vless clients")
+	}
+}
+
+func vlessInbound(name, uuid string) Inbound {
+	settings, _ := json.Marshal(vlessSettings{
+		Clients:    []vlessClient{{ID: uuid, Email: name}},
+		Decryption: "none",
+	})
+	return Inbound{Protocol: "vless", Settings: settings}
+}
+
 func TestValidateUserName(t *testing.T) {
 	good := []string{"alice", "user_1", "user-1", "A", "a123456789012345678901234567890AB"[:32]}
 	for _, n := range good {
@@ -109,8 +144,8 @@ func TestTemplateRoundTripPreservesFields(t *testing.T) {
 	if err := json.Unmarshal(obj["inbounds"], &inbounds); err != nil {
 		t.Fatalf("unmarshal inbounds: %v", err)
 	}
-	if len(inbounds) != 2 {
-		t.Fatalf("expected 2 inbounds, got %d", len(inbounds))
+	if len(inbounds) != 1 {
+		t.Fatalf("expected 1 inbound, got %d", len(inbounds))
 	}
 	for i, in := range inbounds {
 		for _, key := range []string{"tag", "listen", "port", "protocol", "settings", "streamSettings"} {

@@ -83,16 +83,9 @@ func writeSubscriptionFile(name, content string) error {
 }
 
 // buildSubscriptionFor constructs the base64 subscription string for a user.
-func buildSubscriptionFor(name, uuid, password, domain string) string {
+func buildSubscriptionFor(name, uuid, domain string) string {
 	v := subscription.BuildVLESSURI(name, uuid, domain)
-	t := subscription.BuildTrojanURI(name, password, domain)
-	return subscription.BuildSubscriptionB64(v, t)
-}
-
-func buildDecodedSubscriptionFor(name, uuid, password, domain string) string {
-	v := subscription.BuildVLESSURI(name, uuid, domain)
-	t := subscription.BuildTrojanURI(name, password, domain)
-	return v + "\n" + t
+	return subscription.BuildSubscriptionB64(v)
 }
 
 func resolveRunner(r systemd.Runner) systemd.Runner {
@@ -141,7 +134,7 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 		return fmt.Errorf("save xray config: %w", err)
 	}
 
-	sub := buildSubscriptionFor(in.Name, uuid, password, in.Domain)
+	sub := buildSubscriptionFor(in.Name, uuid, in.Domain)
 	if err := writeSubscriptionFile(in.Name, sub+"\n"); err != nil {
 		return fmt.Errorf("write subscription: %w", err)
 	}
@@ -200,11 +193,7 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 		if !ok {
 			return fmt.Errorf("user %q not found", in.Name)
 		}
-		password, ok := xray.GetTrojanClient(cfg, in.Name)
-		if !ok {
-			return fmt.Errorf("user %q has no trojan client", in.Name)
-		}
-		fmt.Fprintln(stdout, buildDecodedSubscriptionFor(in.Name, uuid, password, in.Domain))
+		fmt.Fprintln(stdout, subscription.BuildVLESSURI(in.Name, uuid, in.Domain))
 		return nil
 	}
 
@@ -214,15 +203,11 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 		if !ok {
 			continue
 		}
-		password, ok := xray.GetTrojanClient(cfg, name)
-		if !ok {
-			continue
-		}
 		if i > 0 {
 			fmt.Fprintln(stdout)
 		}
 		fmt.Fprintf(stdout, "# %s\n", name)
-		fmt.Fprintln(stdout, buildDecodedSubscriptionFor(name, uuid, password, in.Domain))
+		fmt.Fprintln(stdout, subscription.BuildVLESSURI(name, uuid, in.Domain))
 	}
 	return nil
 }

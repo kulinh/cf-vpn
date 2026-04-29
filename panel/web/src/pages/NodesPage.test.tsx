@@ -33,8 +33,9 @@ test('renders nodes from API with all action buttons', async () => {
   expect(screen.getByText('active')).toBeInTheDocument()
   expect(screen.getByText('degraded')).toBeInTheDocument()
   expect(screen.getByText('down')).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /check all/i })).toBeInTheDocument()
   expect(screen.getAllByRole('button', { name: /rotate/i })).toHaveLength(3)
-  expect(screen.getAllByRole('button', { name: /check/i })).toHaveLength(3)
+  expect(screen.getAllByRole('button', { name: /^check$/i })).toHaveLength(3)
   expect(screen.getAllByRole('button', { name: /edit/i })).toHaveLength(3)
   expect(screen.getAllByRole('button', { name: /delete/i })).toHaveLength(3)
 })
@@ -78,10 +79,28 @@ test('shows error toast when rotate fails', async () => {
   render(<NodesPage />)
   await screen.findByText('Singapore')
 
-  render(<NodesPage />)
-
   fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
   fireEvent.click(screen.getByRole('button', { name: /confirm rotate/i }))
 
   expect(await screen.findByText(/rotate failed/i)).toBeInTheDocument()
+})
+
+test('checks all node latency and marks failed nodes unreachable', async () => {
+  vi.spyOn(api, 'listNodes').mockResolvedValue([
+    makeNode({ id: 'sg', label: 'Singapore', latencyMs: null }),
+    makeNode({ id: 'jp', label: 'Tokyo', latencyMs: null }),
+  ])
+  vi.spyOn(api, 'healthcheckNode').mockImplementation(async (nodeId) => {
+    if (nodeId === 'sg') return { latency_ms: 91 }
+    throw new Error('boom')
+  })
+
+  render(<NodesPage />)
+  await screen.findByText('Singapore')
+
+  fireEvent.click(screen.getByRole('button', { name: /check all/i }))
+
+  expect(await screen.findByText(/checked 2 nodes, 1 alive/i)).toBeInTheDocument()
+  expect(screen.getByText('91 ms')).toBeInTheDocument()
+  expect(screen.getByText('unreachable')).toBeInTheDocument()
 })

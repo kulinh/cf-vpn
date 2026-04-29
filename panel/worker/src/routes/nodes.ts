@@ -6,18 +6,36 @@ import type {
   Env,
   NodeRow
 } from "../types";
-import { all, one, nowTs, randomHex } from "../lib/db";
+import { all, one, nowTs } from "../lib/db";
 import { callAgent } from "../lib/agent-client";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
-import { validateAdminHost } from "../lib/hosts";
+import { generateAdminHost, validateAdminHost } from "../lib/hosts";
+import { generateHost, generateHy2Host, pickZone } from "../lib/host-gen";
 
+type AgentCaller = typeof callAgent;
+type TestAgentCaller = (...args: Parameters<AgentCaller>) => Promise<unknown>;
+let callAgentForTests: TestAgentCaller | null = null;
+
+export function setCallAgentForTests(fn: TestAgentCaller | null): void {
+  callAgentForTests = fn;
+}
+
+async function agentCall<T>(...args: Parameters<AgentCaller>): Promise<T> {
+  if (callAgentForTests) {
+    return await callAgentForTests(...args) as T;
+  }
+  return callAgent<T>(...args);
+}
 interface NodeInput {
   id: string;
   label: string;
-  admin_host: string;
-  vpn_host: string;
-  zone: string;
+  adminHost?: string;
+  admin_host?: string;
+  host?: string;
+  vpn_host?: string;
+  hy2_host?: string;
+  zone?: string;
 }
 
 interface ZoneRow {
@@ -27,7 +45,7 @@ interface ZoneRow {
 
 export async function listNodes(env: Env): Promise<Response> {
   const rows = await all<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes ORDER BY id")
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes ORDER BY id")
   );
   return json(rows);
 }
@@ -42,29 +60,63 @@ export async function createNode(env: Env, request: Request): Promise<Response> 
   if (!isRecord(body)) {
     return error(400, { error: "invalid_node", detail: "request body must be a JSON object" });
   }
-  if (!body.id || !body.label || !body.admin_host || !body.vpn_host || !body.zone) {
-    return error(400, { error: "invalid_node", detail: "id,label,admin_host,vpn_host,zone are required" });
+  if (!body.id || !body.label) {
+    return error(400, { error: "invalid_node", detail: "id,label are required" });
   }
-  const hostError = validateAdminHost(body.admin_host, env);
-  if (hostError) {
-    return error(400, { error: "invalid_admin_host", detail: hostError });
+  const adminHost = generateAdminHost(body.id);
+  if (!adminHost) {
+    return error(400, { error: "invalid_node_id", detail: "id must be a DNS label" });
+  }
+  const hostOverride = body.host ?? body.vpn_host;
+  const hasHost = typeof hostOverride === "string" && hostOverride.length > 0;
+  const hasZone = typeof body.zone === "string" && body.zone.length > 0;
+  if (hasHost !== hasZone) {
+    return error(400, { error: "invalid_request", detail: "host and zone must be provided together" });
   }
   const exists = await one<{ id: string }>(env.DB.prepare("SELECT id FROM nodes WHERE id = ?").bind(body.id));
   if (exists) {
     return error(409, { error: "node_exists", detail: body.id });
   }
+  const adminHostExists = await one<{ id: string }>(env.DB.prepare("SELECT id FROM nodes WHERE admin_host = ?").bind(adminHost));
+  if (adminHostExists) {
+    return error(409, { error: "admin_host_exists", detail: adminHost });
+  }
+
+  let vpnHost: string;
+  let zoneName: string;
+  const rng: (n: number) => Uint8Array = (n) => crypto.getRandomValues(new Uint8Array(n));
+  if (hasHost && hasZone) {
+    const overrideZone = await one<ZoneRow>(
+      env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE name = ?").bind(body.zone)
+    );
+    if (!overrideZone) {
+      return error(400, { error: "zone_not_found", detail: body.zone! });
+    }
+    vpnHost = hostOverride!;
+    zoneName = overrideZone.name;
+  } else {
+    const candidates = await all<ZoneRow>(env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE enabled = 1"));
+    if (candidates.length === 0) {
+      return error(400, { error: "no_enabled_zones" });
+    }
+    const picked = pickZone(rng, candidates, "");
+    vpnHost = generateHost(rng, picked.name);
+    zoneName = picked.name;
+  }
+  const hy2HostOverride = typeof body.hy2_host === "string" ? body.hy2_host.trim() : "";
+  const hy2Host = hy2HostOverride.length > 0 ? hy2HostOverride : generateHy2Host(rng, zoneName);
 
   await env.DB.prepare(
-    "INSERT INTO nodes (id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at) VALUES (?, ?, ?, ?, ?, 'active', NULL, NULL, ?)"
+    "INSERT INTO nodes (id,label,admin_host,vpn_host,hy2_host,zone,mode,status,last_seen_at,latency_ms,created_at) VALUES (?, ?, ?, ?, ?, ?, 'direct', 'active', NULL, NULL, ?)"
   )
-    .bind(body.id, body.label, body.admin_host, body.vpn_host, body.zone, nowTs())
+    .bind(body.id, body.label, adminHost, vpnHost, hy2Host, zoneName, nowTs())
     .run();
-  return json({ ok: true }, 201);
+  return json({ ok: true, id: body.id, label: body.label, admin_host: adminHost, vpn_host: vpnHost, hy2_host: hy2Host, zone: zoneName }, 201);
 }
 
 export async function getNode(env: Env, id: string): Promise<Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -74,7 +126,7 @@ export async function getNode(env: Env, id: string): Promise<Response> {
 
 export async function patchNode(env: Env, id: string, request: Request): Promise<Response> {
   const existing = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
   );
   if (!existing) {
     return error(404, { error: "node_not_found", detail: id });
@@ -117,12 +169,60 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
 
 async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
   }
   return row;
+}
+
+interface Hy2Runtime {
+  hy2_host: string | null;
+  hy2_port: number | null;
+  hy2_obfs_pw: string | null;
+}
+
+function mergeHy2Runtime(
+  row: NodeRow,
+  agent: { hy2_host?: string; hy2_port?: number; hy2_obfs_pw?: string }
+): Hy2Runtime {
+  return {
+    hy2_host: typeof agent.hy2_host === "string" && agent.hy2_host ? agent.hy2_host : row.hy2_host,
+    hy2_port: typeof agent.hy2_port === "number" ? agent.hy2_port : row.hy2_port,
+    hy2_obfs_pw: typeof agent.hy2_obfs_pw === "string" && agent.hy2_obfs_pw ? agent.hy2_obfs_pw : row.hy2_obfs_pw,
+  };
+}
+
+async function persistNodeRuntime(
+  env: Env,
+  id: string,
+  fields: {
+    vpn_host: string;
+    zone: string;
+    public_ip: string | null;
+    mode: string | null;
+    hy2: Hy2Runtime;
+    last_seen_at: number;
+    latency_ms: number | null;
+  }
+): Promise<void> {
+  await env.DB.prepare(
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=? WHERE id=?"
+  )
+    .bind(
+      fields.vpn_host,
+      fields.zone,
+      fields.public_ip,
+      fields.mode,
+      fields.hy2.hy2_host,
+      fields.hy2.hy2_port,
+      fields.hy2.hy2_obfs_pw,
+      fields.last_seen_at,
+      fields.latency_ms,
+      id
+    )
+    .run();
 }
 
 export async function nodeStatus(env: Env, id: string, actor: string): Promise<Response> {
@@ -131,11 +231,20 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     return row;
   }
   try {
-    const status = await callAgent<AgentStatusResponse>(env, row.admin_host, "/admin/v1/status", { method: "GET" }, 5000);
-    const now = nowTs();
-    await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
-      .bind(now, row.latency_ms ?? null, id)
-      .run();
+    const status = await agentCall<AgentStatusResponse>(env, row.admin_host, "/admin/v1/status", { method: "GET" }, 5000);
+    const mode = typeof status.mode === "string" && status.mode.length > 0 ? status.mode : row.mode ?? null;
+    const syncRuntimeFields = mode === "direct";
+    const hasStatusHost = typeof status.vpn_host === "string" && status.vpn_host.length > 0;
+    const hasStatusZone = typeof status.zone === "string" && status.zone.length > 0;
+    await persistNodeRuntime(env, id, {
+      vpn_host: syncRuntimeFields && hasStatusHost && hasStatusZone ? status.vpn_host : row.vpn_host,
+      zone: syncRuntimeFields && hasStatusHost && hasStatusZone ? status.zone! : row.zone,
+      public_ip: syncRuntimeFields && status.public_ip ? status.public_ip : row.public_ip,
+      mode,
+      hy2: mergeHy2Runtime(row, status),
+      last_seen_at: nowTs(),
+      latency_ms: row.latency_ms ?? null,
+    });
     return json(status);
   } catch (e) {
     await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(id).run();
@@ -150,45 +259,106 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
     return row;
   }
   try {
+    const startedAt = Date.now();
     const out = await callAgent<AgentHealthcheckResponse>(env, row.admin_host, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+    const latencyMs = Math.max(1, Date.now() - startedAt);
     const now = nowTs();
+    const measured = { ...out, latency_ms: latencyMs };
     await env.DB.prepare("UPDATE nodes SET last_seen_at=?, latency_ms=? WHERE id=?")
-      .bind(now, out.latency_ms, id)
+      .bind(now, latencyMs, id)
       .run();
-    await logEvent(env, actor, "node.healthcheck", "ok", out, id);
-    return json(out);
+    await logEvent(env, actor, "node.healthcheck", "ok", measured, id);
+    return json(measured);
   } catch (e) {
     await logEvent(env, actor, "node.healthcheck", "error", { message: String(e) }, id);
     return error(502, { error: "healthcheck_failed", detail: String(e) });
   }
 }
 
-export async function nodeRotate(env: Env, id: string, actor: string): Promise<Response> {
+export async function nodeRotate(env: Env, id: string, request: Request, actor: string): Promise<Response> {
   const row = await getNodeOr404(env, id);
   if (row instanceof Response) {
     return row;
   }
-  const zone = await one<ZoneRow>(
-    env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE enabled = 1 ORDER BY RANDOM() LIMIT 1")
-  );
-  if (!zone) {
-    return error(400, { error: "no_enabled_zones", detail: "add enabled zone in settings" });
+
+  // Optional override body — empty body is fine (auto path).
+  let override: { host?: string; zone?: string } = {};
+  const raw = await request.text();
+  if (raw.trim() !== "") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (isRecord(parsed)) {
+        override = parsed as { host?: string; zone?: string };
+      }
+    } catch {
+      override = {};
+    }
+  }
+  const hasHost = typeof override.host === "string" && override.host.length > 0;
+  const hasZone = typeof override.zone === "string" && override.zone.length > 0;
+  if (hasHost !== hasZone) {
+    return error(400, { error: "invalid_request", detail: "host and zone must be provided together" });
   }
 
-  const newHost = `${randomHex(4)}.${zone.name}`;
+  let newHost: string;
+  let newZoneID: string;
+  let newZoneName: string;
+  const rng: (n: number) => Uint8Array = (n) => crypto.getRandomValues(new Uint8Array(n));
+
+  if (hasHost && hasZone) {
+    const overrideZone = await one<ZoneRow>(
+      env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE name = ?").bind(override.zone)
+    );
+    if (!overrideZone) {
+      return error(400, { error: "zone_not_found", detail: override.zone! });
+    }
+    newHost = override.host!;
+    newZoneID = overrideZone.cf_zone_id;
+    newZoneName = overrideZone.name;
+  } else {
+    const candidates = await all<ZoneRow>(
+      env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE enabled = 1 AND name != ?").bind(row.zone)
+    );
+    if (candidates.length === 0) {
+      return error(400, {
+        error: "rotate_requires_multi_zone",
+        detail: "enable at least one other zone before rotating"
+      });
+    }
+    const picked = pickZone(rng, candidates, "");
+    newHost = generateHost(rng, picked.name);
+    newZoneID = picked.cf_zone_id;
+    newZoneName = picked.name;
+  }
+
+  const newHy2Host = generateHy2Host(rng, newZoneName);
+  const oldZone = await one<ZoneRow>(env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE name = ?").bind(row.zone));
   try {
-    const out = await callAgent<AgentRotateResponse>(
+    const out = await agentCall<AgentRotateResponse>(
       env,
       row.admin_host,
       "/admin/v1/rotate-domain",
-      { method: "POST", body: JSON.stringify({ new_host: newHost, new_zone_id: zone.cf_zone_id }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          new_host: newHost,
+          new_zone_id: newZoneID,
+          old_host: row.vpn_host,
+          old_zone_id: oldZone?.cf_zone_id ?? "",
+          new_hy2_host: newHy2Host,
+          new_hy2_zone: newZoneName,
+          new_hy2_zone_id: newZoneID,
+          old_hy2_host: row.hy2_host ?? "",
+          old_hy2_zone_id: oldZone?.cf_zone_id ?? ""
+        })
+      },
       120000
     );
-    await env.DB.prepare("UPDATE nodes SET vpn_host=?, zone=?, status='active', last_seen_at=? WHERE id=?")
-      .bind(out.vpn_host, zone.name, nowTs(), id)
+    await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=?")
+      .bind(out.vpn_host, out.hy2_host, out.hy2_port, out.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
       .run();
-    await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host, tunnel_uuid: out.tunnel_uuid }, id);
-    return json({ new_host: out.vpn_host, tunnel_uuid: out.tunnel_uuid });
+    await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host, public_ip: out.public_ip }, id);
+    return json({ vpn_host: out.vpn_host, hy2_host: out.hy2_host, public_ip: out.public_ip });
   } catch (e) {
     await logEvent(env, actor, "node.rotate", "error", { message: String(e) }, id);
     return error(502, { error: "rotate_failed", detail: String(e) });
@@ -200,9 +370,9 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
   if (row instanceof Response) {
     return row;
   }
-  let body: { users: Array<{ name: string; vless_uuid: string; trojan_pw: string }> };
+  let body: { users: Array<{ name: string; vless_uuid: string; hy2_pw: string }> };
   try {
-    body = await readJSON<{ users: Array<{ name: string; vless_uuid: string; trojan_pw: string }> }>(request);
+    body = await readJSON<{ users: Array<{ name: string; vless_uuid: string; hy2_pw: string }> }>(request);
   } catch {
     return error(400, { error: "invalid_json", detail: "request body must be valid JSON" });
   }
@@ -213,20 +383,31 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
     return error(400, { error: "invalid_sync_payload", detail: "users must be an array" });
   }
   const invalid = body.users.some(
-    (u) => !u || typeof u.name !== "string" || typeof u.vless_uuid !== "string" || typeof u.trojan_pw !== "string"
+    (u) => !u || typeof u.name !== "string" || typeof u.vless_uuid !== "string" || typeof u.hy2_pw !== "string"
   );
   if (invalid) {
-    return error(400, { error: "invalid_sync_payload", detail: "each user must include name, vless_uuid, trojan_pw" });
+    return error(400, { error: "invalid_sync_payload", detail: "each user must include name, vless_uuid, hy2_pw" });
   }
 
   try {
-    const out = await callAgent<AgentSyncResponse>(
+    const out = await agentCall<AgentSyncResponse>(
       env,
       row.admin_host,
       "/admin/v1/sync",
       { method: "POST", body: JSON.stringify({ users: body.users }) },
       120000
     );
+    const syncRuntimeFields = row.mode === "direct";
+    const hasSyncHost = typeof out.vpn_host === "string" && out.vpn_host.length > 0;
+    await persistNodeRuntime(env, id, {
+      vpn_host: syncRuntimeFields && hasSyncHost ? out.vpn_host : row.vpn_host,
+      zone: syncRuntimeFields && hasSyncHost ? out.vpn_host.split(".").slice(-2).join(".") : row.zone,
+      public_ip: syncRuntimeFields ? out.public_ip || row.public_ip : row.public_ip,
+      mode: row.mode ?? null,
+      hy2: mergeHy2Runtime(row, out),
+      last_seen_at: nowTs(),
+      latency_ms: row.latency_ms ?? null,
+    });
     await logEvent(env, actor, "node.sync", "ok", out, id);
     return json(out);
   } catch (e) {

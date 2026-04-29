@@ -15,7 +15,28 @@ func TestCloudflaredUnitContainsExpectedExecStart(t *testing.T) {
 
 func TestXrayUnitContainsExpectedExecStart(t *testing.T) {
 	u := XrayService("/etc/cfvpn/xray/config.json")
-	want := "xray -config /etc/cfvpn/xray/config.json"
+	want := "xray run -c /etc/cfvpn/xray/config.json"
+	if !strings.Contains(u, want) {
+		t.Fatalf("missing ExecStart: %s", want)
+	}
+}
+
+func TestXrayUnitHasDirectModeServiceSettings(t *testing.T) {
+	u := XrayService("/etc/cfvpn/xray/config.json")
+	for _, want := range []string{
+		"ExecReload=/bin/kill -HUP $MAINPID",
+		"User=root",
+		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
+	} {
+		if !strings.Contains(u, want) {
+			t.Fatalf("missing %s in unit: %s", want, u)
+		}
+	}
+}
+
+func TestAgentServiceContainsExpectedExecStart(t *testing.T) {
+	u := AgentService()
+	want := "ExecStart=/usr/local/bin/cfvpn-agent"
 	if !strings.Contains(u, want) {
 		t.Fatalf("missing ExecStart: %s", want)
 	}
@@ -36,5 +57,27 @@ func TestHealthcheckTimerHasUnitTarget(t *testing.T) {
 	}
 	if !strings.Contains(u, "OnUnitActiveSec=5m") {
 		t.Fatalf("missing OnUnitActiveSec=5m in timer: %s", u)
+	}
+}
+
+func TestHysteriaServiceContainsExpectedExecStart(t *testing.T) {
+	u := HysteriaService("/etc/cfvpn/hysteria/config.yaml")
+	want := "ExecStart=/usr/local/bin/hysteria server -c /etc/cfvpn/hysteria/config.yaml"
+	if !strings.Contains(u, want) {
+		t.Fatalf("missing ExecStart: %s", want)
+	}
+}
+
+func TestHysteriaServiceRestartsOnFailure(t *testing.T) {
+	u := HysteriaService("/etc/cfvpn/hysteria/config.yaml")
+	if !strings.Contains(u, "Restart=on-failure") {
+		t.Fatalf("missing Restart=on-failure in unit: %s", u)
+	}
+}
+
+func TestCertRenewTimerRunsDaily(t *testing.T) {
+	u := CertRenewTimer()
+	if !strings.Contains(u, "OnCalendar=daily") {
+		t.Fatalf("missing OnCalendar=daily in timer: %s", u)
 	}
 }

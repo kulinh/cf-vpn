@@ -175,8 +175,11 @@ func TestRunGenSubSingleUser(t *testing.T) {
 		t.Fatal("expected subscription output")
 	}
 	got := out.String()
-	if !strings.Contains(got, "vless://") || !strings.Contains(got, "trojan://") {
-		t.Fatalf("expected decoded vless+trojan output, got %q", got)
+	if !strings.Contains(got, "vless://") {
+		t.Fatalf("expected decoded vless output, got %q", got)
+	}
+	if strings.Contains(got, "trojan://") {
+		t.Fatalf("expected no trojan:// in output, got %q", got)
 	}
 }
 
@@ -203,8 +206,11 @@ func TestRunGenSubAllUsers(t *testing.T) {
 	if !strings.Contains(got, "# user1") || !strings.Contains(got, "# alice") {
 		t.Fatalf("expected named decoded sections, got %q", got)
 	}
-	if !strings.Contains(got, "vless://") || !strings.Contains(got, "trojan://") {
-		t.Fatalf("expected decoded vless+trojan output, got %q", got)
+	if !strings.Contains(got, "vless://") {
+		t.Fatalf("expected decoded vless output, got %q", got)
+	}
+	if strings.Contains(got, "trojan://") {
+		t.Fatalf("expected no trojan:// in output, got %q", got)
 	}
 }
 

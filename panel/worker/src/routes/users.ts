@@ -1,5 +1,5 @@
 import type { AgentAddUserResponse, Env } from "../types";
-import { all, nowTs, one, userIDFromName } from "../lib/db";
+import { all, nowTs, one, randomHex, userIDFromName } from "../lib/db";
 import { callAgent } from "../lib/agent-client";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
@@ -63,7 +63,10 @@ export async function createUser(env: Env, request: Request, actor: string): Pro
     return error(409, { error: "user_exists", detail: id });
   }
 
-  await env.DB.prepare("INSERT INTO users (id,name,created_at) VALUES (?, ?, ?)").bind(id, name, nowTs()).run();
+  const subToken = randomHex(16);
+  await env.DB.prepare("INSERT INTO users (id,name,created_at,sub_token) VALUES (?, ?, ?, ?)")
+    .bind(id, name, nowTs(), subToken)
+    .run();
   const nodes = await all<NodeMini>(
     env.DB.prepare("SELECT id,admin_host FROM nodes WHERE status='active' ORDER BY id")
   );
@@ -78,9 +81,9 @@ export async function createUser(env: Env, request: Request, actor: string): Pro
         120000
       );
       await env.DB.prepare(
-        "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,trojan_pw,created_at) VALUES (?, ?, ?, ?, ?)"
+        "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
       )
-        .bind(id, node.id, creds.vless_uuid, creds.trojan_pw, nowTs())
+        .bind(id, node.id, creds.vless_uuid, creds.hy2_pw, nowTs())
         .run();
       return { node_id: node.id, ok: true };
     })
@@ -135,17 +138,109 @@ export async function deleteUser(env: Env, id: string, actor: string): Promise<R
   return json({ ok: !failed, results: summary }, failed ? 207 : 200);
 }
 
-export async function userSubscription(env: Env, id: string): Promise<Response> {
+export async function userUpgradeNodes(env: Env, id: string, actor: string): Promise<Response> {
   const user = await one<{ id: string; name: string }>(env.DB.prepare("SELECT id,name FROM users WHERE id=?").bind(id));
   if (!user) {
     return error(404, { error: "user_not_found", detail: id });
   }
 
-  const rows = await all<{ vless_uuid: string; trojan_pw: string; vpn_host: string; node_id: string }>(
+  const activeNodes = await all<NodeMini>(
+    env.DB.prepare("SELECT id,admin_host FROM nodes WHERE status='active' ORDER BY id")
+  );
+  const existingRows = await all<{ node_id: string }>(
+    env.DB.prepare("SELECT node_id FROM user_nodes WHERE user_id=?").bind(id)
+  );
+  const existingNodeIds = new Set(existingRows.map((r) => r.node_id));
+
+  const nodesToAdd = activeNodes.filter((n) => !existingNodeIds.has(n.id));
+  const addedNodes: string[] = [];
+
+  const results = await Promise.allSettled(
+    nodesToAdd.map(async (node) => {
+      const creds = await callAgent<AgentAddUserResponse>(
+        env,
+        node.admin_host,
+        "/admin/v1/users",
+        { method: "POST", body: JSON.stringify({ name: id }) },
+        120000
+      );
+      await env.DB.prepare(
+        "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
+      )
+        .bind(id, node.id, creds.vless_uuid, creds.hy2_pw, nowTs())
+        .run();
+      addedNodes.push(node.id);
+      return { node_id: node.id, ok: true };
+    })
+  );
+
+  const summary = results.map((r, i) => {
+    if (r.status === "fulfilled") return r.value;
+    return { node_id: nodesToAdd[i]?.id, ok: false, error: String(r.reason) };
+  });
+  const failedCount = summary.filter((x) => !x.ok).length;
+  const failed = failedCount > 0;
+  const succeeded = summary.some((x) => x.ok);
+  const outcome = failed ? (succeeded ? "partial" : "error") : "ok";
+
+  await logEvent(
+    env,
+    actor,
+    "user.upgrade_nodes",
+    outcome,
+    { user_id: id, added: addedNodes, results: summary },
+    undefined,
+    id
+  );
+
+  if (failed && !succeeded) {
+    return error(502, {
+      error: "upgrade_failed",
+      detail: "failed to add user to all missing nodes",
+      userId: id,
+      addedNodes,
+      addedCount: addedNodes.length,
+      failedCount,
+      alreadyPresentCount: existingNodeIds.size,
+      totalNodesAfterUpgrade: existingNodeIds.size + addedNodes.length,
+      results: summary
+    });
+  }
+
+  const status = failed ? 207 : 200;
+  return json(
+    {
+      userId: id,
+      addedNodes,
+      addedCount: addedNodes.length,
+      failedCount,
+      alreadyPresentCount: existingNodeIds.size,
+      totalNodesAfterUpgrade: existingNodeIds.size + addedNodes.length,
+      results: summary
+    },
+    status
+  );
+}
+
+export async function userSubscription(env: Env, id: string): Promise<Response> {
+  const user = await one<{ id: string; name: string; sub_token: string | null }>(
+    env.DB.prepare("SELECT id,name,sub_token FROM users WHERE id=?").bind(id)
+  );
+  if (!user) {
+    return error(404, { error: "user_not_found", detail: id });
+  }
+
+  let subToken = user.sub_token;
+  if (!subToken) {
+    subToken = randomHex(16);
+    await env.DB.prepare("UPDATE users SET sub_token=? WHERE id=?").bind(subToken, id).run();
+  }
+
+  const rows = await all<{ vless_uuid: string; hy2_pw: string; vpn_host: string; node_id: string; hy2_host: string | null; hy2_port: number | null; hy2_obfs_pw: string | null }>(
     env.DB.prepare(
-      "SELECT un.vless_uuid, un.trojan_pw, n.vpn_host, un.node_id FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
+      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, un.node_id, n.hy2_host, n.hy2_port, n.hy2_obfs_pw FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
     ).bind(id)
   );
   const out = buildSubscriptionForClient(user.id, rows);
-  return json(out);
+  return json({ ...out, sub_token: subToken });
 }

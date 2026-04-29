@@ -1,0 +1,4 @@
+ALTER TABLE user_nodes RENAME COLUMN trojan_pw TO hy2_pw;
+ALTER TABLE nodes ADD COLUMN hy2_host TEXT;
+ALTER TABLE nodes ADD COLUMN hy2_port INTEGER;
+ALTER TABLE nodes ADD COLUMN hy2_obfs_pw TEXT;

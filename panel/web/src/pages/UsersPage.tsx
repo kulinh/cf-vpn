@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { QrModal } from '../components/users/QrModal'
 import { Toast } from '../components/ui/Toast'
 import { getUserSubscription, listNodes, listUsers, upgradeUserNodes } from '../lib/api'
+import { buildShadowrocketDeepLink, buildV2rayNgDeepLink } from '../lib/subscriptionLinks'
+import type { UserSubscription } from '../lib/api'
 import type { Node, User } from '../lib/types'
 
 function normalizeNodeId(id: string): string {
@@ -11,6 +13,7 @@ function normalizeNodeId(id: string): string {
 export function UsersPage() {
   const [users, setUsers] = useState<User[]>([])
   const [nodes, setNodes] = useState<Node[]>([])
+  const [subs, setSubs] = useState<Record<string, UserSubscription>>({})
   const [syncingUserId, setSyncingUserId] = useState<string | null>(null)
   const [qrUserId, setQrUserId] = useState<string | null>(null)
   const [qrSubscriptionUrl, setQrSubscriptionUrl] = useState<string | null>(null)
@@ -20,11 +23,23 @@ export function UsersPage() {
   useEffect(() => {
     let mounted = true
 
-    void Promise.all([listUsers(), listNodes()]).then(([userItems, nodeItems]) => {
-      if (mounted) {
-        setUsers(userItems)
-        setNodes(nodeItems)
-      }
+    void Promise.all([listUsers(), listNodes()]).then(async ([userItems, nodeItems]) => {
+      if (!mounted) return
+      setUsers(userItems)
+      setNodes(nodeItems)
+
+      const entries = await Promise.all(
+        userItems.map(async (user) => {
+          try {
+            const sub = await getUserSubscription(user.id)
+            return [user.id, sub] as const
+          } catch {
+            return null
+          }
+        }),
+      )
+      if (!mounted) return
+      setSubs(Object.fromEntries(entries.filter((e): e is NonNullable<typeof e> => e !== null)))
     })
 
     return () => {
@@ -59,7 +74,11 @@ export function UsersPage() {
         ),
       )
 
-      setToastMessage(result.addedCount > 0 ? `Added ${result.addedCount} nodes` : 'User is already up-to-date')
+      setToastMessage(
+        result.addedCount > 0 || (result.failedCount ?? 0) > 0
+          ? `Added ${result.addedCount} nodes, failed ${result.failedCount ?? 0}, total ${result.totalNodesAfterUpgrade}`
+          : 'User is already up-to-date',
+      )
     } catch {
       setToastMessage('Sync failed')
     } finally {
@@ -69,8 +88,8 @@ export function UsersPage() {
 
   const handleCopySubscription = async (userId: string) => {
     try {
-      const url = await getUserSubscription(userId)
-      await navigator.clipboard.writeText(url)
+      const sub = subs[userId] ?? (await getUserSubscription(userId))
+      await navigator.clipboard.writeText(sub.subUrl)
       setToastMessage('Subscription URL copied!')
     } catch {
       setToastMessage('Failed to copy subscription')
@@ -80,10 +99,15 @@ export function UsersPage() {
   const handleShowQr = async (userId: string) => {
     setQrUserId(userId)
     setQrSubscriptionUrl(null)
+    const cached = subs[userId]
+    if (cached) {
+      setQrSubscriptionUrl(cached.subUrl)
+      return
+    }
     setQrLoading(true)
     try {
-      const url = await getUserSubscription(userId)
-      setQrSubscriptionUrl(url)
+      const sub = await getUserSubscription(userId)
+      setQrSubscriptionUrl(sub.subUrl)
     } catch {
       setToastMessage('Failed to load subscription')
       setQrUserId(null)
@@ -91,6 +115,23 @@ export function UsersPage() {
       setQrLoading(false)
     }
   }
+
+  const handleShadowrocket = (userId: string) => {
+    const sub = subs[userId]
+    if (!sub) {
+      setToastMessage('Subscription not ready yet, please retry')
+      return
+    }
+    window.location.href = buildShadowrocketDeepLink(sub.subUrl)
+  }
+
+  const handleV2rayNG = (userId: string) => {
+    const sub = subs[userId]
+    if (!sub) {
+      setToastMessage('Subscription not ready yet, please retry')
+      return
+    }
+    window.location.href = buildV2rayNgDeepLink(sub.subUrl, 'RWL8899')  }
 
   return (
     <>
@@ -122,6 +163,20 @@ export function UsersPage() {
                   className="rounded bg-slate-700 px-3 py-1 text-xs text-slate-100"
                 >
                   Show QR
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleShadowrocket(user.id)}
+                  className="rounded bg-sky-600 px-3 py-1 text-xs text-white"
+                >
+                  Shadowrocket
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleV2rayNG(user.id)}
+                  className="rounded bg-emerald-600 px-3 py-1 text-xs text-white"
+                >
+                  V2rayNG
                 </button>
                 <button
                   type="button"
