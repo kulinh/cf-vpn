@@ -188,7 +188,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "xray_user_invalid", fmt.Sprintf("%s missing vless uuid", name))
 			return
 		}
-		users = append(users, commands.ExistingUser{Name: strings.TrimSuffix(name, "@vpn"), UUID: uuid})
+		users = append(users, commands.ExistingUser{Name: baseVPNName(name), UUID: uuid})
 	}
 	result, err := commands.RunRotateDirect(
 		r.Context(),
@@ -367,7 +367,7 @@ func currentSyncUsers() ([]syncUser, error) {
 		if !ok {
 			return nil, fmt.Errorf("%s missing vless uuid", xrayName)
 		}
-		name := strings.TrimSuffix(xrayName, "@vpn")
+		name := baseVPNName(xrayName)
 		hy2PW := hy2ByName[name]
 		if hy2PW == "" {
 			var err error
@@ -381,10 +381,14 @@ func currentSyncUsers() ([]syncUser, error) {
 	return records, nil
 }
 
+func baseVPNName(name string) string {
+	return strings.TrimSuffix(strings.TrimSpace(name), "@vpn")
+}
+
 func toTemplateUsers(users []commands.ExistingUser) []templates.XrayUser {
 	out := make([]templates.XrayUser, 0, len(users))
 	for _, u := range users {
-		out = append(out, templates.XrayUser{Name: u.Name, UUID: u.UUID})
+		out = append(out, templates.XrayUser{Name: baseVPNName(u.Name), UUID: u.UUID})
 	}
 	return out
 }
