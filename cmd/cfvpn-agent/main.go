@@ -361,13 +361,16 @@ func currentSyncUsers() ([]syncUser, error) {
 	for _, u := range hy2Users {
 		hy2ByName[u.Name] = u.Password
 	}
-	records := make([]syncUser, 0, len(xray.ListUserNames(cfg)))
+	byName := make(map[string]syncUser, len(xray.ListUserNames(cfg)))
 	for _, xrayName := range xray.ListUserNames(cfg) {
 		uuid, ok := xray.GetVLESSClient(cfg, xrayName)
 		if !ok {
 			return nil, fmt.Errorf("%s missing vless uuid", xrayName)
 		}
 		name := baseVPNName(xrayName)
+		if _, exists := byName[name]; exists {
+			continue
+		}
 		hy2PW := hy2ByName[name]
 		if hy2PW == "" {
 			var err error
@@ -376,13 +379,21 @@ func currentSyncUsers() ([]syncUser, error) {
 				return nil, fmt.Errorf("generate hy2 password for %s: %w", name, err)
 			}
 		}
-		records = append(records, syncUser{Name: name, VlessUUID: uuid, Hy2PW: hy2PW})
+		byName[name] = syncUser{Name: name, VlessUUID: uuid, Hy2PW: hy2PW}
+	}
+	records := make([]syncUser, 0, len(byName))
+	for _, record := range byName {
+		records = append(records, record)
 	}
 	return records, nil
 }
 
 func baseVPNName(name string) string {
-	return strings.TrimSuffix(strings.TrimSpace(name), "@vpn")
+	name = strings.TrimSpace(name)
+	for strings.HasSuffix(name, "@vpn") {
+		name = strings.TrimSuffix(name, "@vpn")
+	}
+	return name
 }
 
 func toTemplateUsers(users []commands.ExistingUser) []templates.XrayUser {
