@@ -51,3 +51,79 @@ func TestEnsureCloudflaredInvokesInstallerWhenMissing(t *testing.T) {
 		t.Fatalf("expected 1 install call, got %d", len(fake.Calls))
 	}
 }
+
+func TestEnsureHysteriaSkipsInstallerButDisablesDefaultUnit(t *testing.T) {
+	fake := &FakeRunner{}
+	if err := EnsureHysteria(context.Background(), fake, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("expected 1 disable call when binary already installed, got %d: %#v", len(fake.Calls), fake.Calls)
+	}
+	if !contains(fake.Calls[0][2], "disable --now hysteria-server.service") {
+		t.Fatalf("expected disable command, got %#v", fake.Calls[0])
+	}
+}
+
+func TestEnsureHysteriaInvokesInstallerThenDisablesDefaultUnit(t *testing.T) {
+	fake := &FakeRunner{}
+	if err := EnsureHysteria(context.Background(), fake, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Calls) != 2 {
+		t.Fatalf("expected 2 calls (install + disable), got %d: %#v", len(fake.Calls), fake.Calls)
+	}
+	wantInstall := []string{"bash", "-c", "curl -fsSL https://get.hy2.sh | bash"}
+	for i := range wantInstall {
+		if fake.Calls[0][i] != wantInstall[i] {
+			t.Fatalf("expected install call %#v, got %#v", wantInstall, fake.Calls[0])
+		}
+	}
+	if !contains(fake.Calls[1][2], "disable --now hysteria-server.service") {
+		t.Fatalf("expected disable command, got %#v", fake.Calls[1])
+	}
+}
+
+func TestEnsureLegoSkipsWhenAlreadyPresent(t *testing.T) {
+	fake := &FakeRunner{}
+	if err := EnsureLego(context.Background(), fake, true); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Calls) != 0 {
+		t.Fatalf("expected no install calls")
+	}
+}
+
+func TestEnsureLegoInstallsLatestLinuxAMD64Asset(t *testing.T) {
+	fake := &FakeRunner{}
+	if err := EnsureLego(context.Background(), fake, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Calls) != 1 {
+		t.Fatalf("expected 1 install call, got %d", len(fake.Calls))
+	}
+	got := fake.Calls[0]
+	if got[0] != "bash" || got[1] != "-lc" {
+		t.Fatalf("expected bash -lc install call, got %#v", got)
+	}
+	cmd := got[2]
+	for _, want := range []string{
+		"https://api.github.com/repos/go-acme/lego/releases/latest",
+		"linux_amd64.tar.gz",
+		"/usr/local/bin/lego",
+		"chmod 755 /usr/local/bin/lego",
+	} {
+		if !contains(cmd, want) {
+			t.Fatalf("expected install command to contain %q, got %q", want, cmd)
+		}
+	}
+}
+
+func contains(s, substr string) bool {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return substr == ""
+}

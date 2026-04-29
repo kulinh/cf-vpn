@@ -34,6 +34,10 @@ func Restart(ctx context.Context, r Runner, unit string) error {
 	return r.Run(ctx, "systemctl", "restart", unit)
 }
 
+func Reload(ctx context.Context, r Runner, unit string) error {
+	return r.Run(ctx, "systemctl", "reload", unit)
+}
+
 func IsActive(ctx context.Context, r Runner, unit string) error {
 	return r.Run(ctx, "systemctl", "is-active", "--quiet", unit)
 }

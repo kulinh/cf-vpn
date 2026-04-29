@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 )
 
@@ -130,4 +131,59 @@ func (c Client) UpsertCNAME(ctx context.Context, zoneID, name, target string) er
 func (c Client) DeleteTunnel(ctx context.Context, tunnelID string) error {
 	_, err := c.do(ctx, http.MethodDelete, "/accounts/"+c.AccountID+"/cfd_tunnel/"+tunnelID, nil)
 	return err
+}
+
+func (c Client) UpsertARecord(ctx context.Context, zoneID, name, ip string) error {
+	q := url.Values{
+		"type":      {"A"},
+		"name.exact": {name},
+		"match":     {"all"},
+	}.Encode()
+	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
+	if err != nil {
+		return err
+	}
+	var records []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(get.Result, &records); err != nil {
+		return err
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"type":    "A",
+		"name":    name,
+		"content": ip,
+		"proxied": false,
+		"ttl":     60,
+	})
+	if len(records) > 0 {
+		_, err = c.do(ctx, http.MethodPut, "/zones/"+zoneID+"/dns_records/"+records[0].ID, payload)
+		return err
+	}
+	_, err = c.do(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records", payload)
+	return err
+}
+
+func (c Client) DeleteARecordByName(ctx context.Context, zoneID, name string) error {
+	q := url.Values{
+		"type":      {"A"},
+		"name.exact": {name},
+		"match":     {"all"},
+	}.Encode()
+	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
+	if err != nil {
+		return err
+	}
+	var records []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(get.Result, &records); err != nil {
+		return err
+	}
+	for _, r := range records {
+		if _, err := c.do(ctx, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+r.ID, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }

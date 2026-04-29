@@ -5,13 +5,48 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
+	"github.com/kulinh/cf-vpn/internal/cert"
 	"github.com/kulinh/cf-vpn/internal/cloudflare"
 	"github.com/kulinh/cf-vpn/internal/commands"
+	"github.com/kulinh/cf-vpn/internal/netinfo"
 	"github.com/kulinh/cf-vpn/internal/paths"
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 )
+
+var envFile = paths.EnvFile
+
+var runInstall = commands.RunInstall
+var runUpgrade = commands.RunUpgrade
+var runUpgradeCheck = commands.RunUpgradeCheck
+var buildInstallDeps = func(env map[string]string) commands.InstallDeps {
+	deps := commands.InstallDeps{IP: netinfo.NewDefault(), Cert: cert.NewDefault(), UFW: commands.NewExecUFW(), BinaryRunner: systemd.ExecRunner{}, SystemdRunner: systemd.ExecRunner{}}
+	deps.CF = &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient}
+	return deps
+}
+
+// installFromEnv reads MODE, HY2_HOST, HY2_PORT (and optionally HY2_OBFS_PW, HY2_PASS_USER1)
+// from env and populates InstallInputs. MODE is required; missing MODE returns "mode_required".
+func installFromEnv(env map[string]string) (commands.InstallInputs, error) {
+	mode := env["MODE"]
+	if mode == "" {
+		return commands.InstallInputs{}, fmt.Errorf("mode_required")
+	}
+	return commands.InstallInputs{
+		CFAPIToken:   env["CF_API_TOKEN"],
+		CFAccountID:  env["CF_ACCOUNT_ID"],
+		Domain:       env["DOMAIN"],
+		NodeID:       env["NODE_ID"],
+		User1Name:    env["USER1_NAME"],
+		Mode:         mode,
+		Hy2Host:      env["HY2_HOST"],
+		Hy2Port:      env["HY2_PORT"],
+		Hy2ObfsPW:    env["HY2_OBFS_PW"],
+		Hy2PassUser1: env["HY2_PASS_USER1"],
+	}, nil
+}
 
 func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if len(args) == 0 {
@@ -24,28 +59,66 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "usage: cfvpnctl <command>")
 		return 0
 	case "install":
-		env, err := state.Load(paths.EnvFile)
+		upgrade, check := false, false
+		for _, arg := range args[1:] {
+			switch arg {
+			case "--upgrade":
+				upgrade = true
+			case "--check":
+				check = true
+			default:
+				fmt.Fprintln(stderr, "usage: cfvpnctl install [--upgrade [--check]]")
+				return 2
+			}
+		}
+		if check && !upgrade {
+			fmt.Fprintln(stderr, "usage: cfvpnctl install [--upgrade [--check]]")
+			return 2
+		}
+		if upgrade {
+			env, err := state.Load(envFile)
+			if err != nil {
+				fmt.Fprintf(stderr, "cannot read env file %s: %v\n", envFile, err)
+				return 1
+			}
+			deps := buildInstallDeps(env)
+			if check {
+				if err := runUpgradeCheck(context.Background(), commands.UpgradeInputs{}, deps, stdout, stderr); err != nil {
+					fmt.Fprintln(stderr, err)
+					return 1
+				}
+				return 0
+			}
+			if _, err := runUpgrade(context.Background(), commands.UpgradeInputs{Now: time.Now}, deps, stdout, stderr); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		env, err := state.Load(envFile)
 		if err != nil {
-			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
+			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", envFile, err)
 			return 1
 		}
-		in := commands.InstallInputs{
-			CFAPIToken:  env["CF_API_TOKEN"],
-			CFAccountID: env["CF_ACCOUNT_ID"],
-			Domain:      env["DOMAIN"],
-			User1Name:   env["USER1_NAME"],
+		in, err := installFromEnv(env)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
 		}
-		deps := commands.InstallDeps{
-			CF: &cloudflare.Client{
-				BaseURL:   "https://api.cloudflare.com/client/v4",
-				Token:     env["CF_API_TOKEN"],
-				AccountID: env["CF_ACCOUNT_ID"],
-				HTTP:      http.DefaultClient,
-			},
-			BinaryRunner:  systemd.ExecRunner{},
-			SystemdRunner: systemd.ExecRunner{},
+		deps := buildInstallDeps(env)
+		if err := runInstall(context.Background(), in, deps, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
 		}
-		if err := commands.RunInstall(context.Background(), in, deps, stdout, stderr); err != nil {
+		return 0
+	case "upgrade":
+		env, err := state.Load(envFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", envFile, err)
+			return 1
+		}
+		deps := buildInstallDeps(env)
+		if _, err := runUpgrade(context.Background(), commands.UpgradeInputs{Now: time.Now}, deps, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -165,32 +238,9 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 			return 0
 		}
-		env, err := state.Load(paths.EnvFile)
-		if err != nil {
-			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
-			return 1
-		}
-		deps := commands.RotateDeps{
-			CF: &cloudflare.Client{
-				BaseURL:   "https://api.cloudflare.com/client/v4",
-				Token:     env["CF_API_TOKEN"],
-				AccountID: env["CF_ACCOUNT_ID"],
-				HTTP:      http.DefaultClient,
-			},
-			Runner: systemd.ExecRunner{},
-		}
-		in := commands.RotateInputs{
-			NewDomain:   args[1],
-			OldDomain:   env["DOMAIN"],
-			OldTunnel:   env["TUNNEL_UUID"],
-			CFAPIToken:  env["CF_API_TOKEN"],
-			CFAccountID: env["CF_ACCOUNT_ID"],
-		}
-		if err := commands.RunRotateDomain(context.Background(), in, deps, stdout, stderr); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		return 0
+		fmt.Fprintln(stderr, "tunnel-mode rotate-domain is deprecated; use panel rotate for direct mode")
+		fmt.Fprintln(stderr, "usage: cfvpnctl rotate-domain --cleanup <uuid> --yes")
+		return 2
 	case "status":
 		if err := commands.RunStatus(context.Background(), systemd.ExecRunner{}, stdout); err != nil {
 			fmt.Fprintln(stderr, err)

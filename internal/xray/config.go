@@ -34,15 +34,6 @@ type vlessSettings struct {
 	Decryption string        `json:"decryption"`
 }
 
-type trojanClient struct {
-	Password string `json:"password"`
-	Email    string `json:"email"`
-}
-
-type trojanSettings struct {
-	Clients []trojanClient `json:"clients"`
-}
-
 var userNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
 
 func ValidateUserName(name string) error {
@@ -60,12 +51,8 @@ func NewBaseConfig(user, uuid, password string) Config {
 		Clients:    []vlessClient{{ID: uuid, Email: user}},
 		Decryption: "none",
 	})
-	trojan, _ := json.Marshal(trojanSettings{
-		Clients: []trojanClient{{Password: password, Email: user}},
-	})
 	return Config{Inbounds: []Inbound{
 		{Protocol: "vless", Settings: vless},
-		{Protocol: "trojan", Settings: trojan},
 	}}
 }
 
@@ -215,24 +202,7 @@ func loadVLESS(in *Inbound) (*vlessSettings, error) {
 	return &s, nil
 }
 
-func loadTrojan(in *Inbound) (*trojanSettings, error) {
-	var s trojanSettings
-	if err := json.Unmarshal(in.Settings, &s); err != nil {
-		return nil, err
-	}
-	return &s, nil
-}
-
 func saveVLESS(in *Inbound, s *vlessSettings) error {
-	raw, err := json.Marshal(s)
-	if err != nil {
-		return err
-	}
-	in.Settings = raw
-	return nil
-}
-
-func saveTrojan(in *Inbound, s *trojanSettings) error {
 	raw, err := json.Marshal(s)
 	if err != nil {
 		return err
@@ -277,24 +247,6 @@ func GetVLESSClient(cfg Config, name string) (string, bool) {
 	return "", false
 }
 
-// GetTrojanClient returns the password of the Trojan client whose email matches name.
-func GetTrojanClient(cfg Config, name string) (string, bool) {
-	in := findInbound(&cfg, "trojan")
-	if in == nil {
-		return "", false
-	}
-	s, err := loadTrojan(in)
-	if err != nil {
-		return "", false
-	}
-	for _, c := range s.Clients {
-		if c.Email == name {
-			return c.Password, true
-		}
-	}
-	return "", false
-}
-
 func AddUser(cfg *Config, name, uuid, password string) error {
 	if err := ValidateUserName(name); err != nil {
 		return err
@@ -305,37 +257,23 @@ func AddUser(cfg *Config, name, uuid, password string) error {
 		}
 	}
 	vin := findInbound(cfg, "vless")
-	tin := findInbound(cfg, "trojan")
-	if vin == nil || tin == nil {
-		return fmt.Errorf("config missing vless or trojan inbound")
+	if vin == nil {
+		return fmt.Errorf("config missing vless inbound")
 	}
 	vs, err := loadVLESS(vin)
-	if err != nil {
-		return err
-	}
-	ts, err := loadTrojan(tin)
 	if err != nil {
 		return err
 	}
 	vs.Clients = append(vs.Clients, vlessClient{ID: uuid, Email: name})
-	ts.Clients = append(ts.Clients, trojanClient{Password: password, Email: name})
-	if err := saveVLESS(vin, vs); err != nil {
-		return err
-	}
-	return saveTrojan(tin, ts)
+	return saveVLESS(vin, vs)
 }
 
 func RemoveUser(cfg *Config, name string) error {
 	vin := findInbound(cfg, "vless")
-	tin := findInbound(cfg, "trojan")
-	if vin == nil || tin == nil {
-		return fmt.Errorf("config missing vless or trojan inbound")
+	if vin == nil {
+		return fmt.Errorf("config missing vless inbound")
 	}
 	vs, err := loadVLESS(vin)
-	if err != nil {
-		return err
-	}
-	ts, err := loadTrojan(tin)
 	if err != nil {
 		return err
 	}
@@ -348,22 +286,11 @@ func RemoveUser(cfg *Config, name string) error {
 		}
 		filteredV = append(filteredV, c)
 	}
-	filteredT := ts.Clients[:0]
-	for _, c := range ts.Clients {
-		if c.Email == name {
-			continue
-		}
-		filteredT = append(filteredT, c)
-	}
 	if !found {
 		return fmt.Errorf("user %q not found", name)
 	}
 	vs.Clients = filteredV
-	ts.Clients = filteredT
-	if err := saveVLESS(vin, vs); err != nil {
-		return err
-	}
-	return saveTrojan(tin, ts)
+	return saveVLESS(vin, vs)
 }
 
 func Load(path string) (Config, error) {
