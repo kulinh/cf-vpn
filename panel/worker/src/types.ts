@@ -20,13 +20,13 @@ export interface AgentError {
 export interface AgentUserRecord {
   name: string;
   vless_uuid: string;
-  trojan_pw: string;
+  hy2_pw: string;
 }
 
 export interface AgentAddUserResponse {
   name: string;
   vless_uuid: string;
-  trojan_pw: string;
+  hy2_pw: string;
 }
 
 export interface AgentStatusResponse {
@@ -63,6 +63,11 @@ export interface NodeRow {
   last_seen_at: number | null;
   latency_ms: number | null;
   created_at: number;
+  public_ip: string | null;
+  mode: string | null;
+  hy2_host: string | null;
+  hy2_port: number | null;
+  hy2_obfs_pw: string | null;
 }
 
 export interface UserRow {

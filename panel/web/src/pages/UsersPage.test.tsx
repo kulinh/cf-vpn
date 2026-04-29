@@ -3,6 +3,12 @@ import { UsersPage } from './UsersPage'
 import * as api from '../lib/api'
 import type { Node } from '../lib/types'
 
+const testSubscription: api.UserSubscription = {
+  urls: 'vless://u1@hk.example.com:443\ntrojan://p1@hk.example.com:443',
+  token: 'a'.repeat(32),
+  subUrl: `http://localhost:3000/sub/${'a'.repeat(32)}`,
+}
+
 function makeNode(id: string): Node {
   return {
     id,
@@ -134,6 +140,92 @@ test('matches node ids case-insensitively for sync eligibility', async () => {
   render(<UsersPage />)
 
   expect(await screen.findByRole('button', { name: /sync \(\+1\)/i })).toBeInTheDocument()
+})
+
+test('copy subscription writes sub URL to clipboard', async () => {
+  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
+  vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
+
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.assign(navigator, { clipboard: { writeText } })
+
+  render(<UsersPage />)
+
+  fireEvent.click(await screen.findByRole('button', { name: /copy subscription/i }))
+
+  expect(await screen.findByText(/subscription url copied/i)).toBeInTheDocument()
+  expect(writeText).toHaveBeenCalledWith(testSubscription.subUrl)
+})
+
+test('Shadowrocket button navigates to shadowrocket deep link with base64 sub URL', async () => {
+  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
+  const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
+
+  const hrefSetter = vi.fn()
+  const originalLocation = window.location
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: {
+      ...originalLocation,
+      get href() {
+        return originalLocation.href
+      },
+      set href(value: string) {
+        hrefSetter(value)
+      },
+    },
+  })
+
+  try {
+    render(<UsersPage />)
+
+    await screen.findByText('kulinh')
+    await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
+
+    fireEvent.click(screen.getByRole('button', { name: /shadowrocket/i }))
+
+    expect(hrefSetter).toHaveBeenCalledWith(`shadowrocket://add/sub/${btoa(testSubscription.subUrl)}`)
+  } finally {
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+  }
+})
+
+test('V2rayNG button navigates to v2rayng deep link with URL-encoded sub URL', async () => {
+  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
+  const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
+
+  const hrefSetter = vi.fn()
+  const originalLocation = window.location
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: {
+      ...originalLocation,
+      get href() {
+        return originalLocation.href
+      },
+      set href(value: string) {
+        hrefSetter(value)
+      },
+    },
+  })
+
+  try {
+    render(<UsersPage />)
+
+    await screen.findByText('kulinh')
+    await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
+
+    fireEvent.click(screen.getByRole('button', { name: /v2rayng/i }))
+
+    expect(hrefSetter).toHaveBeenCalledWith(
+      `v2rayng://install-sub?url=${encodeURIComponent(testSubscription.subUrl)}#${encodeURIComponent('RWL8899')}`,
+    )
+  } finally {
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+  }
 })
 
 test('shows Syncing... while request is pending', async () => {

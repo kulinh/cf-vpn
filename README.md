@@ -120,6 +120,25 @@ npm --prefix panel/web test -- --run
 npm --prefix panel/web e2e
 ```
 
+### Public subscription URL (`/sub/:token`)
+
+The Users tab exposes a stable, token-based subscription URL per user at
+`https://<panel-host>/sub/<32-hex-token>`. Shadowrocket and v2rayNG fetch this
+URL on their own schedule, so adding or removing a node on the panel
+automatically propagates to every installed client without requiring them to
+re-import anything.
+
+Because mobile apps cannot present a Cloudflare Access identity, the panel's
+Access application **must bypass** `/sub/*`. In the Zero Trust dashboard, add a
+policy to the panel Access app:
+
+- Action: **Bypass**
+- Path: `/sub/*` (include subdomain if your Access app is scoped wider)
+
+The `/api/*` routes remain behind Access. The `/sub/:token` route itself
+validates the 32-hex token against the `users.sub_token` column and returns
+`404` for malformed or unknown tokens, so public exposure is safe.
+
 ## Development
 
 ```bash

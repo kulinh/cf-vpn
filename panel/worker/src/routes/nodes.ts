@@ -25,9 +25,11 @@ interface ZoneRow {
   cf_zone_id: string;
 }
 
+const NODE_SELECT_FIELDS = "id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at,public_ip,mode,hy2_host,hy2_port,hy2_obfs_pw";
+
 export async function listNodes(env: Env): Promise<Response> {
   const rows = await all<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes ORDER BY id")
+    env.DB.prepare(`SELECT ${NODE_SELECT_FIELDS} FROM nodes ORDER BY id`)
   );
   return json(rows);
 }
@@ -64,7 +66,7 @@ export async function createNode(env: Env, request: Request): Promise<Response> 
 
 export async function getNode(env: Env, id: string): Promise<Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare(`SELECT ${NODE_SELECT_FIELDS} FROM nodes WHERE id = ?`).bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -74,7 +76,7 @@ export async function getNode(env: Env, id: string): Promise<Response> {
 
 export async function patchNode(env: Env, id: string, request: Request): Promise<Response> {
   const existing = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare(`SELECT ${NODE_SELECT_FIELDS} FROM nodes WHERE id = ?`).bind(id)
   );
   if (!existing) {
     return error(404, { error: "node_not_found", detail: id });
@@ -117,7 +119,7 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
 
 async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,zone,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare(`SELECT ${NODE_SELECT_FIELDS} FROM nodes WHERE id = ?`).bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -131,10 +133,12 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     return row;
   }
   try {
+    const t0 = Date.now();
     const status = await callAgent<AgentStatusResponse>(env, row.admin_host, "/admin/v1/status", { method: "GET" }, 5000);
+    const latency_ms = Date.now() - t0;
     const now = nowTs();
     await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
-      .bind(now, row.latency_ms ?? null, id)
+      .bind(now, latency_ms, id)
       .run();
     return json(status);
   } catch (e) {
@@ -150,13 +154,15 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
     return row;
   }
   try {
+    const t0 = Date.now();
     const out = await callAgent<AgentHealthcheckResponse>(env, row.admin_host, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+    const latency_ms = Date.now() - t0;
     const now = nowTs();
     await env.DB.prepare("UPDATE nodes SET last_seen_at=?, latency_ms=? WHERE id=?")
-      .bind(now, out.latency_ms, id)
+      .bind(now, latency_ms, id)
       .run();
-    await logEvent(env, actor, "node.healthcheck", "ok", out, id);
-    return json(out);
+    await logEvent(env, actor, "node.healthcheck", "ok", { ...out, latency_ms }, id);
+    return json({ ...out, latency_ms });
   } catch (e) {
     await logEvent(env, actor, "node.healthcheck", "error", { message: String(e) }, id);
     return error(502, { error: "healthcheck_failed", detail: String(e) });
@@ -200,9 +206,9 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
   if (row instanceof Response) {
     return row;
   }
-  let body: { users: Array<{ name: string; vless_uuid: string; trojan_pw: string }> };
+  let body: { users: Array<{ name: string; vless_uuid: string; hy2_pw: string }> };
   try {
-    body = await readJSON<{ users: Array<{ name: string; vless_uuid: string; trojan_pw: string }> }>(request);
+    body = await readJSON<{ users: Array<{ name: string; vless_uuid: string; hy2_pw: string }> }>(request);
   } catch {
     return error(400, { error: "invalid_json", detail: "request body must be valid JSON" });
   }
@@ -213,10 +219,10 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
     return error(400, { error: "invalid_sync_payload", detail: "users must be an array" });
   }
   const invalid = body.users.some(
-    (u) => !u || typeof u.name !== "string" || typeof u.vless_uuid !== "string" || typeof u.trojan_pw !== "string"
+    (u) => !u || typeof u.name !== "string" || typeof u.vless_uuid !== "string" || typeof u.hy2_pw !== "string"
   );
   if (invalid) {
-    return error(400, { error: "invalid_sync_payload", detail: "each user must include name, vless_uuid, trojan_pw" });
+    return error(400, { error: "invalid_sync_payload", detail: "each user must include name, vless_uuid, hy2_pw" });
   }
 
   try {
