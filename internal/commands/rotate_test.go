@@ -370,12 +370,12 @@ func TestRunRotateDirectHy2RotatesHostCertDNSService(t *testing.T) {
 	runner := eventRunner{events: &runnerEvents}
 
 	res, err := RunRotateDirect(context.Background(), RotateDirectInputs{
-		NewHost:     "vpn.example.com",
-		NewZone:     "example.com",
-		NewZoneID:   "vpn-zone",
-		NewHy2Host:  "hy2.example.com",
-		NewHy2Zone:  "example.com",
-		NewHy2ZoneID: "hy2-zone",
+		NewHost:       "vpn.example.com",
+		NewZone:       "example.com",
+		NewZoneID:     "vpn-zone",
+		NewHy2Host:    "hy2.example.com",
+		NewHy2Zone:    "example.com",
+		NewHy2ZoneID:  "hy2-zone",
 		ExistingUsers: []ExistingUser{{Name: "alice", UUID: "uuid-a"}},
 	}, RotateDirectDeps{
 		CF:     cf,

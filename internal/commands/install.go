@@ -650,7 +650,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 
 	binRunner := resolveBinaryRunner(deps.BinaryRunner)
 	sysRunner := resolveRunner(deps.SystemdRunner)
-	domain := in.Domain
+	domain := strings.TrimSpace(in.Domain)
 	zone := ""
 	zoneID := ""
 	if domain != "" {
@@ -760,7 +760,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 
 	fmt.Fprintln(stdout, "configuring dns...")
 	if zoneID == "" {
-		zone := zoneOfDomain(in.Domain)
+		zone := zoneOfDomain(domain)
 		var err error
 		zoneID, err = deps.CF.GetZoneID(ctx, zone)
 		if err != nil {

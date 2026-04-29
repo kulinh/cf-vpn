@@ -79,7 +79,7 @@ type syncRequest struct {
 func main() {
 	addr := strings.TrimSpace(os.Getenv("CFVPN_AGENT_ADDR"))
 	if addr == "" {
-		addr = "127.0.0.1:8787"
+		addr = "127.0.0.1:6788"
 	}
 
 	mux := http.NewServeMux()
@@ -113,7 +113,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		Mode:         env["MODE"],
 		Hy2Host:      env["HY2_HOST"],
 		Hy2Port:      parseInt(env["HY2_PORT"]),
-		Hy2ObfsPW:   env["HY2_OBFS_PW"],
+		Hy2ObfsPW:    env["HY2_OBFS_PW"],
 		TunnelUUID:   firstNonEmpty(env["ADMIN_TUNNEL_UUID"], env["TUNNEL_UUID"]),
 		LastRotateAt: parseInt64(env["LAST_ROTATE_AT"]),
 	}
@@ -176,17 +176,17 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 	result, err := commands.RunRotateDirect(
 		r.Context(),
 		commands.RotateDirectInputs{
-			NewHost:      req.NewHost,
-			NewZone:      zoneForHost(req.NewHost),
-			NewZoneID:    req.NewZoneID,
-			OldHost:      req.OldHost,
-			OldZoneID:    req.OldZoneID,
-			NewHy2Host:   req.NewHy2Host,
-			NewHy2Zone:   req.NewHy2Zone,
-			NewHy2ZoneID: req.NewHy2ZoneID,
-			OldHy2Host:   req.OldHy2Host,
-			OldHy2ZoneID: req.OldHy2ZoneID,
-			CFAPIToken:   env["CF_API_TOKEN"],
+			NewHost:       req.NewHost,
+			NewZone:       zoneForHost(req.NewHost),
+			NewZoneID:     req.NewZoneID,
+			OldHost:       req.OldHost,
+			OldZoneID:     req.OldZoneID,
+			NewHy2Host:    req.NewHy2Host,
+			NewHy2Zone:    req.NewHy2Zone,
+			NewHy2ZoneID:  req.NewHy2ZoneID,
+			OldHy2Host:    req.OldHy2Host,
+			OldHy2ZoneID:  req.OldHy2ZoneID,
+			CFAPIToken:    env["CF_API_TOKEN"],
 			ExistingUsers: users,
 		},
 		commands.RotateDirectDeps{
@@ -203,10 +203,10 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"vpn_host": result.VpnHost,
-		"public_ip": result.PublicIP,
-		"hy2_host": result.Hy2Host,
-		"hy2_port": result.Hy2Port,
+		"vpn_host":    result.VpnHost,
+		"public_ip":   result.PublicIP,
+		"hy2_host":    result.Hy2Host,
+		"hy2_port":    result.Hy2Port,
 		"hy2_obfs_pw": result.Hy2ObfsPW,
 	})
 }
@@ -347,4 +347,3 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 func writeError(w http.ResponseWriter, status int, code, detail string) {
 	writeJSON(w, status, map[string]string{"error": code, "detail": detail})
 }
-

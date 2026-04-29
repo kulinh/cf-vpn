@@ -135,9 +135,9 @@ func (c Client) DeleteTunnel(ctx context.Context, tunnelID string) error {
 
 func (c Client) UpsertARecord(ctx context.Context, zoneID, name, ip string) error {
 	q := url.Values{
-		"type":      {"A"},
+		"type":       {"A"},
 		"name.exact": {name},
-		"match":     {"all"},
+		"match":      {"all"},
 	}.Encode()
 	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
 	if err != nil {
@@ -166,9 +166,9 @@ func (c Client) UpsertARecord(ctx context.Context, zoneID, name, ip string) erro
 
 func (c Client) DeleteARecordByName(ctx context.Context, zoneID, name string) error {
 	q := url.Values{
-		"type":      {"A"},
+		"type":       {"A"},
 		"name.exact": {name},
-		"match":     {"all"},
+		"match":      {"all"},
 	}.Encode()
 	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
 	if err != nil {

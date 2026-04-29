@@ -88,7 +88,6 @@ func buildSubscriptionFor(name, uuid, domain string) string {
 	return subscription.BuildSubscriptionB64(v)
 }
 
-
 func resolveRunner(r systemd.Runner) systemd.Runner {
 	if r == nil {
 		return systemd.ExecRunner{}

@@ -1151,13 +1151,13 @@ func TestRunUpgradeRollsBackAndRestartsXrayAfterPostRestartFailure(t *testing.T)
 func seedUpgradeTrojanConfig(t *testing.T) {
 	t.Helper()
 	if err := state.SaveAtomic(envFilePath, map[string]string{
-		"CF_API_TOKEN":     "t",
-		"CF_ACCOUNT_ID":    "a",
-		"DOMAIN":           "proxied.example.com",
-		"TUNNEL_UUID":      "old-tun",
-		"NODE_ID":          "JPY-04",
-		"USER1_NAME":       "alice",
-		"UUID_USER1":       "u-1",
+		"CF_API_TOKEN":      "t",
+		"CF_ACCOUNT_ID":     "a",
+		"DOMAIN":            "proxied.example.com",
+		"TUNNEL_UUID":       "old-tun",
+		"NODE_ID":           "JPY-04",
+		"USER1_NAME":        "alice",
+		"UUID_USER1":        "u-1",
 		"TROJAN_PASS_USER1": "oldpw",
 	}, 0o600); err != nil {
 		t.Fatal(err)
@@ -1322,17 +1322,17 @@ func TestRunUpgradeWithExistingHY2IsIdempotent(t *testing.T) {
 	dir := withUpgradeSeams(t)
 	// Seed with existing HY2 fields (simulating a node already running HY2).
 	if err := state.SaveAtomic(envFilePath, map[string]string{
-		"CF_API_TOKEN":     "t",
-		"CF_ACCOUNT_ID":    "a",
-		"DOMAIN":           "vpn.example.com",
-		"NODE_ID":          "JPY-04",
-		"USER1_NAME":       "alice",
-		"UUID_USER1":       "u-1",
-		"HY2_HOST":         "hy2.example.com",
-		"HY2_PORT":         "21000",
-		"HY2_OBFS_PW":      "existing-obfs",
-		"HY2_PASS_USER1":   "existing-hy2pw",
-		"TUNNEL_UUID":      "tun-existing",
+		"CF_API_TOKEN":   "t",
+		"CF_ACCOUNT_ID":  "a",
+		"DOMAIN":         "vpn.example.com",
+		"NODE_ID":        "JPY-04",
+		"USER1_NAME":     "alice",
+		"UUID_USER1":     "u-1",
+		"HY2_HOST":       "hy2.example.com",
+		"HY2_PORT":       "21000",
+		"HY2_OBFS_PW":    "existing-obfs",
+		"HY2_PASS_USER1": "existing-hy2pw",
+		"TUNNEL_UUID":    "tun-existing",
 	}, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1392,4 +1392,3 @@ func TestRunUpgradeWithExistingHY2IsIdempotent(t *testing.T) {
 		t.Fatalf("stdout missing idempotent no-op message: %s", out.String())
 	}
 }
-

@@ -103,7 +103,7 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/cfvpn cert-renew
+ExecStart=/usr/local/bin/cfvpnctl cert-renew
 `
 }
 
