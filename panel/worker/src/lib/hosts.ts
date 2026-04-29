@@ -1,5 +1,20 @@
 import type { Env } from "../types";
 
+export const ADMIN_HOST_ZONE = "rwl247.dev";
+
+export function normalizeNodeIDForHost(id: string): string | null {
+  const normalized = id.trim().toLowerCase();
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(normalized)) {
+    return null;
+  }
+  return normalized;
+}
+
+export function generateAdminHost(nodeID: string): string | null {
+  const normalized = normalizeNodeIDForHost(nodeID);
+  return normalized ? `${normalized}.${ADMIN_HOST_ZONE}` : null;
+}
+
 function isIPv4(hostname: string): boolean {
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
     return false;

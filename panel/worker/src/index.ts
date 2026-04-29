@@ -104,7 +104,7 @@ export default {
 
     const nodeRotateID = parseNodeAction(pathname, "rotate");
     if (nodeRotateID && request.method === "POST") {
-      return nodeRotate(env, nodeRotateID, actor);
+      return nodeRotate(env, nodeRotateID, request, actor);
     }
 
     const nodeSyncID = parseNodeAction(pathname, "sync");
