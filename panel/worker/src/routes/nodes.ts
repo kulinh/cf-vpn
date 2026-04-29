@@ -193,8 +193,8 @@ export async function nodeRotate(env: Env, id: string, actor: string): Promise<R
     await env.DB.prepare("UPDATE nodes SET vpn_host=?, zone=?, status='active', last_seen_at=? WHERE id=?")
       .bind(out.vpn_host, zone.name, nowTs(), id)
       .run();
-    await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host, tunnel_uuid: out.tunnel_uuid }, id);
-    return json({ new_host: out.vpn_host, tunnel_uuid: out.tunnel_uuid });
+    await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host }, id);
+    return json({ new_host: out.vpn_host });
   } catch (e) {
     await logEvent(env, actor, "node.rotate", "error", { message: String(e) }, id);
     return error(502, { error: "rotate_failed", detail: String(e) });
