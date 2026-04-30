@@ -86,6 +86,15 @@ func (m *LegoManager) run(ctx context.Context, host, token string, command ...st
 		"--path=" + path,
 		"--domains=" + host,
 	}
+	if os.Getenv("LEGO_DISABLE_CP") == "1" {
+		args = append(args, "--dns.propagation-rns")
+	}
+	if resolvers := os.Getenv("LEGO_DNS_RESOLVERS"); resolvers != "" {
+		args = append(args, "--dns.resolvers="+resolvers)
+	}
+	if wait := os.Getenv("LEGO_PROPAGATION_WAIT"); wait != "" {
+		args = append(args, "--dns.propagation-wait="+wait)
+	}
 	args = append(args, command...)
 	out, err := r.Run(ctx, []string{"CF_DNS_API_TOKEN=" + token}, bin, args...)
 	if err != nil {

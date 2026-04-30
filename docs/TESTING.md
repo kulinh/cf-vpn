@@ -12,11 +12,11 @@ Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl u
 
 ## 1. Bootstrap
 
-- [ ] `make build` succeeds and produces `bin/cfvpnctl` plus `bin/cfvpn-agent`
+- [ ] `go build -o bin/cfvpnctl ./cmd/cfvpnctl` and `go build -o bin/cfvpn-agent ./cmd/cfvpn-agent` both succeed
 - [ ] `sudo install -m 0755 bin/cfvpnctl /usr/local/bin/cfvpnctl`
 - [ ] `sudo install -m 0755 bin/cfvpn-agent /usr/local/bin/cfvpn-agent`
+- [ ] Fresh deploy: `sudo -E CF_API_TOKEN=... CF_ACCOUNT_ID=... NODE_ID=... bash scripts/install-node.sh` completes without error
 - [ ] `/etc/cfvpn/cfvpn.env` exists with Cloudflare credentials and node inputs, chmod 600
-- [ ] Fresh deploy: `sudo cfvpnctl install --mode direct` completes without error
 - [ ] Existing deploy: `sudo cfvpnctl upgrade --mode direct` completes without error
 - [ ] Restricted VPS deploy: `sudo cfvpnctl upgrade --mode cloudflare` completes without error when TCP 443 cannot be exposed directly
 

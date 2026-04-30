@@ -15,30 +15,22 @@ Multi-VPS VPN control system for VLESS + Hysteria2 nodes, with Cloudflare used f
 ## Build
 
 ```bash
-make build
+go build -o bin/cfvpnctl ./cmd/cfvpnctl
+go build -o bin/cfvpn-agent ./cmd/cfvpn-agent
 sudo install -m 0755 bin/cfvpnctl /usr/local/bin/cfvpnctl
 sudo install -m 0755 bin/cfvpn-agent /usr/local/bin/cfvpn-agent
 ```
 
 ## Fresh VPS install
 
-Create `/etc/cfvpn/cfvpn.env` with Cloudflare credentials and the target domain or zone inputs:
+Use the bootstrap script — it validates inputs, builds both binaries, writes the full env file, runs the installer, and verifies units. See [docs/INSTALL_MINIMAL.md](docs/INSTALL_MINIMAL.md) for full prerequisites and troubleshooting.
 
 ```bash
-sudo mkdir -p /etc/cfvpn
-sudo tee /etc/cfvpn/cfvpn.env >/dev/null <<'EOF'
-CF_API_TOKEN=...
-CF_ACCOUNT_ID=...
-DOMAIN=vpn.example.com
-USER1_NAME=user1
-EOF
-sudo chmod 600 /etc/cfvpn/cfvpn.env
-```
-
-Install a direct node:
-
-```bash
-sudo cfvpnctl install --mode direct
+sudo -E \
+  CF_API_TOKEN='your_token' \
+  CF_ACCOUNT_ID='your_account_id' \
+  NODE_ID='hk-01' \
+  bash scripts/install-node.sh
 ```
 
 The installer writes Xray, Hysteria2, cloudflared admin tunnel, systemd units, TLS certs, DNS records, firewall rules, and the bootstrap user subscription.
