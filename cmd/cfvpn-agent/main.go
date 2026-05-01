@@ -104,6 +104,7 @@ func main() {
 	mux.HandleFunc("/admin/v1/sync", handleSync)
 	mux.HandleFunc("/admin/v1/users", handleUsers)
 	mux.HandleFunc("/admin/v1/users/", handleUser)
+	mux.HandleFunc("/admin/v1/shutdown-tunnel", handleShutdownTunnel)
 
 	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("cfvpn-agent listening on %s", addr)
@@ -501,6 +502,33 @@ func serviceState(name string) string {
 		return "inactive"
 	}
 	return strings.TrimSpace(string(out))
+}
+
+func handleShutdownTunnel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+	const unit = "cfvpn-cloudflared.service"
+
+	stopCmd := exec.CommandContext(ctx, "systemctl", "stop", unit)
+	stopOut, stopErr := stopCmd.CombinedOutput()
+	if stopErr != nil {
+		writeError(w, http.StatusInternalServerError, "stop_failed",
+			fmt.Sprintf("%s: %s", stopErr.Error(), strings.TrimSpace(string(stopOut))))
+		return
+	}
+
+	disableCmd := exec.CommandContext(ctx, "systemctl", "disable", unit)
+	_, _ = disableCmd.CombinedOutput()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"service": unit,
+		"state":   serviceState(unit),
+	})
 }
 
 func zoneForHost(host string) string {

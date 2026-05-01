@@ -50,11 +50,11 @@ test('shows no nodes found when list is empty', async () => {
 
 test('rotate shows loading then success toast', async () => {
   vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ id: 'sg' })])
-  let resolveRotate: ((value: api.RotateNodeResponse) => void) | null = null
+  const deferred: { resolve?: (value: api.RotateNodeResponse) => void } = {}
   vi.spyOn(api, 'rotateNode').mockImplementation(
     () =>
       new Promise((resolve) => {
-        resolveRotate = resolve
+        deferred.resolve = resolve
       }),
   )
 
@@ -66,7 +66,7 @@ test('rotate shows loading then success toast', async () => {
 
   expect(screen.getByRole('button', { name: /rotating/i })).toBeDisabled()
 
-  resolveRotate?.({ vpnHost: 'new-host.example.com' })
+  deferred.resolve?.({ vpnHost: 'new-host.example.com' })
 
   expect(await screen.findByText(/rotated successfully/i)).toBeInTheDocument()
   expect(screen.getByText(/new-host\.example\.com/i)).toBeInTheDocument()
@@ -83,6 +83,64 @@ test('shows error toast when rotate fails', async () => {
   fireEvent.click(screen.getByRole('button', { name: /confirm rotate/i }))
 
   expect(await screen.findByText(/rotate failed/i)).toBeInTheDocument()
+})
+
+test('rotate updates both vpn host and hy2 host in the row', async () => {
+  vi.spyOn(api, 'listNodes').mockResolvedValue([
+    makeNode({ id: 'sg', vpnHost: 'old-vpn.example.com', hy2Host: 'old-hy2.example.com', hy2Port: 443 }),
+  ])
+  vi.spyOn(api, 'rotateNode').mockResolvedValue({
+    vpnHost: 'new-vpn.example.com',
+    hy2Host: 'new-hy2.example.com',
+    hy2Port: 8443,
+    publicIp: '203.0.113.10',
+  })
+
+  render(<NodesPage />)
+  await screen.findByText('Singapore')
+
+  fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
+  fireEvent.click(screen.getByRole('button', { name: /confirm rotate/i }))
+
+  expect(await screen.findByText(/rotated successfully/i)).toBeInTheDocument()
+  expect(screen.getByText(/new-vpn\.example\.com/i)).toBeInTheDocument()
+  expect(screen.getByText(/new-hy2\.example\.com/i)).toBeInTheDocument()
+  expect(screen.queryByText(/old-hy2\.example\.com/i)).not.toBeInTheDocument()
+})
+
+test('delete confirms then removes the node from the table', async () => {
+  vi.spyOn(api, 'listNodes').mockResolvedValue([
+    makeNode({ id: 'sg', label: 'Singapore' }),
+    makeNode({ id: 'jp', label: 'Tokyo' }),
+  ])
+  const deleteSpy = vi.spyOn(api, 'deleteNode').mockResolvedValue({ warnings: [] })
+
+  render(<NodesPage />)
+  await screen.findByText('Singapore')
+
+  const deleteButtons = screen.getAllByRole('button', { name: /^delete$/i })
+  fireEvent.click(deleteButtons[0])
+
+  fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+
+  expect(await screen.findByText(/node deleted/i)).toBeInTheDocument()
+  expect(deleteSpy).toHaveBeenCalledWith('sg')
+  expect(screen.queryByText('Singapore')).not.toBeInTheDocument()
+  expect(screen.getByText('Tokyo')).toBeInTheDocument()
+})
+
+test('delete failure shows error toast and keeps node', async () => {
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ id: 'sg', label: 'Singapore' })])
+  vi.spyOn(api, 'deleteNode').mockRejectedValue(new Error('boom'))
+
+  render(<NodesPage />)
+  await screen.findByText('Singapore')
+
+  fireEvent.click(screen.getByRole('button', { name: /^delete$/i }))
+  fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+
+  expect(await screen.findByText(/delete failed/i)).toBeInTheDocument()
+  expect(screen.getByText('Singapore')).toBeInTheDocument()
 })
 
 test('checks all node latency and marks failed nodes unreachable', async () => {

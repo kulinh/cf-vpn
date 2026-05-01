@@ -5,6 +5,8 @@ export interface Env {
   SERVICE_TOKEN_HEADER_ID?: string;
   SERVICE_TOKEN_HEADER_SECRET?: string;
   ADMIN_HOST_ALLOWED_SUFFIXES?: string;
+  CF_API_TOKEN?: string;
+  CF_ACCOUNT_ID?: string;
 }
 
 export interface ApiError {

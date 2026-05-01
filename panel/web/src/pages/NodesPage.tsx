@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { Toast } from '../components/ui/Toast'
-import { healthcheckNode, listNodes, patchNode, rotateNode } from '../lib/api'
+import { deleteNode, healthcheckNode, listNodes, patchNode, rotateNode } from '../lib/api'
 import type { Node } from '../lib/types'
 import type { NodeInput } from '../lib/api'
 
@@ -14,6 +14,8 @@ export function NodesPage() {
   const [editingNode, setEditingNode] = useState<Node | null>(null)
   const [editValues, setEditValues] = useState<Partial<NodeInput>>({})
   const [savingNode, setSavingNode] = useState(false)
+  const [confirmDeleteNodeId, setConfirmDeleteNodeId] = useState<string | null>(null)
+  const [deletingNodeId, setDeletingNodeId] = useState<string | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
 
   useEffect(() => {
@@ -27,6 +29,7 @@ export function NodesPage() {
   }, [])
 
   const confirmingNode = nodes.find((node) => node.id === confirmNodeId) ?? null
+  const confirmingDeleteNode = nodes.find((node) => node.id === confirmDeleteNodeId) ?? null
 
   const handleCheck = async (nodeId: string) => {
     setCheckingNodeId(nodeId)
@@ -116,15 +119,45 @@ export function NodesPage() {
     setRotatingNodeId(nodeId)
 
     try {
-      const { vpnHost } = await rotateNode(nodeId)
+      const { vpnHost, hy2Host, hy2Port, publicIp } = await rotateNode(nodeId)
       setNodes((prevNodes) =>
-        prevNodes.map((node) => (node.id === nodeId ? { ...node, vpnHost } : node)),
+        prevNodes.map((node) =>
+          node.id === nodeId
+            ? {
+                ...node,
+                vpnHost,
+                hy2Host: hy2Host ?? node.hy2Host ?? null,
+                hy2Port: hy2Port ?? node.hy2Port ?? null,
+                publicIp: publicIp ?? node.publicIp ?? null,
+              }
+            : node,
+        ),
       )
       setToastMessage('Rotated successfully')
     } catch {
       setToastMessage('Rotate failed')
     } finally {
       setRotatingNodeId(null)
+    }
+  }
+
+  const handleConfirmDelete = async () => {
+    if (confirmDeleteNodeId == null) return
+    const nodeId = confirmDeleteNodeId
+    setConfirmDeleteNodeId(null)
+    setDeletingNodeId(nodeId)
+    try {
+      const { warnings } = await deleteNode(nodeId)
+      setNodes((prev) => prev.filter((n) => n.id !== nodeId))
+      if (warnings.length > 0) {
+        setToastMessage(`Node deleted (${warnings.length} warning${warnings.length > 1 ? 's' : ''}): ${warnings[0]}`)
+      } else {
+        setToastMessage('Node deleted')
+      }
+    } catch {
+      setToastMessage('Delete failed')
+    } finally {
+      setDeletingNodeId(null)
     }
   }
 
@@ -217,9 +250,11 @@ export function NodesPage() {
                       </button>
                       <button
                         type="button"
-                        className="rounded bg-red-900 px-2 py-1 text-xs text-red-300"
+                        disabled={deletingNodeId != null}
+                        onClick={() => setConfirmDeleteNodeId(node.id)}
+                        className="rounded bg-red-900 px-2 py-1 text-xs text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
                       >
-                        Delete
+                        {deletingNodeId === node.id ? 'Deleting...' : 'Delete'}
                       </button>
                     </div>
                   </td>
@@ -246,6 +281,17 @@ export function NodesPage() {
           void handleConfirmRotate()
         }}
         onCancel={() => setConfirmNodeId(null)}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteNodeId != null}
+        title={`Delete ${confirmingDeleteNode?.label ?? 'node'}?`}
+        message="This permanently removes the node from the panel. The agent service is not touched."
+        confirmLabel="Confirm delete"
+        onConfirm={() => {
+          void handleConfirmDelete()
+        }}
+        onCancel={() => setConfirmDeleteNodeId(null)}
       />
 
       {editingNode && (

@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { all, one, nowTs } from "../lib/db";
 import { callAgent } from "../lib/agent-client";
+import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
 import { generateAdminHost, validateAdminHost } from "../lib/hosts";
@@ -159,12 +160,118 @@ export async function patchNode(env: Env, id: string, request: Request): Promise
   return json({ ok: true });
 }
 
+async function resolveZoneIdForHost(env: Env, host: string): Promise<string | null> {
+  const labels = host.split(".");
+  for (let i = 0; i < labels.length - 1; i += 1) {
+    const candidate = labels.slice(i).join(".");
+    const row = await one<ZoneRow>(
+      env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE name = ?").bind(candidate)
+    );
+    if (row) {
+      return row.cf_zone_id;
+    }
+  }
+  return null;
+}
+
 export async function deleteNode(env: Env, id: string): Promise<Response> {
+  const row = await one<NodeRow>(
+    env.DB.prepare(
+      "SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?"
+    ).bind(id)
+  );
+  if (!row) {
+    return error(404, { error: "node_not_found", detail: id });
+  }
+
+  const warnings: string[] = [];
+
+  if (!hasCfCredentials(env)) {
+    warnings.push("CF cleanup skipped: CF_API_TOKEN/CF_ACCOUNT_ID not configured");
+  } else {
+    let tunnelUuid: string | null = null;
+    let agentReachable = false;
+    try {
+      const status = await agentCall<AgentStatusResponse>(
+        env,
+        row.admin_host,
+        "/admin/v1/status",
+        { method: "GET" },
+        5000
+      );
+      agentReachable = true;
+      if (typeof status.tunnel_uuid === "string" && status.tunnel_uuid.length > 0) {
+        tunnelUuid = status.tunnel_uuid;
+      } else {
+        warnings.push("Agent did not report tunnel_uuid; tunnel not deleted");
+      }
+    } catch (e) {
+      warnings.push(`Agent unreachable, tunnel_uuid unknown: ${String(e)}`);
+    }
+
+    if (agentReachable) {
+      try {
+        await agentCall<{ ok: boolean }>(
+          env,
+          row.admin_host,
+          "/admin/v1/shutdown-tunnel",
+          { method: "POST", body: "{}" },
+          15000
+        );
+      } catch (e) {
+        warnings.push(`Stop cloudflared on agent failed: ${String(e)}`);
+      }
+    }
+
+    const vpnZoneId = await resolveZoneIdForHost(env, row.vpn_host);
+    if (vpnZoneId) {
+      try {
+        await deleteDnsRecordByName(env, vpnZoneId, row.vpn_host, "A");
+      } catch (e) {
+        warnings.push(`Delete A ${row.vpn_host} failed: ${String(e)}`);
+      }
+    } else {
+      warnings.push(`Zone for ${row.vpn_host} not found in zones table`);
+    }
+
+    if (row.hy2_host && row.hy2_host !== row.vpn_host) {
+      const hy2ZoneId = await resolveZoneIdForHost(env, row.hy2_host);
+      if (hy2ZoneId) {
+        try {
+          await deleteDnsRecordByName(env, hy2ZoneId, row.hy2_host, "A");
+        } catch (e) {
+          warnings.push(`Delete A ${row.hy2_host} failed: ${String(e)}`);
+        }
+      } else {
+        warnings.push(`Zone for ${row.hy2_host} not found in zones table`);
+      }
+    }
+
+    const adminZoneId = await resolveZoneIdForHost(env, row.admin_host);
+    if (adminZoneId) {
+      try {
+        await deleteDnsRecordByName(env, adminZoneId, row.admin_host, "CNAME");
+      } catch (e) {
+        warnings.push(`Delete CNAME ${row.admin_host} failed: ${String(e)}`);
+      }
+    } else {
+      warnings.push(`Zone for ${row.admin_host} not found in zones table`);
+    }
+
+    if (tunnelUuid) {
+      try {
+        await deleteTunnel(env, tunnelUuid);
+      } catch (e) {
+        warnings.push(`Delete tunnel ${tunnelUuid} failed: ${String(e)}`);
+      }
+    }
+  }
+
   const result = await env.DB.prepare("DELETE FROM nodes WHERE id = ?").bind(id).run();
   if (!result.success) {
     return error(500, { error: "delete_failed", detail: id });
   }
-  return json({ ok: true });
+  return json({ ok: true, warnings });
 }
 
 async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {

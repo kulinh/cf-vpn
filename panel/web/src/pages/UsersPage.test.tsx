@@ -241,11 +241,11 @@ test('shows Syncing... while request is pending', async () => {
     makeNode('VN'),
   ])
 
-  let resolveSync: ((value: Awaited<ReturnType<typeof api.upgradeUserNodes>>) => void) | null = null
+  const deferred: { resolve?: (value: Awaited<ReturnType<typeof api.upgradeUserNodes>>) => void } = {}
   vi.spyOn(api, 'upgradeUserNodes').mockImplementation(
     () =>
       new Promise((resolve) => {
-        resolveSync = resolve
+        deferred.resolve = resolve
       }),
   )
 
@@ -255,7 +255,7 @@ test('shows Syncing... while request is pending', async () => {
 
   expect(screen.getByRole('button', { name: /syncing/i })).toBeDisabled()
 
-  resolveSync?.({
+  deferred.resolve?.({
     userId: 'kulinh',
     addedNodes: ['VN'],
     addedCount: 1,

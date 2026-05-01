@@ -5,6 +5,9 @@ type RotateNodeApiResponse = {
   new_host?: string
   vpn_host?: string
   tunnel_uuid?: string
+  hy2_host?: string | null
+  hy2_port?: number | null
+  public_ip?: string | null
 }
 
 type NodeApiResponse = {
@@ -27,6 +30,9 @@ type NodeApiResponse = {
 export type RotateNodeResponse = {
   vpnHost: string
   tunnelUuid?: string
+  hy2Host?: string | null
+  hy2Port?: number | null
+  publicIp?: string | null
 }
 
 function parseRotateNodeResponse(raw: RotateNodeApiResponse): RotateNodeResponse {
@@ -39,6 +45,9 @@ function parseRotateNodeResponse(raw: RotateNodeApiResponse): RotateNodeResponse
   return {
     vpnHost,
     tunnelUuid: raw.tunnel_uuid,
+    hy2Host: raw.hy2_host ?? null,
+    hy2Port: raw.hy2_port ?? null,
+    publicIp: raw.public_ip ?? null,
   }
 }
 
@@ -188,6 +197,23 @@ export async function patchNode(
   if (!response.ok) {
     throw new Error('patch node failed')
   }
+}
+
+export type DeleteNodeResponse = {
+  warnings: string[]
+}
+
+export async function deleteNode(nodeId: string): Promise<DeleteNodeResponse> {
+  const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}`, {
+    method: 'DELETE',
+  })
+
+  if (!response.ok) {
+    throw new Error('delete node failed')
+  }
+
+  const data = (await response.json().catch(() => ({}))) as { warnings?: string[] }
+  return { warnings: Array.isArray(data.warnings) ? data.warnings : [] }
 }
 
 export type UserInput = {
