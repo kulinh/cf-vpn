@@ -315,11 +315,6 @@ func SaveAtomic(path string, cfg Config, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	if err := f.Chmod(mode); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
 	if _, err := f.Write(raw); err != nil {
 		f.Close()
 		os.Remove(tmp)

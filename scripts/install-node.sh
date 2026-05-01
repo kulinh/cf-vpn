@@ -125,7 +125,7 @@ install -m 0755 "$PROJECT_ROOT/bin/cfvpn-agent" /usr/local/bin/cfvpn-agent
 # ----- 4. check zone collision ----------------------------------------------
 # Query D1 to show existing zone→node assignments so the operator can spot
 # crowding before cfvpnctl picks a zone.  Non-fatal — informational only.
-D1_DB_ID="0649f07f-e2c0-47f3-b84a-273f7f67332e"
+D1_DB_ID="${CFVPN_D1_DATABASE_ID:-0649f07f-e2c0-47f3-b84a-273f7f67332e}"
 D1_SQL="SELECT id,label,zone,vpn_host FROM nodes WHERE zone != ''"
 D1_RESP=$(curl -sS --max-time 10 \
   -H "Authorization: Bearer ${CF_API_TOKEN}" \

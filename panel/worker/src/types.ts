@@ -7,6 +7,7 @@ export interface Env {
   ADMIN_HOST_ALLOWED_SUFFIXES?: string;
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
+  AGENT_SHARED_SECRET?: string;
 }
 
 export interface ApiError {

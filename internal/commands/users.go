@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kulinh/cf-vpn/internal/hysteria"
 	"github.com/kulinh/cf-vpn/internal/paths"
 	"github.com/kulinh/cf-vpn/internal/subscription"
 	"github.com/kulinh/cf-vpn/internal/systemd"
@@ -24,8 +25,9 @@ const xrayServiceUnit = "cfvpn-xray.service"
 // Package-level path vars that mirror the constants in internal/paths.
 // Tests override these to redirect to a temp directory.
 var (
-	xrayConfigPath  = paths.XrayConfigFile
-	subscriptionDir = paths.SubscriptionDir
+	xrayConfigPath     = paths.XrayConfigFile
+	hy2ConfigPath      = "/etc/cfvpn/hysteria/config.yaml"
+	subscriptionDir    = paths.SubscriptionDir
 )
 
 // UserInputs holds inputs for user lifecycle commands.
@@ -68,10 +70,21 @@ func writeSubscriptionFile(name, content string) error {
 	}
 	final := filepath.Join(subscriptionDir, name+".txt")
 	tmp := final + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	if _, err := f.Write([]byte(content)); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
 	}
@@ -173,6 +186,28 @@ func RunRemoveUser(ctx context.Context, in UserInputs, runner systemd.Runner, st
 	if err := systemd.Restart(ctx, resolveRunner(runner), xrayServiceUnit); err != nil {
 		return fmt.Errorf("restart %s: %w", xrayServiceUnit, err)
 	}
+
+	// Mirror the agent's applyUsers: remove from Hysteria2 config too.
+	hy2Users, err := hysteria.ListUsers(hy2ConfigPath)
+	if err != nil {
+		return fmt.Errorf("load hysteria config: %w", err)
+	}
+	filtered := hy2Users[:0]
+	for _, u := range hy2Users {
+		if u.Name == in.Name {
+			continue
+		}
+		filtered = append(filtered, u)
+	}
+	if len(filtered) < len(hy2Users) {
+		if err := hysteria.SetUsers(hy2ConfigPath, filtered); err != nil {
+			return fmt.Errorf("remove hysteria user: %w", err)
+		}
+		if err := hysteria.ReloadService(ctx, resolveRunner(runner)); err != nil {
+			return fmt.Errorf("reload hysteria: %w", err)
+		}
+	}
+
 	return nil
 }
 

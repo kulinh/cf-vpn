@@ -3,6 +3,7 @@ import { error } from "./http";
 
 const WINDOW_MS = 1000;
 const MAX_RPS = 10;
+const MAX_BUCKETS = 500;
 const buckets = new Map<string, { count: number; windowStart: number }>();
 
 export function requireActorEmail(request: Request): string | Response {
@@ -18,6 +19,7 @@ export function enforceRateLimit(email: string): Response | null {
   const current = buckets.get(email);
   if (!current || now - current.windowStart >= WINDOW_MS) {
     buckets.set(email, { count: 1, windowStart: now });
+    evictStaleBuckets(now);
     return null;
   }
   if (current.count >= MAX_RPS) {
@@ -25,6 +27,27 @@ export function enforceRateLimit(email: string): Response | null {
   }
   current.count += 1;
   return null;
+}
+
+function evictStaleBuckets(now: number) {
+  if (buckets.size <= MAX_BUCKETS) return;
+  for (const [k, v] of buckets) {
+    if (now - v.windowStart >= WINDOW_MS) {
+      buckets.delete(k);
+    }
+  }
+  // Fallback: if still over limit, delete the oldest entry.
+  if (buckets.size > MAX_BUCKETS) {
+    let oldest = "";
+    let oldestTs = Infinity;
+    for (const [k, v] of buckets) {
+      if (v.windowStart < oldestTs) {
+        oldestTs = v.windowStart;
+        oldest = k;
+      }
+    }
+    if (oldest) buckets.delete(oldest);
+  }
 }
 
 export function serviceTokenHeaders(env: Env): Record<string, string> {

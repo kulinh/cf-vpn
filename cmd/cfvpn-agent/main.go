@@ -106,7 +106,11 @@ func main() {
 	mux.HandleFunc("/admin/v1/users/", handleUser)
 	mux.HandleFunc("/admin/v1/shutdown-tunnel", handleShutdownTunnel)
 
-	server := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
+	// Wrap the mux in an auth middleware. If AGENT_SHARED_SECRET is set,
+	// all admin endpoints require an Authorization: Bearer <secret> header.
+	handler := withAuth(mux)
+
+	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
 	log.Printf("cfvpn-agent listening on %s", addr)
 	log.Fatal(server.ListenAndServe())
 }
@@ -575,4 +579,19 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeError(w http.ResponseWriter, status int, code, detail string) {
 	writeJSON(w, status, map[string]string{"error": code, "detail": detail})
+}
+
+func withAuth(next http.Handler) http.Handler {
+	secret := strings.TrimSpace(os.Getenv("AGENT_SHARED_SECRET"))
+	if secret == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != secret {
+			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing agent shared secret")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

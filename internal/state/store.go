@@ -41,12 +41,6 @@ func SaveAtomic(path string, values map[string]string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	// Ensure the requested mode even if a restrictive umask cleared bits.
-	if err := os.Chmod(tmp, mode); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
 
 	keys := make([]string, 0, len(values))
 	for k := range values {

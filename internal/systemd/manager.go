@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strings"
 )
 
 type Runner interface {
@@ -17,7 +18,11 @@ func (ExecRunner) Run(ctx context.Context, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("%s %v failed: %w (%s)", name, args, err, string(out))
+		trimmed := strings.TrimSpace(string(out))
+		if len(trimmed) > 256 {
+			trimmed = trimmed[:256] + "..."
+		}
+		return fmt.Errorf("%s %v failed: %w (%s)", name, args, err, trimmed)
 	}
 	return nil
 }

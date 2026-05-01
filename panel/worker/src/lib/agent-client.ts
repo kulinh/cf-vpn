@@ -31,6 +31,9 @@ export async function callAgent<T>(
     ...serviceTokenHeaders(env),
     ...(init.headers ?? {})
   };
+  if (env.AGENT_SHARED_SECRET) {
+    (headers as Record<string, string>)["Authorization"] = `Bearer ${env.AGENT_SHARED_SECRET}`;
+  }
   const response = await withTimeout(`https://${adminHost}${path}`, { ...init, headers }, timeoutMs);
   const payload = (await response.json().catch(() => null)) as { error?: string; detail?: string } | null;
   if (!response.ok) {
