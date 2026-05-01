@@ -78,9 +78,26 @@ log "selected MODE=$MODE"
 log "installing OS dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y \
-  curl jq openssl uuid-runtime qrencode ca-certificates git iproute2 \
-  golang-go ufw tar gzip coreutils bash systemd dnsutils
+
+PACKAGES=(curl wget jq openssl uuid-runtime qrencode ca-certificates git iproute2 golang-go ufw tar gzip coreutils bash systemd dnsutils rsync)
+TO_INSTALL=()
+for pkg in "${PACKAGES[@]}"; do
+  if dpkg -s "$pkg" >/dev/null 2>&1; then
+    # Already installed — check if upgrade is needed
+    if apt-get --just-print upgrade 2>/dev/null | grep -q "^Inst $pkg "; then
+      TO_INSTALL+=("$pkg")
+    fi
+  else
+    TO_INSTALL+=("$pkg")
+  fi
+done
+
+if [ ${#TO_INSTALL[@]} -gt 0 ]; then
+  log "installing/upgrading: ${TO_INSTALL[*]}"
+  apt-get install -y "${TO_INSTALL[@]}"
+else
+  log "all packages already up-to-date"
+fi
 
 command -v go >/dev/null || die "go toolchain not on PATH after apt-get install"
 
@@ -105,7 +122,29 @@ log "building cfvpnctl + cfvpn-agent"
 install -m 0755 "$PROJECT_ROOT/bin/cfvpnctl"   /usr/local/bin/cfvpnctl
 install -m 0755 "$PROJECT_ROOT/bin/cfvpn-agent" /usr/local/bin/cfvpn-agent
 
-# ----- 4. write env file ------------------------------------------------------
+# ----- 4. check zone collision ----------------------------------------------
+# Query D1 to show existing zone→node assignments so the operator can spot
+# crowding before cfvpnctl picks a zone.  Non-fatal — informational only.
+D1_DB_ID="0649f07f-e2c0-47f3-b84a-273f7f67332e"
+D1_SQL="SELECT id,label,zone,vpn_host FROM nodes WHERE zone != ''"
+D1_RESP=$(curl -sS --max-time 10 \
+  -H "Authorization: Bearer ${CF_API_TOKEN}" \
+  "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/d1/database/${D1_DB_ID}/query" \
+  -F "sql=${D1_SQL}")
+
+D1_OK=$(echo "$D1_RESP" | jq -r '.success // false')
+if [ "$D1_OK" != "true" ]; then
+  warn "D1 zone check failed (non-fatal): $(echo "$D1_RESP" | jq -r '.errors[0].message // "unknown"')"
+else
+  D1_ROWS=$(echo "$D1_RESP" | jq -r '.result[0].results // []')
+  NODE_COUNT=$(echo "$D1_ROWS" | jq -r 'length')
+  log "D1 nodes: $NODE_COUNT"
+  if [ "$NODE_COUNT" -gt 0 ]; then
+    echo "$D1_ROWS" | jq -r 'group_by(.zone) | .[] | "  \(.[0].zone): \(map(.id+"("+.vpn_host+")") | join(", "))"'
+  fi
+fi
+
+# ----- 5. write env file ------------------------------------------------------
 # RunInstall (internal/commands/install.go) requires:
 #   CF_API_TOKEN, CF_ACCOUNT_ID, NODE_ID, USER1_NAME, MODE
 # DOMAIN is optional — when empty the installer picks a host from
@@ -125,7 +164,7 @@ tmp_env="$(mktemp)"
 install -m 600 "$tmp_env" /etc/cfvpn/cfvpn.env
 rm -f "$tmp_env"
 
-# ----- 5. firewall hygiene ----------------------------------------------------
+# ----- 6. firewall hygiene ----------------------------------------------------
 # UFW failures during `cfvpnctl install` are non-fatal warnings, but if the
 # admin pre-enables UFW we must keep SSH open or we lose the box.
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
@@ -133,14 +172,14 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: a
   ufw allow OpenSSH || ufw allow 22/tcp || warn "could not whitelist SSH; verify manually"
 fi
 
-# ----- 6. run installer -------------------------------------------------------
+# ----- 7. run installer -------------------------------------------------------
 log "running cfvpnctl install (mode=$MODE)"
 cfvpnctl install
 
 log "installing healthcheck timer"
 cfvpnctl healthcheck install
 
-# ----- 7. verify --------------------------------------------------------------
+# ----- 8. verify --------------------------------------------------------------
 log "verifying systemd units"
 units=(cfvpn-xray cfvpn-hysteria cfvpn-cloudflared cfvpn-agent)
 sleep 2
