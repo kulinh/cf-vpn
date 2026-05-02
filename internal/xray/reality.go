@@ -50,11 +50,15 @@ func GenerateRealityParams(opts GenerateRealityOptions) (RealityParams, error) {
 			case strings.HasPrefix(line, "Public key:"):
 				kp.Public = strings.TrimSpace(strings.TrimPrefix(line, "Public key:"))
 			case strings.Contains(line, "PublicKey"):
-				// Handle "Password (PublicKey): <value>" format
+				// Handle "Password (PublicKey): <value>" format. Split on the
+				// first ':' after "PublicKey" so a value byte that happens to
+				// match `): ` is not eaten by TrimLeft.
 				idx := strings.Index(line, "PublicKey")
 				rest := line[idx+len("PublicKey"):]
-				rest = strings.TrimLeft(rest, "): ")
-				rest = strings.TrimRight(rest, ")")
+				if i := strings.Index(rest, ":"); i >= 0 {
+					rest = rest[i+1:]
+				}
+				rest = strings.TrimRight(strings.TrimSpace(rest), ")")
 				kp.Public = strings.TrimSpace(rest)
 			}
 		}

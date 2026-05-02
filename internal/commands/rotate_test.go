@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/kulinh/cf-vpn/internal/state"
+	"github.com/kulinh/cf-vpn/internal/templates"
 	"github.com/kulinh/cf-vpn/internal/xray"
 )
 
@@ -557,9 +558,9 @@ func TestRunRotateDirectRegenerateSubscriptionsVLESSOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// regenerateSubscriptions loads the new xray config (written by RunRotateDirect),
-	// which has email "alice@vpn", so the sub file is alice@vpn.txt.
-	subFile := filepath.Join(subscriptionDir, "alice@vpn.txt")
+	// RegenerateSubscriptions strips the `@vpn` suffix that templates emit
+	// in client emails, so the file name is the bare user name.
+	subFile := filepath.Join(subscriptionDir, "alice.txt")
 	body, err := os.ReadFile(subFile)
 	if err != nil {
 		t.Fatal(err)
@@ -575,5 +576,118 @@ func TestRunRotateDirectRegenerateSubscriptionsVLESSOnly(t *testing.T) {
 	}
 	if bytes.Contains(decoded, []byte("trojan://")) {
 		t.Errorf("subscription contains trojan URI (should be VLESS-only): %s", decoded)
+	}
+}
+
+// TestRegenerateSubscriptionsCloudflareTemplateStripsVpnSuffix verifies that
+// when xray config is produced by the production cloudflare template (which
+// emits "<name>@vpn" in the client email), RegenerateSubscriptions strips the
+// suffix once so subscription file names and URI fragments use the bare name.
+// This guards against the regression where users provisioned via install/rotate
+// templates ended up with `alice@vpn.txt` files and `#alice@vpn-HTTPUpgrade`
+// fragments while users added later via xray.AddUser produced bare names.
+func TestRegenerateSubscriptionsCloudflareTemplateStripsVpnSuffix(t *testing.T) {
+	withRotateDirectTempPaths(t)
+
+	xrayJSON, err := templates.RenderXrayCloudflareHTTPUpgrade(
+		[]templates.XrayUser{{Name: "alice", UUID: "uuid-a"}},
+		"vpn.example.com",
+	)
+	if err != nil {
+		t.Fatalf("render cloudflare httpupgrade: %v", err)
+	}
+	if err := os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SaveAtomic(envFilePath, map[string]string{
+		state.KeyMode: "cloudflare",
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RegenerateSubscriptions("vpn.example.com"); err != nil {
+		t.Fatalf("RegenerateSubscriptions: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(subscriptionDir, "alice@vpn.txt")); !os.IsNotExist(err) {
+		t.Errorf("subscription file alice@vpn.txt should not exist (err=%v)", err)
+	}
+	body, err := os.ReadFile(filepath.Join(subscriptionDir, "alice.txt"))
+	if err != nil {
+		t.Fatalf("read alice.txt: %v", err)
+	}
+	decoded, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(body)))
+	if decErr != nil {
+		t.Fatalf("subscription not valid base64: %v; raw: %s", decErr, body)
+	}
+	if !bytes.Contains(decoded, []byte("vless://")) {
+		t.Errorf("subscription missing vless URI: %s", decoded)
+	}
+	if !bytes.Contains(decoded, []byte("#alice-HTTPUpgrade")) {
+		t.Errorf("URI fragment must be #alice-HTTPUpgrade (no @vpn): %s", decoded)
+	}
+	if bytes.Contains(decoded, []byte("#alice@vpn")) {
+		t.Errorf("URI fragment must not contain @vpn: %s", decoded)
+	}
+}
+
+// TestRegenerateSubscriptionsRealityTemplateStripsVpnSuffix is the direct/Reality
+// counterpart: same invariant, exercised through RenderXrayDirectReality which
+// also adds flow=xtls-rprx-vision.
+func TestRegenerateSubscriptionsRealityTemplateStripsVpnSuffix(t *testing.T) {
+	withRotateDirectTempPaths(t)
+
+	xrayJSON, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		Users:       []templates.XrayUser{{Name: "alice", UUID: "uuid-a"}},
+		PrivateKey:  "priv-stub",
+		ShortIDs:    []string{"deadbeefdeadbeef"},
+		Dest:        "www.microsoft.com:443",
+		ServerNames: []string{"www.microsoft.com"},
+	})
+	if err != nil {
+		t.Fatalf("render direct reality: %v", err)
+	}
+	if err := os.WriteFile(xrayConfigPath, []byte(xrayJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SaveAtomic(envFilePath, map[string]string{
+		state.KeyMode:           "direct",
+		state.KeyRealityPub:     "pub-stub",
+		state.KeyRealityShortID: "deadbeefdeadbeef",
+		state.KeyRealitySNI:     "www.microsoft.com",
+		state.KeyRealityDest:    "www.microsoft.com:443",
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RegenerateSubscriptions("vpn.example.com"); err != nil {
+		t.Fatalf("RegenerateSubscriptions: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(subscriptionDir, "alice@vpn.txt")); !os.IsNotExist(err) {
+		t.Errorf("subscription file alice@vpn.txt should not exist (err=%v)", err)
+	}
+	body, err := os.ReadFile(filepath.Join(subscriptionDir, "alice.txt"))
+	if err != nil {
+		t.Fatalf("read alice.txt: %v", err)
+	}
+	decoded, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(body)))
+	if decErr != nil {
+		t.Fatalf("subscription not valid base64: %v; raw: %s", decErr, body)
+	}
+	if !bytes.Contains(decoded, []byte("vless://")) {
+		t.Errorf("subscription missing vless URI: %s", decoded)
+	}
+	if !bytes.Contains(decoded, []byte("#alice-Reality")) {
+		t.Errorf("URI fragment must be #alice-Reality (no @vpn): %s", decoded)
+	}
+	if !bytes.Contains(decoded, []byte("pbk=pub-stub")) {
+		t.Errorf("URI must include pbk=pub-stub: %s", decoded)
+	}
+	if !bytes.Contains(decoded, []byte("sid=deadbeefdeadbeef")) {
+		t.Errorf("URI must include sid=deadbeefdeadbeef: %s", decoded)
+	}
+	if bytes.Contains(decoded, []byte("#alice@vpn")) {
+		t.Errorf("URI fragment must not contain @vpn: %s", decoded)
 	}
 }

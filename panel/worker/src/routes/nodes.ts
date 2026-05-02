@@ -351,6 +351,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     const status = await agentCall<AgentStatusResponse>(env, row.admin_host, "/admin/v1/status", { method: "GET" }, 5000);
     const mode = typeof status.mode === "string" && status.mode.length > 0 ? status.mode : row.mode ?? null;
     const syncRuntimeFields = mode === "direct";
+    const syncCloudflareFields = mode === "cloudflare";
     const hasStatusHost = typeof status.vpn_host === "string" && status.vpn_host.length > 0;
     const hasStatusZone = typeof status.zone === "string" && status.zone.length > 0;
     await persistNodeRuntime(env, id, {
@@ -365,7 +366,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       reality_sid: syncRuntimeFields ? status.reality_sid ?? row.reality_sid : row.reality_sid,
       reality_sni: syncRuntimeFields ? status.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
-      xhttp_path: syncRuntimeFields ? status.xhttp_path ?? row.xhttp_path : row.xhttp_path,
+      xhttp_path: syncCloudflareFields ? status.xhttp_path ?? row.xhttp_path : row.xhttp_path,
     });
     return json(status);
   } catch (e) {
@@ -520,6 +521,7 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
       120000
     );
     const syncRuntimeFields = row.mode === "direct";
+    const syncCloudflareFields = row.mode === "cloudflare";
     const hasSyncHost = typeof out.vpn_host === "string" && out.vpn_host.length > 0;
     await persistNodeRuntime(env, id, {
       vpn_host: syncRuntimeFields && hasSyncHost ? out.vpn_host : row.vpn_host,
@@ -533,7 +535,7 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
       reality_sid: syncRuntimeFields ? out.reality_sid ?? row.reality_sid : row.reality_sid,
       reality_sni: syncRuntimeFields ? out.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? out.reality_dest ?? row.reality_dest : row.reality_dest,
-      xhttp_path: syncRuntimeFields ? out.xhttp_path ?? row.xhttp_path : row.xhttp_path,
+      xhttp_path: syncCloudflareFields ? out.xhttp_path ?? row.xhttp_path : row.xhttp_path,
     });
     await logEvent(env, actor, "node.sync", "ok", out, id);
     return json(out);

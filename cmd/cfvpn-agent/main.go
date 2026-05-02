@@ -196,6 +196,13 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "env_load_failed", err.Error())
 		return
 	}
+	// rotate-domain is direct-mode-only: cloudflare nodes don't have a
+	// rotateable VPN host (cloudflared fronts a single hostname per node)
+	// and RunRotateDirect would clobber MODE + try to issue a host cert.
+	if mode := strings.TrimSpace(env["MODE"]); mode != "direct" {
+		writeError(w, http.StatusBadRequest, "rotate_unsupported", fmt.Sprintf("rotate-domain is only supported on direct-mode nodes (current mode=%q)", mode))
+		return
+	}
 	cfg, err := xray.Load(paths.XrayConfigFile)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "xray_load_failed", err.Error())

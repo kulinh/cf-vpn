@@ -1005,22 +1005,27 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		return fmt.Errorf("write cloudflared config: %w", err)
 	}
 
-	envMap := map[string]string{
-		"CF_API_TOKEN":        in.CFAPIToken,
-		"CF_ACCOUNT_ID":       in.CFAccountID,
-		"NODE_ID":             in.NodeID,
-		"DOMAIN":              domain,
-		"USER1_NAME":          in.User1Name,
-		"MODE":                in.Mode,
-		"PUBLIC_IP":           ip,
-		"ADMIN_HOST":          adminHost,
-		"ADMIN_TUNNEL_UUID":   tunnelID,
-		"UUID_USER1":          userUUID,
-		"HY2_HOST":            hy2Host,
-		"HY2_PORT":            hy2Port,
-		"HY2_OBFS_PW":         hy2ObfsPW,
-		"HY2_PASS_USER1":      hy2PassUser1,
+	// Start from any existing env file so operator-supplied keys (notably
+	// AGENT_SHARED_SECRET, which install-node.sh writes before invoking
+	// `cfvpnctl install`) survive the rewrite.
+	envMap, err := state.Load(envFilePath)
+	if err != nil {
+		envMap = map[string]string{}
 	}
+	envMap["CF_API_TOKEN"] = in.CFAPIToken
+	envMap["CF_ACCOUNT_ID"] = in.CFAccountID
+	envMap["NODE_ID"] = in.NodeID
+	envMap["DOMAIN"] = domain
+	envMap["USER1_NAME"] = in.User1Name
+	envMap["MODE"] = in.Mode
+	envMap["PUBLIC_IP"] = ip
+	envMap["ADMIN_HOST"] = adminHost
+	envMap["ADMIN_TUNNEL_UUID"] = tunnelID
+	envMap["UUID_USER1"] = userUUID
+	envMap["HY2_HOST"] = hy2Host
+	envMap["HY2_PORT"] = hy2Port
+	envMap["HY2_OBFS_PW"] = hy2ObfsPW
+	envMap["HY2_PASS_USER1"] = hy2PassUser1
 	if in.Mode == "direct" {
 		envMap[state.KeyRealityPriv] = realityParams.PrivateKey
 		envMap[state.KeyRealityPub] = realityParams.PublicKey
