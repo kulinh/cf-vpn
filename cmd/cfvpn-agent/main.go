@@ -3,9 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -213,7 +211,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users, commands.ExistingUser{Name: name, UUID: uuid})
 	}
-	cfClient := &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient}
+	cfClient := cloudflare.DefaultClient(env["CF_API_TOKEN"], env["CF_ACCOUNT_ID"])
 	var result commands.RotateDirectResult
 	switch mode {
 	case "direct":
@@ -343,12 +341,12 @@ func handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	uuid, err := generateUUIDv4()
+	uuid, err := commands.GenerateUUIDv4()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "generate_uuid_failed", err.Error())
 		return
 	}
-	hy2PW, err := generatePassword(24)
+	hy2PW, err := commands.GeneratePassword(24)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "generate_password_failed", err.Error())
 		return
@@ -397,24 +395,6 @@ func handleUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-func generateUUIDv4() (string, error) {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "", err
-	}
-	b[6] = (b[6] & 0x0f) | 0x40
-	b[8] = (b[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
-}
-
-func generatePassword(nBytes int) (string, error) {
-	b := make([]byte, nBytes)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
 func currentSyncUsers() ([]syncUser, error) {
 	cfg, err := xray.Load(paths.XrayConfigFile)
 	if err != nil {
@@ -441,7 +421,7 @@ func currentSyncUsers() ([]syncUser, error) {
 		hy2PW := hy2ByName[name]
 		if hy2PW == "" {
 			var err error
-			hy2PW, err = generatePassword(24)
+			hy2PW, err = commands.GeneratePassword(24)
 			if err != nil {
 				return nil, fmt.Errorf("generate hy2 password for %s: %w", name, err)
 			}
@@ -670,15 +650,6 @@ func zoneForHost(host string) string {
 	return ""
 }
 
-func zoneIDForHost(host string) string {
-	zone := zoneForHost(host)
-	for _, z := range zones.DefaultPool {
-		if z.Name == zone {
-			return z.CFZoneID
-		}
-	}
-	return ""
-}
 
 func parseInt(s string) int {
 	var out int

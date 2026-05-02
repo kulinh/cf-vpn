@@ -1,6 +1,3 @@
-import type { Env } from "../types";
-import { all } from "./db";
-
 export interface SubscriptionRow {
   vless_uuid: string;
   hy2_pw: string;
@@ -68,14 +65,6 @@ export function buildSubscriptionForClient(
   rows: SubscriptionRow[]
 ): { subscription_url: string } {
   return { subscription_url: buildSubscriptionURIs(username, rows) };
-}
-
-export function loadSubscriptionRows(env: Env, userId: string): Promise<SubscriptionRow[]> {
-  return all<SubscriptionRow>(
-    env.DB.prepare(
-      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, n.hy2_host, n.hy2_port, n.hy2_obfs_pw, un.node_id, n.mode, n.reality_pubkey, n.reality_sid, n.reality_sni, n.xhttp_path FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
-    ).bind(userId)
-  );
 }
 
 export function encodeSubscriptionBody(uris: string | string[], remarks?: string): string {

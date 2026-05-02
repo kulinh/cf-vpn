@@ -309,9 +309,12 @@ function mergeHy2Runtime(
   row: NodeRow,
   agent: { hy2_host?: string; hy2_port?: number; hy2_obfs_pw?: string }
 ): Hy2Runtime {
+  // Treat hy2_port=0 as "unknown" — the agent emits 0 when env["HY2_PORT"] is
+  // empty (parseInt swallows the error and returns the zero value). Persisting
+  // 0 would break subscription URI builders that emit ":0".
   return {
     hy2_host: typeof agent.hy2_host === "string" && agent.hy2_host ? agent.hy2_host : row.hy2_host,
-    hy2_port: typeof agent.hy2_port === "number" ? agent.hy2_port : row.hy2_port,
+    hy2_port: typeof agent.hy2_port === "number" && agent.hy2_port > 0 ? agent.hy2_port : row.hy2_port,
     hy2_obfs_pw: typeof agent.hy2_obfs_pw === "string" && agent.hy2_obfs_pw ? agent.hy2_obfs_pw : row.hy2_obfs_pw,
   };
 }
@@ -385,9 +388,17 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     });
     return json(status);
   } catch (e) {
-    await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(id).run();
-    await logEvent(env, actor, "node.status", "error", { node_id: id, message: String(e) }, id);
-    return error(502, { error: "agent_unreachable", detail: String(e) });
+    // Only flip the row to "unreachable" on actual transport errors. Auth /
+    // validation 4xxs throw `agent_http_<code>` from agent-client and should
+    // not erase a previously-good "active" status — they signal a config
+    // problem, not a node outage.
+    const msg = String(e);
+    const looksTransportError = !/agent_http_4\d\d/.test(msg);
+    if (looksTransportError) {
+      await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(id).run();
+    }
+    await logEvent(env, actor, "node.status", "error", { node_id: id, message: msg }, id);
+    return error(502, { error: "agent_unreachable", detail: msg });
   }
 }
 

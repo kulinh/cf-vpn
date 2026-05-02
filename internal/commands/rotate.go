@@ -27,14 +27,6 @@ var (
 	hysteriaConfigPath = "/etc/cfvpn/hysteria/config.yaml"
 )
 
-type RotateInputs struct {
-	NewDomain   string
-	OldDomain   string
-	OldTunnel   string
-	CFAPIToken  string
-	CFAccountID string
-}
-
 type RotateDeps struct {
 	CF     RotateCFClient
 	Runner systemd.Runner

@@ -43,8 +43,8 @@ func ValidateAddUserInput(name string) error {
 	return xray.ValidateUserName(name)
 }
 
-// generateUUIDv4 returns a canonical RFC 4122 v4 UUID using crypto/rand.
-func generateUUIDv4() (string, error) {
+// GenerateUUIDv4 returns a canonical RFC 4122 v4 UUID using crypto/rand.
+func GenerateUUIDv4() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return "", err
@@ -56,8 +56,8 @@ func generateUUIDv4() (string, error) {
 		b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
 }
 
-// generatePassword returns a base64.RawURLEncoding-encoded password.
-func generatePassword(nBytes int) (string, error) {
+// GeneratePassword returns a base64.RawURLEncoding-encoded password.
+func GeneratePassword(nBytes int) (string, error) {
 	b := make([]byte, nBytes)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -144,7 +144,7 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 		}
 	}
 
-	uuid, err := generateUUIDv4()
+	uuid, err := GenerateUUIDv4()
 	if err != nil {
 		return fmt.Errorf("generate uuid: %w", err)
 	}

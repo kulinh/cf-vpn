@@ -2,9 +2,7 @@ import { buildPublicSubscriptionUrl } from './subscriptionLinks'
 import type { Event, Node, UpgradeUserNodesResponse, User } from './types'
 
 type RotateNodeApiResponse = {
-  new_host?: string
   vpn_host?: string
-  tunnel_uuid?: string
   hy2_host?: string | null
   hy2_port?: number | null
   public_ip?: string | null
@@ -29,14 +27,13 @@ type NodeApiResponse = {
 
 export type RotateNodeResponse = {
   vpnHost: string
-  tunnelUuid?: string
   hy2Host?: string | null
   hy2Port?: number | null
   publicIp?: string | null
 }
 
 function parseRotateNodeResponse(raw: RotateNodeApiResponse): RotateNodeResponse {
-  const vpnHost = raw.new_host ?? raw.vpn_host
+  const vpnHost = raw.vpn_host
 
   if (vpnHost == null || vpnHost.length === 0) {
     throw new Error('rotate response missing host')
@@ -44,7 +41,6 @@ function parseRotateNodeResponse(raw: RotateNodeApiResponse): RotateNodeResponse
 
   return {
     vpnHost,
-    tunnelUuid: raw.tunnel_uuid,
     hy2Host: raw.hy2_host ?? null,
     hy2Port: raw.hy2_port ?? null,
     publicIp: raw.public_ip ?? null,
@@ -227,7 +223,11 @@ export async function createUser(input: UserInput): Promise<void> {
     body: JSON.stringify(input),
   })
 
-  if (!response.ok) {
-    throw new Error('create user failed')
+  // 207 = partial success (one or more nodes failed). Treat as success since
+  // the user row exists and the panel can re-run upgrade-nodes for the
+  // failed nodes. The Worker logs the partial outcome to events.
+  if (response.status === 207 || response.ok) {
+    return
   }
+  throw new Error('create user failed')
 }

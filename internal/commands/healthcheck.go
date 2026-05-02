@@ -55,7 +55,10 @@ func RunHealthcheckRun(ctx context.Context, env map[string]string, stdout io.Wri
 		fmt.Fprintln(stdout, "OK reality tcp=open")
 		return nil
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
+	if err != nil {
+		return fmt.Errorf("build healthcheck request: %w", err)
+	}
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -45,14 +46,33 @@ func RunStatus(ctx context.Context, runner systemd.Runner, stdout io.Writer) err
 	if env != nil {
 		domain = env["DOMAIN"]
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, perr := client.Do(req)
-	if perr != nil {
-		fmt.Fprintf(stdout, "probe: error: %v\n", perr)
+	if domain == "" {
+		fmt.Fprintln(stdout, "probe: skipped (DOMAIN not set)")
+	} else if env != nil && IsRealityMode(env) {
+		// Reality direct nodes camouflage TLS via dest=, so an HTTPS probe
+		// always errors on the handshake. TCP connect is the success signal.
+		d := net.Dialer{Timeout: 10 * time.Second}
+		conn, perr := d.DialContext(ctx, "tcp", net.JoinHostPort(domain, "443"))
+		if perr != nil {
+			fmt.Fprintf(stdout, "probe: error: %v\n", perr)
+		} else {
+			conn.Close()
+			fmt.Fprintln(stdout, "probe: reality tcp=open")
+		}
 	} else {
-		resp.Body.Close()
-		fmt.Fprintf(stdout, "probe: code=%d\n", resp.StatusCode)
+		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
+		if rerr != nil {
+			fmt.Fprintf(stdout, "probe: error: build request: %v\n", rerr)
+		} else {
+			client := &http.Client{Timeout: 10 * time.Second}
+			resp, perr := client.Do(req)
+			if perr != nil {
+				fmt.Fprintf(stdout, "probe: error: %v\n", perr)
+			} else {
+				resp.Body.Close()
+				fmt.Fprintf(stdout, "probe: code=%d\n", resp.StatusCode)
+			}
+		}
 	}
 
 	cfg, xerr := xray.Load(xrayConfigPath)

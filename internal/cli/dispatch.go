@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
 	"time"
 
 	"github.com/kulinh/cf-vpn/internal/cert"
@@ -23,7 +22,7 @@ var runUpgrade = commands.RunUpgrade
 var runUpgradeCheck = commands.RunUpgradeCheck
 var buildInstallDeps = func(env map[string]string) commands.InstallDeps {
 	deps := commands.InstallDeps{IP: netinfo.NewDefault(), Cert: cert.NewDefault(), UFW: commands.NewExecUFW(), BinaryRunner: systemd.ExecRunner{}, SystemdRunner: systemd.ExecRunner{}}
-	deps.CF = &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient}
+	deps.CF = cloudflare.DefaultClient(env["CF_API_TOKEN"], env["CF_ACCOUNT_ID"])
 	return deps
 }
 
@@ -250,12 +249,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 				return 1
 			}
 			deps := commands.RotateDeps{
-				CF: &cloudflare.Client{
-					BaseURL:   "https://api.cloudflare.com/client/v4",
-					Token:     env["CF_API_TOKEN"],
-					AccountID: env["CF_ACCOUNT_ID"],
-					HTTP:      http.DefaultClient,
-				},
+				CF:     cloudflare.DefaultClient(env["CF_API_TOKEN"], env["CF_ACCOUNT_ID"]),
 				Runner: systemd.ExecRunner{},
 			}
 			if err := commands.RunRotateCleanup(context.Background(), tunnelID, deps, stdout, stderr); err != nil {

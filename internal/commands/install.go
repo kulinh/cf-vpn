@@ -877,7 +877,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 
 	fmt.Fprintln(stdout, "creating admin tunnel...")
-	suffix, err := generatePassword(4)
+	suffix, err := GeneratePassword(4)
 	if err != nil {
 		return fmt.Errorf("generate tunnel suffix: %w", err)
 	}
@@ -906,13 +906,13 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		return fmt.Errorf("detect public ip: expected IPv4 address, got %q", ip)
 	}
 
-	userUUID, err := generateUUIDv4()
+	userUUID, err := GenerateUUIDv4()
 	if err != nil {
 		return fmt.Errorf("generate uuid: %w", err)
 	}
 	hy2PassUser1 := in.Hy2PassUser1
 	if hy2PassUser1 == "" {
-		hy2PassUser1, err = generatePassword(24)
+		hy2PassUser1, err = GeneratePassword(24)
 		if err != nil {
 			return fmt.Errorf("generate hy2 user password: %w", err)
 		}

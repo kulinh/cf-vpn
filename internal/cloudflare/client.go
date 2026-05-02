@@ -11,7 +11,20 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
+
+// DefaultClient returns a Client wired with a sane HTTP timeout (60s).
+// The Cloudflare API rarely takes more than a few seconds; without a timeout
+// a stuck connection wedges every install/rotate flow indefinitely.
+func DefaultClient(token, accountID string) *Client {
+	return &Client{
+		BaseURL:   "https://api.cloudflare.com/client/v4",
+		Token:     token,
+		AccountID: accountID,
+		HTTP:      &http.Client{Timeout: 60 * time.Second},
+	}
+}
 
 type Client struct {
 	BaseURL   string
