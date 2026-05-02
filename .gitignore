@@ -4,7 +4,7 @@
 /etc/cfvpn/
 /var/lib/cfvpn/subscriptions/
 /var/lib/cfvpn/state/
-bin/cfvpnctl
+bin/
 
 # Editor
 .vscode/
