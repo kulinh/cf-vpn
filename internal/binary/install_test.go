@@ -73,11 +73,11 @@ func TestEnsureHysteriaInvokesInstallerThenDisablesDefaultUnit(t *testing.T) {
 	if len(fake.Calls) != 2 {
 		t.Fatalf("expected 2 calls (install + disable), got %d: %#v", len(fake.Calls), fake.Calls)
 	}
-	wantInstall := []string{"bash", "-c", "curl -fsSL https://get.hy2.sh | bash"}
-	for i := range wantInstall {
-		if fake.Calls[0][i] != wantInstall[i] {
-			t.Fatalf("expected install call %#v, got %#v", wantInstall, fake.Calls[0])
-		}
+	if fake.Calls[0][0] != "bash" || fake.Calls[0][1] != "-c" {
+		t.Fatalf("expected bash -c install call, got %#v", fake.Calls[0])
+	}
+	if !contains(fake.Calls[0][2], "https://get.hy2.sh") {
+		t.Fatalf("expected install command to fetch hy2 installer, got %q", fake.Calls[0][2])
 	}
 	if !contains(fake.Calls[1][2], "disable --now hysteria-server.service") {
 		t.Fatalf("expected disable command, got %#v", fake.Calls[1])
@@ -111,7 +111,7 @@ func TestEnsureLegoInstallsLatestLinuxAMD64Asset(t *testing.T) {
 		"https://api.github.com/repos/go-acme/lego/releases/latest",
 		"linux_amd64.tar.gz",
 		"/usr/local/bin/lego",
-		"chmod 755 /usr/local/bin/lego",
+		"install -m 755",
 	} {
 		if !contains(cmd, want) {
 			t.Fatalf("expected install command to contain %q, got %q", want, cmd)

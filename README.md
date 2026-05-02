@@ -163,13 +163,16 @@ Public subscription URL per user is `https://<panel-host>/sub/<32-hex-token>`. C
 
 ```bash
 # Local dev
-wrangler d1 execute cfvpn --local  --file panel/worker/migrations/0010_nodes_reality_xhttp.sql
+wrangler d1 execute cfvpn --local  --file panel/worker/migrations/0011_nodes_agent_secret.sql
 
 # Production
-wrangler d1 execute cfvpn --remote --file panel/worker/migrations/0010_nodes_reality_xhttp.sql
+wrangler d1 execute cfvpn --remote --file panel/worker/migrations/0011_nodes_agent_secret.sql
 ```
 
-Migration `0010` is purely additive (5 nullable columns: `reality_pubkey`, `reality_sid`, `reality_sni`, `reality_dest`, `xhttp_path`). Backwards compatible with pre-Reality rows.
+Migrations 0010 and 0011 are purely additive (nullable columns) — backwards compatible with older rows.
+
+- `0010_nodes_reality_xhttp.sql` adds `reality_pubkey`, `reality_sid`, `reality_sni`, `reality_dest`, `xhttp_path`.
+- `0011_nodes_agent_secret.sql` adds `agent_secret` — the per-node bearer the Worker sends on `/admin/v1/*`. Mirror `/etc/cfvpn/cfvpn.env`'s `AGENT_SHARED_SECRET` into this column with the SQL printed by `install-node.sh`. The Worker falls back to the global `AGENT_SHARED_SECRET` env var when the column is null, so existing nodes keep working until you migrate them.
 
 ## Tests
 

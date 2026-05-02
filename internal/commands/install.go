@@ -275,24 +275,21 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 	}
 
 	// Read existing users from xray config to populate hysteria config.
-	// ListUserNames returns email-formatted names (e.g. "alice@vpn"); match by
-	// the base name (strip the @vpn suffix) or by exact match on userName.
+	// ListUserNames returns canonical bare names (the xray package strips the
+	// internal "@vpn" suffix) so a direct compare against userName is correct.
 	xrayCfg, _ := xray.Load(xrayConfigPath)
 	var hysteriaUsers []templates.HysteriaUser
-	baseUserName := strings.TrimSuffix(userName, "@vpn")
 	for _, name := range xray.ListUserNames(xrayCfg) {
-		nameBase := strings.TrimSuffix(name, "@vpn")
 		var pass string
-		if nameBase == baseUserName && hy2PassUser1 != "" {
+		if name == userName && hy2PassUser1 != "" {
 			pass = hy2PassUser1
 		} else {
 			pass, _ = generatePasswordFrom(rng, 24)
 		}
-		// Use base name (without @vpn) for hysteria config.
-		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: nameBase, Password: pass})
+		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: name, Password: pass})
 	}
 	if len(hysteriaUsers) == 0 {
-		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: baseUserName, Password: hy2PassUser1})
+		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: userName, Password: hy2PassUser1})
 	}
 
 	hyInputs := templates.HysteriaInputs{
@@ -670,7 +667,7 @@ func usersFromCurrentXray() ([]templates.XrayUser, error) {
 		if !ok {
 			return nil, fmt.Errorf("user %q has no vless client", name)
 		}
-		users = append(users, templates.XrayUser{Name: strings.TrimSuffix(name, "@vpn"), UUID: uuid})
+		users = append(users, templates.XrayUser{Name: name, UUID: uuid})
 	}
 	return users, nil
 }

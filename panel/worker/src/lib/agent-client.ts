@@ -14,13 +14,23 @@ async function withTimeout(input: RequestInfo, init: RequestInit, timeoutMs: num
   }
 }
 
+export interface AgentTarget {
+  adminHost: string;
+  // agentSecret is the per-node bearer mirrored from /etc/cfvpn/cfvpn.env into
+  // nodes.agent_secret in D1. When empty the Worker falls back to env.AGENT_SHARED_SECRET
+  // (legacy single-secret mode); new deployments must always populate it.
+  agentSecret?: string | null;
+}
+
 export async function callAgent<T>(
   env: Env,
-  adminHost: string,
+  target: AgentTarget | string,
   path: string,
   init: RequestInit = {},
   timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<T> {
+  const adminHost = typeof target === "string" ? target : target.adminHost;
+  const perNodeSecret = typeof target === "string" ? "" : (target.agentSecret ?? "");
   const hostError = validateAdminHost(adminHost, env);
   if (hostError) {
     throw new Error(`invalid_admin_host: ${hostError}`);
@@ -31,8 +41,9 @@ export async function callAgent<T>(
     ...serviceTokenHeaders(env),
     ...(init.headers ?? {})
   };
-  if (env.AGENT_SHARED_SECRET) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${env.AGENT_SHARED_SECRET}`;
+  const bearer = perNodeSecret || env.AGENT_SHARED_SECRET || "";
+  if (bearer) {
+    (headers as Record<string, string>)["Authorization"] = `Bearer ${bearer}`;
   }
   const response = await withTimeout(`https://${adminHost}${path}`, { ...init, headers }, timeoutMs);
   const payload = (await response.json().catch(() => null)) as { error?: string; detail?: string } | null;

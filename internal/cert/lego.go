@@ -87,7 +87,7 @@ func (m *LegoManager) run(ctx context.Context, host, token string, command ...st
 		"--domains=" + host,
 	}
 	if os.Getenv("LEGO_DISABLE_CP") == "1" {
-		args = append(args, "--dns.propagation-rns")
+		args = append(args, "--dns.disable-cp")
 	}
 	if resolvers := os.Getenv("LEGO_DNS_RESOLVERS"); resolvers != "" {
 		args = append(args, "--dns.resolvers="+resolvers)

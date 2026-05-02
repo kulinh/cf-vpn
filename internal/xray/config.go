@@ -7,7 +7,24 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
+
+// emailSuffix is the canonical xray email suffix written by AddUser and the
+// templates. ListUserNames/GetVLESSClient/RemoveUser strip it on read so the
+// rest of the codebase can refer to users by their bare name.
+const emailSuffix = "@vpn"
+
+// normalizeEmail returns the canonical bare user name. It strips any number
+// of trailing "@vpn" tokens so legacy clients written with mismatched
+// suffixes still resolve to the right user.
+func normalizeEmail(email string) string {
+	email = strings.TrimSpace(email)
+	for strings.HasSuffix(email, emailSuffix) {
+		email = strings.TrimSuffix(email, emailSuffix)
+	}
+	return email
+}
 
 // Config represents an xray config, preserving any top-level fields the
 // control plane does not know about (log, outbounds, routing, ...).
@@ -326,14 +343,15 @@ func ListUserNames(cfg Config) []string {
 	}
 	out := make([]string, 0, len(s.Clients))
 	for _, c := range s.Clients {
-		out = append(out, c.Email)
+		out = append(out, normalizeEmail(c.Email))
 	}
 	return out
 }
 
 func CountUsers(cfg Config) int { return len(ListUserNames(cfg)) }
 
-// GetVLESSClient returns the UUID of the VLESS client whose email matches name.
+// GetVLESSClient returns the UUID of the VLESS client whose normalized email
+// matches the bare name (with or without the legacy "@vpn" suffix).
 func GetVLESSClient(cfg Config, name string) (string, bool) {
 	in := findInbound(&cfg, "vless")
 	if in == nil {
@@ -343,8 +361,9 @@ func GetVLESSClient(cfg Config, name string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
+	target := normalizeEmail(name)
 	for _, c := range s.Clients {
-		if c.Email == name {
+		if normalizeEmail(c.Email) == target {
 			return c.ID, true
 		}
 	}
@@ -371,7 +390,7 @@ func AddUser(cfg *Config, name, uuid, flow string) error {
 	if err != nil {
 		return err
 	}
-	vs.Clients = append(vs.Clients, vlessClient{ID: uuid, Email: name, Flow: flow})
+	vs.Clients = append(vs.Clients, vlessClient{ID: uuid, Email: name + emailSuffix, Flow: flow})
 	return saveVLESS(vin, vs)
 }
 
@@ -384,10 +403,11 @@ func RemoveUser(cfg *Config, name string) error {
 	if err != nil {
 		return err
 	}
+	target := normalizeEmail(name)
 	found := false
 	filteredV := vs.Clients[:0]
 	for _, c := range vs.Clients {
-		if c.Email == name {
+		if normalizeEmail(c.Email) == target {
 			found = true
 			continue
 		}

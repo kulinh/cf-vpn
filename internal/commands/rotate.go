@@ -88,25 +88,20 @@ func RegenerateSubscriptions(domain string) error {
 		if !ok {
 			return fmt.Errorf("user %q has no vless client", name)
 		}
-		// xray clients rendered from templates carry an `@vpn` suffix in the
-		// email field; clients added later via xray.AddUser do not. Strip it
-		// once so URI fragments and subscription file names are consistent
-		// regardless of how the user was provisioned.
-		base := strings.TrimSuffix(name, "@vpn")
 		var uri string
 		if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
 			uri = subscription.BuildVLESSRealityURI(
-				base, uuid, domain,
+				name, uuid, domain,
 				env[state.KeyRealitySNI],
 				env[state.KeyRealityPub],
 				env[state.KeyRealityShortID],
 			)
 		} else {
-			uri = subscription.BuildVLESSHTTPUpgradeURI(base, uuid, domain, templates.VLESSPath)
+			uri = subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, templates.VLESSPath)
 		}
 		sub := subscription.BuildSubscriptionB64(uri)
-		if err := writeSubscriptionFile(base, sub+"\n"); err != nil {
-			return fmt.Errorf("write subscription for %s: %w", base, err)
+		if err := writeSubscriptionFile(name, sub+"\n"); err != nil {
+			return fmt.Errorf("write subscription for %s: %w", name, err)
 		}
 	}
 	return nil

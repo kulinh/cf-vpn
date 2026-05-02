@@ -31,12 +31,12 @@ async function agentCall<T>(...args: Parameters<AgentCaller>): Promise<T> {
 interface NodeInput {
   id: string;
   label: string;
-  adminHost?: string;
   admin_host?: string;
   host?: string;
   vpn_host?: string;
   hy2_host?: string;
   zone?: string;
+  agent_secret?: string;
 }
 
 interface ZoneRow {
@@ -46,7 +46,7 @@ interface ZoneRow {
 
 export async function listNodes(env: Env): Promise<Response> {
   const rows = await all<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes ORDER BY id")
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes ORDER BY id")
   );
   return json(rows);
 }
@@ -64,10 +64,25 @@ export async function createNode(env: Env, request: Request): Promise<Response> 
   if (!body.id || !body.label) {
     return error(400, { error: "invalid_node", detail: "id,label are required" });
   }
-  const adminHost = generateAdminHost(body.id);
-  if (!adminHost) {
-    return error(400, { error: "invalid_node_id", detail: "id must be a DNS label" });
+  let adminHost: string;
+  if (typeof body.admin_host === "string" && body.admin_host.trim().length > 0) {
+    adminHost = body.admin_host.trim();
+    const hostError = validateAdminHost(adminHost, env);
+    if (hostError) {
+      return error(400, { error: "invalid_admin_host", detail: hostError });
+    }
+  } else {
+    const generated = generateAdminHost(body.id);
+    if (!generated) {
+      return error(400, { error: "invalid_node_id", detail: "id must be a DNS label" });
+    }
+    adminHost = generated;
   }
+  const agentSecretRaw = typeof body.agent_secret === "string" ? body.agent_secret.trim() : "";
+  if (agentSecretRaw && agentSecretRaw.length < 16) {
+    return error(400, { error: "invalid_agent_secret", detail: "agent_secret must be at least 16 chars" });
+  }
+  const agentSecret = agentSecretRaw || null;
   const hostOverride = body.host ?? body.vpn_host;
   const hasHost = typeof hostOverride === "string" && hostOverride.length > 0;
   const hasZone = typeof body.zone === "string" && body.zone.length > 0;
@@ -108,16 +123,16 @@ export async function createNode(env: Env, request: Request): Promise<Response> 
   const hy2Host = hy2HostOverride.length > 0 ? hy2HostOverride : generateHy2Host(rng, zoneName);
 
   await env.DB.prepare(
-    "INSERT INTO nodes (id,label,admin_host,vpn_host,hy2_host,zone,mode,status,last_seen_at,latency_ms,created_at) VALUES (?, ?, ?, ?, ?, ?, 'direct', 'active', NULL, NULL, ?)"
+    "INSERT INTO nodes (id,label,admin_host,vpn_host,hy2_host,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret) VALUES (?, ?, ?, ?, ?, ?, 'direct', 'active', NULL, NULL, ?, ?)"
   )
-    .bind(body.id, body.label, adminHost, vpnHost, hy2Host, zoneName, nowTs())
+    .bind(body.id, body.label, adminHost, vpnHost, hy2Host, zoneName, nowTs(), agentSecret)
     .run();
   return json({ ok: true, id: body.id, label: body.label, admin_host: adminHost, vpn_host: vpnHost, hy2_host: hy2Host, zone: zoneName }, 201);
 }
 
 export async function getNode(env: Env, id: string): Promise<Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -127,7 +142,7 @@ export async function getNode(env: Env, id: string): Promise<Response> {
 
 export async function patchNode(env: Env, id: string, request: Request): Promise<Response> {
   const existing = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes WHERE id = ?").bind(id)
   );
   if (!existing) {
     return error(404, { error: "node_not_found", detail: id });
@@ -177,7 +192,7 @@ async function resolveZoneIdForHost(env: Env, host: string): Promise<string | nu
 export async function deleteNode(env: Env, id: string): Promise<Response> {
   const row = await one<NodeRow>(
     env.DB.prepare(
-      "SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?"
+      "SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes WHERE id = ?"
     ).bind(id)
   );
   if (!row) {
@@ -194,7 +209,7 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
     try {
       const status = await agentCall<AgentStatusResponse>(
         env,
-        row.admin_host,
+        { adminHost: row.admin_host, agentSecret: row.agent_secret },
         "/admin/v1/status",
         { method: "GET" },
         5000
@@ -213,7 +228,7 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
       try {
         await agentCall<{ ok: boolean }>(
           env,
-          row.admin_host,
+          { adminHost: row.admin_host, agentSecret: row.agent_secret },
           "/admin/v1/shutdown-tunnel",
           { method: "POST", body: "{}" },
           15000
@@ -276,7 +291,7 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
 
 async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -348,7 +363,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     return row;
   }
   try {
-    const status = await agentCall<AgentStatusResponse>(env, row.admin_host, "/admin/v1/status", { method: "GET" }, 5000);
+    const status = await agentCall<AgentStatusResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/status", { method: "GET" }, 5000);
     const mode = typeof status.mode === "string" && status.mode.length > 0 ? status.mode : row.mode ?? null;
     const syncRuntimeFields = mode === "direct";
     const syncCloudflareFields = mode === "cloudflare";
@@ -383,7 +398,7 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
   }
   try {
     const startedAt = Date.now();
-    const out = await callAgent<AgentHealthcheckResponse>(env, row.admin_host, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+    const out = await callAgent<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
     const latencyMs = Math.max(1, Date.now() - startedAt);
     const now = nowTs();
     const measured = { ...out, latency_ms: latencyMs };
@@ -459,7 +474,7 @@ export async function nodeRotate(env: Env, id: string, request: Request, actor: 
   try {
     const out = await agentCall<AgentRotateResponse>(
       env,
-      row.admin_host,
+      { adminHost: row.admin_host, agentSecret: row.agent_secret },
       "/admin/v1/rotate-domain",
       {
         method: "POST",
@@ -515,7 +530,7 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
   try {
     const out = await agentCall<AgentSyncResponse>(
       env,
-      row.admin_host,
+      { adminHost: row.admin_host, agentSecret: row.agent_secret },
       "/admin/v1/sync",
       { method: "POST", body: JSON.stringify({ users: body.users }) },
       120000

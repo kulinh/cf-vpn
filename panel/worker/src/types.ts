@@ -103,6 +103,7 @@ export interface NodeRow {
   reality_sni: string | null;
   reality_dest: string | null;
   xhttp_path: string | null;
+  agent_secret: string | null;
 }
 
 export interface UserRow {

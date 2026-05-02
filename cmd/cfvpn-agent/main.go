@@ -211,7 +211,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "xray_user_invalid", fmt.Sprintf("%s missing vless uuid", name))
 			return
 		}
-		users = append(users, commands.ExistingUser{Name: baseVPNName(name), UUID: uuid})
+		users = append(users, commands.ExistingUser{Name: name, UUID: uuid})
 	}
 	cfClient := &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient}
 	var result commands.RotateDirectResult
@@ -428,13 +428,13 @@ func currentSyncUsers() ([]syncUser, error) {
 	for _, u := range hy2Users {
 		hy2ByName[u.Name] = u.Password
 	}
-	byName := make(map[string]syncUser, len(xray.ListUserNames(cfg)))
-	for _, xrayName := range xray.ListUserNames(cfg) {
-		uuid, ok := xray.GetVLESSClient(cfg, xrayName)
+	names := xray.ListUserNames(cfg)
+	byName := make(map[string]syncUser, len(names))
+	for _, name := range names {
+		uuid, ok := xray.GetVLESSClient(cfg, name)
 		if !ok {
-			return nil, fmt.Errorf("%s missing vless uuid", xrayName)
+			return nil, fmt.Errorf("%s missing vless uuid", name)
 		}
-		name := baseVPNName(xrayName)
 		if _, exists := byName[name]; exists {
 			continue
 		}
@@ -455,18 +455,10 @@ func currentSyncUsers() ([]syncUser, error) {
 	return records, nil
 }
 
-func baseVPNName(name string) string {
-	name = strings.TrimSpace(name)
-	for strings.HasSuffix(name, "@vpn") {
-		name = strings.TrimSuffix(name, "@vpn")
-	}
-	return name
-}
-
 func toTemplateUsers(users []commands.ExistingUser) []templates.XrayUser {
 	out := make([]templates.XrayUser, 0, len(users))
 	for _, u := range users {
-		out = append(out, templates.XrayUser{Name: baseVPNName(u.Name), UUID: u.UUID})
+		out = append(out, templates.XrayUser{Name: u.Name, UUID: u.UUID})
 	}
 	return out
 }

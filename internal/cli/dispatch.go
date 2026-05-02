@@ -273,6 +273,17 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "cert-renew":
+		env, err := state.Load(paths.EnvFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
+			return 1
+		}
+		if err := commands.RunCertRenew(context.Background(), env, commands.CertRenewDeps{Cert: cert.NewDefault()}, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "healthcheck":
 		if len(args) < 2 {
 			fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck {run|install}")

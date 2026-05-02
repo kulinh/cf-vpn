@@ -14,7 +14,7 @@ import { userUpgradeNodes } from "./users";
 import type { Env } from "../types";
 
 type UserRow = { id: string; name: string };
-type NodeRow = { id: string; admin_host: string; status: string };
+type NodeRow = { id: string; admin_host: string; status: string; agent_secret?: string | null };
 type UserNodeRow = { user_id: string; node_id: string; vless_uuid: string; hy2_pw: string; created_at: number };
 
 function makeEnv(seed?: {
@@ -42,9 +42,9 @@ function makeEnv(seed?: {
         return null as never;
       },
       async all() {
-        if (/SELECT id,admin_host FROM nodes WHERE status='active' ORDER BY id/.test(sql)) {
+        if (/SELECT id,admin_host,agent_secret FROM nodes WHERE status='active' ORDER BY id/.test(sql)) {
           return {
-            results: nodes.filter((n) => n.status === "active").map((n) => ({ id: n.id, admin_host: n.admin_host }))
+            results: nodes.filter((n) => n.status === "active").map((n) => ({ id: n.id, admin_host: n.admin_host, agent_secret: n.agent_secret ?? null }))
           } as never;
         }
 

@@ -8,6 +8,7 @@ import { buildSubscriptionForClient } from "../lib/subscription";
 interface NodeMini {
   id: string;
   admin_host: string;
+  agent_secret: string | null;
 }
 
 interface UserWithNodes {
@@ -68,14 +69,14 @@ export async function createUser(env: Env, request: Request, actor: string): Pro
     .bind(id, name, nowTs(), subToken)
     .run();
   const nodes = await all<NodeMini>(
-    env.DB.prepare("SELECT id,admin_host FROM nodes WHERE status='active' ORDER BY id")
+    env.DB.prepare("SELECT id,admin_host,agent_secret FROM nodes WHERE status='active' ORDER BY id")
   );
 
   const results = await Promise.allSettled(
     nodes.map(async (node) => {
       const creds = await callAgent<AgentAddUserResponse>(
         env,
-        node.admin_host,
+        { adminHost: node.admin_host, agentSecret: node.agent_secret },
         "/admin/v1/users",
         { method: "POST", body: JSON.stringify({ name: id }) },
         120000
@@ -109,13 +110,32 @@ export async function deleteUser(env: Env, id: string, actor: string): Promise<R
     return error(404, { error: "user_not_found", detail: id });
   }
 
+  // Target every active node, not only nodes already in user_nodes. The agent
+  // accepts DELETE on a missing user as 404 / no-op, so re-targeting is safe
+  // and ensures partial-failure retries reach nodes that were skipped on the
+  // first try (e.g. a node that came back online after the previous attempt).
   const nodes = await all<NodeMini>(
-    env.DB.prepare("SELECT n.id,n.admin_host FROM user_nodes un JOIN nodes n ON n.id = un.node_id WHERE un.user_id = ? ORDER BY n.id").bind(id)
+    env.DB.prepare(
+      "SELECT id,admin_host,agent_secret FROM nodes WHERE id IN (SELECT node_id FROM user_nodes WHERE user_id = ?) OR status='active' ORDER BY id"
+    ).bind(id)
   );
 
   const results = await Promise.allSettled(
     nodes.map(async (node) => {
-      await callAgent(env, node.admin_host, `/admin/v1/users/${encodeURIComponent(id)}`, { method: "DELETE" }, 120000);
+      try {
+        await callAgent(
+          env,
+          { adminHost: node.admin_host, agentSecret: node.agent_secret },
+          `/admin/v1/users/${encodeURIComponent(id)}`,
+          { method: "DELETE" },
+          120000
+        );
+      } catch (e) {
+        // Treat 404 as success — the user is already absent on that node.
+        if (!String(e).includes("user_not_found") && !String(e).includes("agent_http_404")) {
+          throw e;
+        }
+      }
       await env.DB.prepare("DELETE FROM user_nodes WHERE user_id = ? AND node_id = ?").bind(id, node.id).run();
       return { node_id: node.id, ok: true };
     })
@@ -145,7 +165,7 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
   }
 
   const activeNodes = await all<NodeMini>(
-    env.DB.prepare("SELECT id,admin_host FROM nodes WHERE status='active' ORDER BY id")
+    env.DB.prepare("SELECT id,admin_host,agent_secret FROM nodes WHERE status='active' ORDER BY id")
   );
   const existingRows = await all<{ node_id: string }>(
     env.DB.prepare("SELECT node_id FROM user_nodes WHERE user_id=?").bind(id)
@@ -159,7 +179,7 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
     nodesToAdd.map(async (node) => {
       const creds = await callAgent<AgentAddUserResponse>(
         env,
-        node.admin_host,
+        { adminHost: node.admin_host, agentSecret: node.agent_secret },
         "/admin/v1/users",
         { method: "POST", body: JSON.stringify({ name: id }) },
         120000

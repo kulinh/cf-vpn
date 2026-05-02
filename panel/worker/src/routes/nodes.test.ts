@@ -129,7 +129,8 @@ describe("nodeRotate", () => {
         reality_sid: null,
         reality_sni: null,
         reality_dest: null,
-        xhttp_path: null
+        xhttp_path: null,
+        agent_secret: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "old-zone", enabled: 1 },
@@ -192,7 +193,8 @@ describe("nodeHealthcheck", () => {
         reality_sid: null,
         reality_sni: null,
         reality_dest: null,
-        xhttp_path: null
+        xhttp_path: null,
+        agent_secret: null
       },
       zones: []
     });
@@ -257,7 +259,8 @@ describe("deleteNode", () => {
         reality_sid: null,
         reality_sni: null,
         reality_dest: null,
-        xhttp_path: null
+        xhttp_path: null,
+        agent_secret: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
@@ -302,7 +305,8 @@ describe("deleteNode", () => {
         reality_sid: null,
         reality_sni: null,
         reality_dest: null,
-        xhttp_path: null
+        xhttp_path: null,
+        agent_secret: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
@@ -344,7 +348,8 @@ describe("deleteNode", () => {
         reality_sid: null,
         reality_sni: null,
         reality_dest: null,
-        xhttp_path: null
+        xhttp_path: null,
+        agent_secret: null
       },
       zones: []
     });
@@ -380,7 +385,8 @@ describe("deleteNode", () => {
         reality_sid: null,
         reality_sni: null,
         reality_dest: null,
-        xhttp_path: null
+        xhttp_path: null,
+        agent_secret: null
       },
       zones: []
     });
