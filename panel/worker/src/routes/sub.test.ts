@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { publicSubscription } from "./sub";
-import { buildSubscriptionURIs, encodeSubscriptionBody } from "../lib/subscription";
+import { buildSubscriptionURIs, buildVLESSRealityURI, buildVLESSHTTPUpgradeURI, encodeSubscriptionBody } from "../lib/subscription";
 import type { Env } from "../types";
 
 type FirstResult = Record<string, unknown> | null;
@@ -79,13 +79,14 @@ describe("publicSubscription", () => {
 
   it("returns base64 body with vless+hy2 per node (hy2 only when present)", async () => {
     const token = "c".repeat(32);
+    const nullFields = { mode: null, reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: null };
     const env = makeEnv(
       makeDB({
         userByToken: { [token]: { id: "kulinh" } },
         nodesByUser: {
           kulinh: [
-            { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1" },
-            { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null }
+            { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1", ...nullFields },
+            { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null, ...nullFields }
           ]
         }
       })
@@ -98,8 +99,8 @@ describe("publicSubscription", () => {
     const body = await res.text();
     const expected = encodeSubscriptionBody(
       buildSubscriptionURIs("kulinh", [
-        { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1" },
-        { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null }
+        { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1", ...nullFields },
+        { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null, ...nullFields }
       ]),
       "RWL8899"
     );
@@ -145,5 +146,84 @@ describe("encodeSubscriptionBody", () => {
     const out = encodeSubscriptionBody(uris, "RWL8899");
 
     expect(atob(out)).toBe(`REMARKS=RWL8899\n${uris.join("\n")}`);
+  });
+});
+
+describe("buildVLESSRealityURI", () => {
+  it("builds a reality URI with expected params", () => {
+    const uri = buildVLESSRealityURI(
+      "test@SG", "uid-1", "sg.example.com",
+      "discord.com", "pubkey123", "sid456",
+    );
+    expect(uri).toContain("vless://uid-1@sg.example.com:443");
+    expect(uri).toContain("security=reality");
+    expect(uri).toContain("flow=xtls-rprx-vision");
+    expect(uri).toContain("type=tcp");
+    expect(uri).toContain("sni=discord.com");
+    expect(uri).toContain("pbk=pubkey123");
+    expect(uri).toContain("sid=sid456");
+    expect(uri).toContain("fp=chrome");
+    expect(uri).toContain("#test%40SG-Reality");
+  });
+});
+
+describe("buildVLESSHTTPUpgradeURI", () => {
+  it("builds an HTTPUpgrade URI with path-encoded slashes", () => {
+    const uri = buildVLESSHTTPUpgradeURI(
+      "test@JP1", "uid-2", "jp.example.com", "/api/v1/sync",
+    );
+    expect(uri).toContain("vless://uid-2@jp.example.com:443");
+    expect(uri).toContain("security=tls");
+    expect(uri).toContain("type=httpupgrade");
+    expect(uri).toContain("host=jp.example.com");
+    expect(uri).toContain("path=%2Fapi%2Fv1%2Fsync");
+    expect(uri).toContain("sni=jp.example.com");
+    expect(uri).toContain("#test%40JP1-HTTPUpgrade");
+  });
+});
+
+describe("buildSubscriptionURIs mode branching", () => {
+  const nullFields = { mode: null, reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: null };
+
+  it("emits Reality URI when mode=direct with reality fields", () => {
+    const rows = [{
+      vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG",
+      hy2_host: null as string | null, hy2_port: null as number | null, hy2_obfs_pw: null as string | null,
+      mode: "direct" as const, reality_pubkey: "pk", reality_sid: "sid", reality_sni: "discord.com", xhttp_path: null as string | null,
+    }];
+    const uris = buildSubscriptionURIs("kulinh", rows);
+    const lines = uris.split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("security=reality");
+    expect(lines[0]).toContain("sni=discord.com");
+    expect(lines[0]).toContain("#kulinh%40SG-Reality");
+  });
+
+  it("emits HTTPUpgrade URI when mode=cloudflare", () => {
+    const rows = [{
+      vless_uuid: "u2", hy2_pw: "p2", vpn_host: "cf.example.com", node_id: "CF",
+      hy2_host: null as string | null, hy2_port: null as number | null, hy2_obfs_pw: null as string | null,
+      mode: "cloudflare" as const, reality_pubkey: null as string | null, reality_sid: null as string | null, reality_sni: null as string | null, xhttp_path: "/api/v1/sync",
+    }];
+    const uris = buildSubscriptionURIs("kulinh", rows);
+    const lines = uris.split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("type=httpupgrade");
+    expect(lines[0]).toContain("path=%2Fapi%2Fv1%2Fsync");
+    expect(lines[0]).toContain("#kulinh%40CF-HTTPUpgrade");
+  });
+
+  it("emits legacy WS URI when mode is null (un-migrated node)", () => {
+    const rows = [{
+      vless_uuid: "u3", hy2_pw: "p3", vpn_host: "old.example.com", node_id: "OLD",
+      hy2_host: null as string | null, hy2_port: null as number | null, hy2_obfs_pw: null as string | null,
+      ...nullFields,
+    }];
+    const uris = buildSubscriptionURIs("kulinh", rows);
+    const lines = uris.split("\n");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("type=ws");
+    expect(lines[0]).toContain("path=%2Fvless");
+    expect(lines[0]).toContain("#kulinh%40OLD-VLESS");
   });
 });

@@ -236,9 +236,9 @@ export async function userSubscription(env: Env, id: string): Promise<Response> 
     await env.DB.prepare("UPDATE users SET sub_token=? WHERE id=?").bind(subToken, id).run();
   }
 
-  const rows = await all<{ vless_uuid: string; hy2_pw: string; vpn_host: string; node_id: string; hy2_host: string | null; hy2_port: number | null; hy2_obfs_pw: string | null }>(
+  const rows = await all<{ vless_uuid: string; hy2_pw: string; vpn_host: string; node_id: string; hy2_host: string | null; hy2_port: number | null; hy2_obfs_pw: string | null; mode: string | null; reality_pubkey: string | null; reality_sid: string | null; reality_sni: string | null; xhttp_path: string | null }>(
     env.DB.prepare(
-      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, un.node_id, n.hy2_host, n.hy2_port, n.hy2_obfs_pw FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
+      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, un.node_id, n.hy2_host, n.hy2_port, n.hy2_obfs_pw, n.mode, n.reality_pubkey, n.reality_sid, n.reality_sni, n.xhttp_path FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
     ).bind(id)
   );
   const out = buildSubscriptionForClient(user.id, rows);
