@@ -152,6 +152,49 @@ func RenderXrayCloudflare(users []XrayUser) (string, error) {
 	return string(data), nil
 }
 
+func RenderXrayCloudflareHTTPUpgrade(users []XrayUser, vpnHost string) (string, error) {
+	clients := make([]map[string]string, 0, len(users))
+	for _, u := range users {
+		clients = append(clients, map[string]string{"id": u.UUID, "email": u.Name + "@vpn"})
+	}
+	cfg := map[string]any{
+		"log": map[string]string{"loglevel": "warning"},
+		"inbounds": []any{
+			map[string]any{
+				"tag":      "vless-httpupgrade",
+				"listen":   "127.0.0.1",
+				"port":     10001,
+				"protocol": "vless",
+				"settings": map[string]any{
+					"clients":    clients,
+					"decryption": "none",
+				},
+				"streamSettings": map[string]any{
+					"network": "httpupgrade",
+					"httpupgradeSettings": map[string]any{
+						"path": VLESSPath,
+						"host": vpnHost,
+					},
+				},
+			},
+		},
+		"outbounds": []map[string]any{
+			{"tag": "direct", "protocol": "freedom"},
+			{"tag": "block", "protocol": "blackhole"},
+		},
+		"routing": map[string]any{
+			"rules": []any{
+				map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
+			},
+		},
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
 func RenderHysteriaConfig(in HysteriaInputs) ([]byte, error) {
 	users := make([]hysteria.User, 0, len(in.Users))
 	for _, u := range in.Users {
