@@ -46,6 +46,11 @@ export interface AgentStatusResponse {
   hy2_obfs_pw?: string;
   tunnel_uuid: string;
   last_rotate_at: number;
+  reality_pubkey?: string;
+  reality_sid?: string;
+  reality_sni?: string;
+  reality_dest?: string;
+  xhttp_path?: string;
 }
 
 export interface AgentHealthcheckResponse {
@@ -70,6 +75,12 @@ export interface AgentSyncResponse {
   hy2_port?: number;
   hy2_obfs_pw?: string;
   users: number;
+  mode?: string;
+  reality_pubkey?: string;
+  reality_sid?: string;
+  reality_sni?: string;
+  reality_dest?: string;
+  xhttp_path?: string;
 }
 
 export interface NodeRow {
@@ -87,6 +98,11 @@ export interface NodeRow {
   hy2_host: string | null;
   hy2_port: number | null;
   hy2_obfs_pw: string | null;
+  reality_pubkey: string | null;
+  reality_sid: string | null;
+  reality_sni: string | null;
+  reality_dest: string | null;
+  xhttp_path: string | null;
 }
 
 export interface UserRow {

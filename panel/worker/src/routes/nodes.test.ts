@@ -124,7 +124,12 @@ describe("nodeRotate", () => {
         mode: "direct",
         hy2_host: "hy-old.example.com",
         hy2_port: 22333,
-        hy2_obfs_pw: "old-obfs"
+        hy2_obfs_pw: "old-obfs",
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "old-zone", enabled: 1 },
@@ -182,7 +187,12 @@ describe("nodeHealthcheck", () => {
         mode: "cloudflare",
         hy2_host: "hy-old.example.com",
         hy2_port: 22333,
-        hy2_obfs_pw: "old-obfs"
+        hy2_obfs_pw: "old-obfs",
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null
       },
       zones: []
     });
@@ -242,7 +252,12 @@ describe("deleteNode", () => {
         mode: "direct",
         hy2_host: "hy-old.example.net",
         hy2_port: 22333,
-        hy2_obfs_pw: "obfs"
+        hy2_obfs_pw: "obfs",
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
@@ -282,7 +297,12 @@ describe("deleteNode", () => {
         mode: "direct",
         hy2_host: null,
         hy2_port: null,
-        hy2_obfs_pw: null
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
@@ -319,7 +339,12 @@ describe("deleteNode", () => {
         mode: "direct",
         hy2_host: null,
         hy2_port: null,
-        hy2_obfs_pw: null
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null
       },
       zones: []
     });
@@ -350,7 +375,12 @@ describe("deleteNode", () => {
         mode: "direct",
         hy2_host: null,
         hy2_port: null,
-        hy2_obfs_pw: null
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null
       },
       zones: []
     });
