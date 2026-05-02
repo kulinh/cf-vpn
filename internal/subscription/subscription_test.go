@@ -5,14 +5,6 @@ import (
 	"testing"
 )
 
-func TestBuildVLESSURI(t *testing.T) {
-	uri := BuildVLESSURI("alice", "uuid-a", "vpn.example.com")
-	want := "vless://uuid-a@vpn.example.com:443?encryption=none&security=tls&type=ws&host=vpn.example.com&path=%2Fvless&sni=vpn.example.com#alice-VLESS"
-	if uri != want {
-		t.Fatalf("unexpected URI: %s", uri)
-	}
-}
-
 func TestBuildVLESSRealityURI(t *testing.T) {
 	got := BuildVLESSRealityURI("alice", "uuid-a", "node1.example.com",
 		"www.microsoft.com", "pubkey-x25519", "d3cbbc0b4c5bc5f9")

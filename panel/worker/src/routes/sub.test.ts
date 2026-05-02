@@ -79,14 +79,20 @@ describe("publicSubscription", () => {
 
   it("returns base64 body with vless+hy2 per node (hy2 only when present)", async () => {
     const token = "c".repeat(32);
-    const nullFields = { mode: null, reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: null };
+    const realityFields = {
+      mode: "direct",
+      reality_pubkey: "pubkey-x25519",
+      reality_sid: "abcd1234",
+      reality_sni: "www.microsoft.com",
+      xhttp_path: null
+    };
     const env = makeEnv(
       makeDB({
         userByToken: { [token]: { id: "kulinh" } },
         nodesByUser: {
           kulinh: [
-            { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1", ...nullFields },
-            { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null, ...nullFields }
+            { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1", ...realityFields },
+            { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null, ...realityFields }
           ]
         }
       })
@@ -99,8 +105,8 @@ describe("publicSubscription", () => {
     const body = await res.text();
     const expected = encodeSubscriptionBody(
       buildSubscriptionURIs("kulinh", [
-        { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1", ...nullFields },
-        { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null, ...nullFields }
+        { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1", ...realityFields },
+        { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null, ...realityFields }
       ]),
       "RWL8899"
     );
@@ -213,17 +219,13 @@ describe("buildSubscriptionURIs mode branching", () => {
     expect(lines[0]).toContain("#kulinh%40CF-HTTPUpgrade");
   });
 
-  it("emits legacy WS URI when mode is null (un-migrated node)", () => {
+  it("skips nodes with no mode (legacy WS+TLS no longer supported)", () => {
     const rows = [{
       vless_uuid: "u3", hy2_pw: "p3", vpn_host: "old.example.com", node_id: "OLD",
       hy2_host: null as string | null, hy2_port: null as number | null, hy2_obfs_pw: null as string | null,
       ...nullFields,
     }];
     const uris = buildSubscriptionURIs("kulinh", rows);
-    const lines = uris.split("\n");
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain("type=ws");
-    expect(lines[0]).toContain("path=%2Fvless");
-    expect(lines[0]).toContain("#kulinh%40OLD-VLESS");
+    expect(uris).toBe("");
   });
 });

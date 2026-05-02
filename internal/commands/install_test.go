@@ -919,7 +919,13 @@ func seedUpgradeConfig(t *testing.T) {
 	if err := state.SaveAtomic(envFilePath, map[string]string{"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "DOMAIN": "proxied.example.com", "TUNNEL_UUID": "old-tun", "NODE_ID": "JPY-04", "USER1_NAME": "alice", "UUID_USER1": "u-1", "TROJAN_PASS_USER1": "p-1", "SUB_TOKEN_USER1": "subtok"}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := templates.RenderXrayDirect(templates.XrayDirectInputs{Users: []templates.XrayUser{{Name: "alice", UUID: "u-1"}}, Certs: []templates.XrayCert{{Zone: "example.com", CertFile: "/old/cert", KeyFile: "/old/key"}}})
+	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		Users:       []templates.XrayUser{{Name: "alice", UUID: "u-1"}},
+		PrivateKey:  "test-priv-x25519",
+		ShortIDs:    []string{"abcd1234"},
+		Dest:        "www.microsoft.com:443",
+		ServerNames: []string{"www.microsoft.com"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1158,10 +1164,13 @@ func seedUpgradeTrojanConfig(t *testing.T) {
 	}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Trojan-era xray config (VLESS-only, since K1 already removed Trojan inbound).
-	rendered, err := templates.RenderXrayDirect(templates.XrayDirectInputs{
-		Users: []templates.XrayUser{{Name: "alice", UUID: "u-1"}},
-		Certs: []templates.XrayCert{{Zone: "example.com", CertFile: "/old/cert", KeyFile: "/old/key"}},
+	// Pre-HY2 era xray config (VLESS-only) — used to verify upgrade preserves users.
+	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		Users:       []templates.XrayUser{{Name: "alice", UUID: "u-1"}},
+		PrivateKey:  "test-priv-x25519",
+		ShortIDs:    []string{"abcd1234"},
+		Dest:        "www.microsoft.com:443",
+		ServerNames: []string{"www.microsoft.com"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1332,9 +1341,12 @@ func TestRunUpgradeWithExistingHY2IsIdempotent(t *testing.T) {
 	}, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := templates.RenderXrayDirect(templates.XrayDirectInputs{
-		Users: []templates.XrayUser{{Name: "alice", UUID: "u-1"}},
-		Certs: []templates.XrayCert{{Zone: "example.com", CertFile: "/etc/cfvpn/xray/cert.pem", KeyFile: "/etc/cfvpn/xray/key.pem"}},
+	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		Users:       []templates.XrayUser{{Name: "alice", UUID: "u-1"}},
+		PrivateKey:  "test-priv-x25519",
+		ShortIDs:    []string{"abcd1234"},
+		Dest:        "www.microsoft.com:443",
+		ServerNames: []string{"www.microsoft.com"},
 	})
 	if err != nil {
 		t.Fatal(err)

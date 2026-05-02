@@ -159,7 +159,6 @@ type RotateDirectInputs struct {
 	OldZoneID     string
 	CFAPIToken    string
 	ExistingUsers []ExistingUser
-	ExtraCerts    []templates.XrayCert
 	// HY2 fields
 	NewHy2Host   string
 	NewHy2Zone   string
@@ -211,6 +210,9 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		return RotateDirectResult{}, fmt.Errorf("load env: %w", err)
 	}
 	realityParams, realityMode := loadRealityFromEnv(env)
+	if !realityMode {
+		return RotateDirectResult{}, fmt.Errorf("rotate-direct requires Reality params in cfvpn.env (REALITY_PRIVATE_KEY, REALITY_SHORT_ID); legacy WS+TLS direct mode is no longer supported — run `cfvpnctl upgrade --mode direct` to migrate this node")
+	}
 
 	ip, err := deps.IP.Detect(ctx)
 	if err != nil {
@@ -222,16 +224,7 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		return RotateDirectResult{}, fmt.Errorf("detect public ip: expected IPv4 address, got %q", ip)
 	}
 
-	// Reality nodes have no public LE cert on :443 (TLS is camouflaged via
-	// Reality dest). Only legacy WS+TLS direct nodes need a VPN-host cert.
-	var hostCert, hostKey string
-	if !realityMode {
-		hostCert, hostKey = CertPathsForHost(in.NewHost)
-		if err := deps.Cert.Issue(ctx, in.NewHost, hostCert, hostKey, in.CFAPIToken); err != nil {
-			return RotateDirectResult{}, fmt.Errorf("issue cert for %s: %w", in.NewHost, err)
-		}
-	}
-
+	// Reality nodes have no public LE cert on :443; only HY2 needs a real cert.
 	in.NewHy2Host = strings.TrimSpace(in.NewHy2Host)
 	in.NewHy2ZoneID = strings.TrimSpace(in.NewHy2ZoneID)
 	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
@@ -245,24 +238,15 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 	if err != nil {
 		return RotateDirectResult{}, err
 	}
-	var rendered string
-	if realityMode {
-		rendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
-			Users:       users,
-			PrivateKey:  realityParams.PrivateKey,
-			ShortIDs:    []string{realityParams.ShortID},
-			Dest:        realityParams.Dest,
-			ServerNames: []string{realityParams.SNI},
-		})
-		if err != nil {
-			return RotateDirectResult{}, fmt.Errorf("render xray reality config: %w", err)
-		}
-	} else {
-		certs := append([]templates.XrayCert{{Zone: in.NewZone, CertFile: hostCert, KeyFile: hostKey}}, in.ExtraCerts...)
-		rendered, err = templates.RenderXrayDirect(templates.XrayDirectInputs{Users: users, Certs: certs})
-		if err != nil {
-			return RotateDirectResult{}, fmt.Errorf("render xray direct config: %w", err)
-		}
+	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		Users:       users,
+		PrivateKey:  realityParams.PrivateKey,
+		ShortIDs:    []string{realityParams.ShortID},
+		Dest:        realityParams.Dest,
+		ServerNames: []string{realityParams.SNI},
+	})
+	if err != nil {
+		return RotateDirectResult{}, fmt.Errorf("render xray reality config: %w", err)
 	}
 
 	oldConfig, oldConfigErr := os.ReadFile(xrayConfigPath)

@@ -16,15 +16,6 @@ export interface SubscriptionRow {
   xhttp_path: string | null;
 }
 
-/**
- * @deprecated WS-path URI. Use buildVLESSRealityURI for direct mode or
- * buildVLESSXHTTPURI for cloudflare mode once all nodes are migrated.
- */
-export function buildVLESSURI(name: string, uuid: string, domain: string): string {
-  const enc = encodeURIComponent;
-  return `vless://${uuid}@${domain}:443?encryption=none&security=tls&type=ws&host=${enc(domain)}&path=%2Fvless&sni=${enc(domain)}#${enc(name)}-VLESS`;
-}
-
 // Server-side hysteria uses `auth.type: userpass`, so the URI must include the
 // username before the password. Without it, the client gets a 404 auth error.
 export function buildVLESSRealityURI(
@@ -60,7 +51,9 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
       const path = r.xhttp_path ?? "/api/v1/sync";
       uri = buildVLESSHTTPUpgradeURI(tag, r.vless_uuid, r.vpn_host, path);
     } else {
-      uri = buildVLESSURI(tag, r.vless_uuid, r.vpn_host);
+      // Direct node missing Reality params is broken state; emit nothing
+      // rather than a legacy WS+TLS URI that no current xray serves.
+      continue;
     }
     lines.push(uri);
     if (r.hy2_host && r.hy2_port && r.hy2_obfs_pw) {

@@ -152,10 +152,34 @@ func withRotateDirectTempPaths(t *testing.T) string {
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, subscriptionDir, hysteriaConfigPath = oldEnv, oldXray, oldSub, oldHy
 	})
-	if err := state.SaveAtomic(envFilePath, map[string]string{}, 0o600); err != nil {
+	if err := state.SaveAtomic(envFilePath, realityRotateEnv(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// realityRotateEnv returns a base env with Reality params populated. Required
+// since RunRotateDirect refuses to run without Reality (legacy WS+TLS removed).
+func realityRotateEnv() map[string]string {
+	return map[string]string{
+		state.KeyRealityPriv:    "test-priv-x25519",
+		state.KeyRealityPub:     "test-pub-x25519",
+		state.KeyRealityShortID: "abcd1234",
+		state.KeyRealityDest:    "www.microsoft.com:443",
+		state.KeyRealitySNI:     "www.microsoft.com",
+	}
+}
+
+// saveEnv merges extra keys into a Reality-seeded env and writes it.
+func saveEnv(t *testing.T, extra map[string]string) {
+	t.Helper()
+	env := realityRotateEnv()
+	for k, v := range extra {
+		env[k] = v
+	}
+	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // writeTestHysteriaConfig writes a minimal but valid hysteria config to hysteriaConfigPath.
@@ -205,9 +229,7 @@ func (m *trackingCertManager) Renew(_ context.Context, _, _, _, _ string, _ int)
 
 func TestRunRotateDirectHappyPath(t *testing.T) {
 	withRotateDirectTempPaths(t)
-	if err := state.SaveAtomic(envFilePath, map[string]string{"DOMAIN": "old.example.com"}, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	saveEnv(t, map[string]string{"DOMAIN": "old.example.com"})
 	cf := &fakeRotateDirectCF{}
 	runner := &recordingRunner{}
 	var out, errBuf bytes.Buffer
@@ -241,15 +263,18 @@ func TestRunRotateDirectHappyPath(t *testing.T) {
 	}
 }
 
-func TestRunRotateDirectIssuePopulatesMissingCertPath(t *testing.T) {
+// TestRunRotateDirectSkipsVpnHostCertOnReality verifies Reality nodes do not
+// issue an LE cert for the VPN host on rotate (Reality camouflages TLS via
+// dest=, no public cert needed). Only HY2 gets a real cert when present.
+func TestRunRotateDirectSkipsVpnHostCertOnReality(t *testing.T) {
 	withRotateDirectTempPaths(t)
 	cert := &fakeCertManager{populateOnEnsure: true}
 	_, err := RunRotateDirect(context.Background(), RotateDirectInputs{NewHost: "vpn.example.com", NewZone: "example.com", NewZoneID: "z", ExistingUsers: []ExistingUser{{Name: "alice", UUID: "u"}}}, RotateDirectDeps{CF: &fakeRotateDirectCF{}, IP: fakeIPDetector{ip: "203.0.113.10"}, Cert: cert, Runner: &recordingRunner{}}, &bytes.Buffer{}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cert.ensureCalled != 1 {
-		t.Fatalf("Issue called %d times", cert.ensureCalled)
+	if cert.ensureCalled != 0 {
+		t.Fatalf("expected no cert.Issue calls (Reality + no HY2 host), got %d", cert.ensureCalled)
 	}
 }
 
@@ -357,12 +382,10 @@ func TestRunRotateDirectRejectsNonIPv4(t *testing.T) {
 
 func TestRunRotateDirectHy2RotatesHostCertDNSService(t *testing.T) {
 	withRotateDirectTempPaths(t)
-	if err := state.SaveAtomic(envFilePath, map[string]string{
+	saveEnv(t, map[string]string{
 		"HY2_PORT":    "45321",
 		"HY2_OBFS_PW": "obfs-test-pw",
-	}, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	})
 	writeTestHysteriaConfig(t)
 
 	cf := &fakeRotateDirectCF{}
@@ -388,15 +411,13 @@ func TestRunRotateDirectHy2RotatesHostCertDNSService(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// cert issued for both hosts
-	if len(cm.hosts) != 2 {
-		t.Fatalf("expected 2 cert.Issue calls, got %d: %v", len(cm.hosts), cm.hosts)
+	// On Reality direct nodes, only HY2 needs a real LE cert; the VPN host
+	// uses Reality's TLS camouflage (no cert).
+	if len(cm.hosts) != 1 {
+		t.Fatalf("expected 1 cert.Issue call (HY2 only), got %d: %v", len(cm.hosts), cm.hosts)
 	}
-	if cm.hosts[0] != "vpn.example.com" {
-		t.Errorf("first Issue host: got %q want %q", cm.hosts[0], "vpn.example.com")
-	}
-	if cm.hosts[1] != "hy2.example.com" {
-		t.Errorf("second Issue host: got %q want %q", cm.hosts[1], "hy2.example.com")
+	if cm.hosts[0] != "hy2.example.com" {
+		t.Errorf("Issue host: got %q want %q", cm.hosts[0], "hy2.example.com")
 	}
 
 	// A records upserted: VPN + HY2
@@ -457,9 +478,7 @@ func TestRunRotateDirectHy2RotatesHostCertDNSService(t *testing.T) {
 
 func TestRunRotateDirectHy2DeletesOldHy2Record(t *testing.T) {
 	withRotateDirectTempPaths(t)
-	if err := state.SaveAtomic(envFilePath, map[string]string{"HY2_PORT": "45321", "HY2_OBFS_PW": "pw"}, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	saveEnv(t, map[string]string{"HY2_PORT": "45321", "HY2_OBFS_PW": "pw"})
 	writeTestHysteriaConfig(t)
 
 	cf := &fakeRotateDirectCF{}
@@ -489,9 +508,7 @@ func TestRunRotateDirectHy2DeletesOldHy2Record(t *testing.T) {
 
 func TestRunRotateDirectNoHy2WhenNewHy2HostEmpty(t *testing.T) {
 	withRotateDirectTempPaths(t)
-	if err := state.SaveAtomic(envFilePath, map[string]string{"HY2_PORT": "45321", "HY2_OBFS_PW": "pw"}, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	saveEnv(t, map[string]string{"HY2_PORT": "45321", "HY2_OBFS_PW": "pw"})
 	cm := &trackingCertManager{}
 	cf := &fakeRotateDirectCF{}
 	res, err := RunRotateDirect(context.Background(), RotateDirectInputs{
@@ -504,8 +521,8 @@ func TestRunRotateDirectNoHy2WhenNewHy2HostEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only VPN cert issued
-	if len(cm.hosts) != 1 || cm.hosts[0] != "vpn.example.com" {
+	// On Reality + no HY2 host, no certs are issued (Reality has no public cert).
+	if len(cm.hosts) != 0 {
 		t.Errorf("unexpected cert.Issue calls: %v", cm.hosts)
 	}
 	// Only VPN A record upserted (no HY2)
@@ -520,9 +537,7 @@ func TestRunRotateDirectNoHy2WhenNewHy2HostEmpty(t *testing.T) {
 
 func TestRunRotateDirectHy2IgnoresOldHy2DeleteFailure(t *testing.T) {
 	withRotateDirectTempPaths(t)
-	if err := state.SaveAtomic(envFilePath, map[string]string{"HY2_PORT": "45321", "HY2_OBFS_PW": "pw"}, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	saveEnv(t, map[string]string{"HY2_PORT": "45321", "HY2_OBFS_PW": "pw"})
 	writeTestHysteriaConfig(t)
 
 	cf := &fakeRotateDirectCF{deleteErr: map[string]error{"hy2-old-zone/hy2-old.example.com": errors.New("dns delete failed")}}

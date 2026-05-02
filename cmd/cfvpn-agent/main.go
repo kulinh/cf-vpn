@@ -531,16 +531,7 @@ func renderXrayForMode(env map[string]string, users []commands.ExistingUser) (st
 		}
 		return out, nil
 	}
-	// Legacy direct (WS+TLS): reuse existing host cert, no reissue.
-	hostCert, hostKey := commands.CertPathsForHost(env["DOMAIN"])
-	out, err := templates.RenderXrayDirect(templates.XrayDirectInputs{
-		Users: tplUsers,
-		Certs: []templates.XrayCert{{Zone: zoneForHost(env["DOMAIN"]), CertFile: hostCert, KeyFile: hostKey}},
-	})
-	if err != nil {
-		return "", fmt.Errorf("render direct xray: %w", err)
-	}
-	return out, nil
+	return "", fmt.Errorf("legacy WS+TLS direct mode is no longer supported; run `cfvpnctl upgrade --mode direct` to migrate this node to Reality")
 }
 
 func probeHealth(ctx context.Context, env map[string]string) (int, error) {

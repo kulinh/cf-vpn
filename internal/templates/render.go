@@ -15,17 +15,6 @@ type XrayUser struct {
 	UUID string
 }
 
-type XrayCert struct {
-	Zone     string
-	CertFile string
-	KeyFile  string
-}
-
-type XrayDirectInputs struct {
-	Users []XrayUser
-	Certs []XrayCert
-}
-
 type XrayDirectRealityInputs struct {
 	Users       []XrayUser
 	PrivateKey  string
@@ -63,23 +52,6 @@ ingress:
   - hostname: {{.AdminHost}}
     service: http://127.0.0.1:6788
   - service: http_status:404
-`
-
-const xrayTemplate = `{
-  "log": {"loglevel": "warning"},
-  "inbounds": [
-    {
-      "tag": "vless-ws",
-      "listen": "127.0.0.1",
-      "port": 10001,
-      "protocol": "vless",
-      "settings": {"clients": [{"id": "{{.UUID}}", "email": "{{.User}}@vpn"}], "decryption": "none"},
-      "streamSettings": {"network": "ws", "wsSettings": {"path": "/api/v1/sync"}}
-    }
-  ],
-  "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
-  "routing": {"rules": [{"type": "field", "ip": ["geoip:private"], "outboundTag": "block"}]}
-}
 `
 
 func RenderCloudflaredAdmin(tunnelUUID, adminHost string) (string, error) {
@@ -159,65 +131,6 @@ func RenderHysteriaConfig(in HysteriaInputs) ([]byte, error) {
 		DownMbps: in.DownMbps,
 		Users:    users,
 	})
-}
-
-// Deprecated: WS-path renderer. Use RenderXrayDirectReality for direct mode or
-// RenderXrayCloudflareXHTTP for cloudflare mode once all nodes are migrated.
-func RenderXrayDirect(in XrayDirectInputs) (string, error) {
-	if len(in.Certs) == 0 {
-		return "", errors.New("at least one certificate is required")
-	}
-
-	vlessClients := make([]map[string]string, 0, len(in.Users))
-	for _, u := range in.Users {
-		vlessClients = append(vlessClients, map[string]string{"id": u.UUID, "email": u.Name + "@vpn"})
-	}
-
-	var certs []map[string]string
-	for _, c := range in.Certs {
-		certs = append(certs, map[string]string{"certificateFile": c.CertFile, "keyFile": c.KeyFile})
-	}
-
-	cfg := map[string]any{
-		"log": map[string]string{"loglevel": "warning"},
-		"inbounds": []any{
-			map[string]any{
-				"tag":      "vless-ws",
-				"listen":   "0.0.0.0",
-				"port":     443,
-				"protocol": "vless",
-				"settings": map[string]any{
-					"clients":    vlessClients,
-					"decryption": "none",
-				},
-				"streamSettings": map[string]any{
-					"network":  "ws",
-					"security": "tls",
-					"wsSettings": map[string]any{
-						"path": "/api/v1/sync",
-					},
-					"tlsSettings": map[string]any{
-						"certificates": certs,
-					},
-				},
-			},
-		},
-		"outbounds": []map[string]any{
-			{"tag": "direct", "protocol": "freedom"},
-			{"tag": "block", "protocol": "blackhole"},
-		},
-		"routing": map[string]any{
-			"rules": []any{
-				map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
-			},
-		},
-	}
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }
 
 func RenderXrayDirectReality(in XrayDirectRealityInputs) (string, error) {
