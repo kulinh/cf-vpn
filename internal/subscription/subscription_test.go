@@ -31,16 +31,15 @@ func TestBuildVLESSRealityURI(t *testing.T) {
 	}
 }
 
-func TestBuildVLESSXHTTPURI(t *testing.T) {
-	got := BuildVLESSXHTTPURI("alice", "uuid-a", "vpn.example.com", "/api/v1/sync")
+func TestBuildVLESSHTTPUpgradeURI(t *testing.T) {
+	got := BuildVLESSHTTPUpgradeURI("alice", "uuid-a", "vpn.example.com", "/api/v1/sync")
 	for _, want := range []string{
 		"vless://uuid-a@vpn.example.com:443",
 		"security=tls",
-		"type=xhttp",
+		"type=httpupgrade",
 		"path=%2Fapi%2Fv1%2Fsync",
-		"mode=stream-up",
 		"sni=vpn.example.com",
-		"#alice-XHTTP",
+		"#alice-HTTPUpgrade",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in %q", want, got)

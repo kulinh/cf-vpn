@@ -93,7 +93,7 @@ func regenerateSubscriptions(domain string) error {
 				env[state.KeyRealityShortID],
 			)
 		} else {
-			uri = subscription.BuildVLESSURI(name, uuid, domain)
+			uri = subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, templates.VLESSPath)
 		}
 		sub := subscription.BuildSubscriptionB64(uri)
 		if err := writeSubscriptionFile(name, sub+"\n"); err != nil {

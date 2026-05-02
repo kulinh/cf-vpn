@@ -58,7 +58,7 @@ const cloudflaredWithAdminTemplate = `tunnel: {{.TunnelUUID}}
 credentials-file: /etc/cfvpn/cloudflared/{{.TunnelUUID}}.json
 ingress:
   - hostname: {{.Domain}}
-    path: ^/api/v1/sync$
+    path: ^/api/v1/sync
     service: http://127.0.0.1:10001
   - hostname: {{.AdminHost}}
     service: http://127.0.0.1:6788

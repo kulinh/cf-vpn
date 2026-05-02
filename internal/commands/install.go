@@ -399,7 +399,7 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			return fail(fmt.Errorf("render xray reality config: %w", err))
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflare(users)
+		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, newHost)
 		if err != nil {
 			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
 		}
@@ -870,7 +870,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 			return fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflare(users)
+		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain)
 		if err != nil {
 			return fmt.Errorf("render xray cloudflare config: %w", err)
 		}
@@ -972,8 +972,8 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		vlessURI = subscription.BuildVLESSRealityURI(in.User1Name, userUUID, domain,
 			realityParams.SNI, realityParams.PublicKey, realityParams.ShortID)
 	} else {
-		// TODO(phase-1.3): switch to BuildVLESSXHTTPURI after Phase 0 spike
-		vlessURI = subscription.BuildVLESSURI(in.User1Name, userUUID, domain)
+		// Phase 0: XHTTP failed through cloudflared; using HTTPUpgrade instead
+		vlessURI = subscription.BuildVLESSHTTPUpgradeURI(in.User1Name, userUUID, domain, templates.VLESSPath)
 	}
 	sub := base64.StdEncoding.EncodeToString([]byte(vlessURI))
 	fmt.Fprintln(stdout, sub)

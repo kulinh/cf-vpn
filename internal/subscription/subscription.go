@@ -7,7 +7,7 @@ import (
 )
 
 // Deprecated: WS-path URI. Use BuildVLESSRealityURI for direct mode or
-// BuildVLESSXHTTPURI for cloudflare mode.
+// BuildVLESSHTTPUpgradeURI for cloudflare mode.
 func BuildVLESSURI(name, uuid, domain string) string {
 	return fmt.Sprintf("vless://%s@%s:443?encryption=none&security=tls&type=ws&host=%s&path=%%2Fvless&sni=%s#%s-VLESS", uuid, domain, domain, domain, name)
 }
@@ -19,10 +19,10 @@ func BuildVLESSRealityURI(name, uuid, host, sni, pbk, sid string) string {
 	)
 }
 
-func BuildVLESSXHTTPURI(name, uuid, domain, path string) string {
+func BuildVLESSHTTPUpgradeURI(name, uuid, domain, path string) string {
 	encPath := strings.ReplaceAll(path, "/", "%2F")
 	return fmt.Sprintf(
-		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=stream-up&sni=%s#%s-XHTTP",
+		"vless://%s@%s:443?encryption=none&security=tls&type=httpupgrade&host=%s&path=%s&sni=%s#%s-HTTPUpgrade",
 		uuid, domain, domain, encPath, domain, name,
 	)
 }

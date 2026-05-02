@@ -524,7 +524,7 @@ func TestRunInstallCloudflareModeRendersTunnelIngressAndLoopbackXray(t *testing.
 		t.Fatal(err)
 	}
 	cfS := string(cfCfg)
-	for _, want := range []string{"hostname: vpn.example.com", "path: ^/api/v1/sync$", "service: http://127.0.0.1:10001", "hostname: jpy-04.rwl247.dev", "service: http://127.0.0.1:6788"} {
+	for _, want := range []string{"hostname: vpn.example.com", "path: ^/api/v1/sync", "service: http://127.0.0.1:10001", "hostname: jpy-04.rwl247.dev", "service: http://127.0.0.1:6788"} {
 		if !strings.Contains(cfS, want) {
 			t.Fatalf("cloudflared config missing %q:\n%s", want, cfS)
 		}
