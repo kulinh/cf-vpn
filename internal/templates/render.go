@@ -26,6 +26,14 @@ type XrayDirectInputs struct {
 	Certs []XrayCert
 }
 
+type XrayDirectRealityInputs struct {
+	Users       []XrayUser
+	PrivateKey  string
+	ShortIDs    []string
+	Dest        string
+	ServerNames []string
+}
+
 type HysteriaUser struct{ Name, Password string }
 
 type HysteriaInputs struct {
@@ -191,6 +199,73 @@ func RenderXrayDirect(in XrayDirectInputs) (string, error) {
 					},
 					"tlsSettings": map[string]any{
 						"certificates": certs,
+					},
+				},
+			},
+		},
+		"outbounds": []map[string]any{
+			{"tag": "direct", "protocol": "freedom"},
+			{"tag": "block", "protocol": "blackhole"},
+		},
+		"routing": map[string]any{
+			"rules": []any{
+				map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
+			},
+		},
+	}
+
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func RenderXrayDirectReality(in XrayDirectRealityInputs) (string, error) {
+	if in.PrivateKey == "" {
+		return "", errors.New("privateKey is required")
+	}
+	if in.Dest == "" {
+		return "", errors.New("dest is required")
+	}
+	if len(in.ServerNames) == 0 {
+		return "", errors.New("at least one serverName is required")
+	}
+	if len(in.ShortIDs) == 0 {
+		return "", errors.New("at least one shortId is required")
+	}
+
+	clients := make([]map[string]string, 0, len(in.Users))
+	for _, u := range in.Users {
+		clients = append(clients, map[string]string{
+			"id":    u.UUID,
+			"email": u.Name + "@vpn",
+			"flow":  "xtls-rprx-vision",
+		})
+	}
+
+	cfg := map[string]any{
+		"log": map[string]string{"loglevel": "warning"},
+		"inbounds": []any{
+			map[string]any{
+				"tag":      "vless-reality",
+				"listen":   "0.0.0.0",
+				"port":     443,
+				"protocol": "vless",
+				"settings": map[string]any{
+					"clients":    clients,
+					"decryption": "none",
+				},
+				"streamSettings": map[string]any{
+					"network":  "tcp",
+					"security": "reality",
+					"realitySettings": map[string]any{
+						"show":        false,
+						"dest":        in.Dest,
+						"xver":        0,
+						"serverNames": in.ServerNames,
+						"privateKey":  in.PrivateKey,
+						"shortIds":    in.ShortIDs,
 					},
 				},
 			},
