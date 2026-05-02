@@ -377,15 +377,26 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 		return fail(err)
 	}
 
+	var realityParams xray.RealityParams
 	var xrayRendered string
 	if in.Mode == "direct" {
-		certPath, keyPath := CertPathsForHost(newHost)
-		if err := deps.Cert.Issue(ctx, newHost, certPath, keyPath, env["CF_API_TOKEN"]); err != nil {
-			return fail(fmt.Errorf("issue cert for %s: %w", newHost, err))
+		var ok bool
+		realityParams, ok = loadRealityFromEnv(env)
+		if !ok {
+			realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{})
+			if err != nil {
+				return fail(fmt.Errorf("generate reality params: %w", err))
+			}
 		}
-		xrayRendered, err = templates.RenderXrayDirect(templates.XrayDirectInputs{Users: users, Certs: []templates.XrayCert{{Zone: zone, CertFile: certPath, KeyFile: keyPath}}})
+		xrayRendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+			Users:       users,
+			PrivateKey:  realityParams.PrivateKey,
+			ShortIDs:    []string{realityParams.ShortID},
+			Dest:        realityParams.Dest,
+			ServerNames: []string{realityParams.SNI},
+		})
 		if err != nil {
-			return fail(fmt.Errorf("render xray direct config: %w", err))
+			return fail(fmt.Errorf("render xray reality config: %w", err))
 		}
 	} else {
 		xrayRendered, err = templates.RenderXrayCloudflare(users)
@@ -454,6 +465,15 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	env["ADMIN_HOST"] = adminHost
 	env["ADMIN_TUNNEL_UUID"] = oldTunnel
 	delete(env, "TUNNEL_UUID")
+	if in.Mode == "direct" {
+		env[state.KeyRealityPriv] = realityParams.PrivateKey
+		env[state.KeyRealityPub] = realityParams.PublicKey
+		env[state.KeyRealityShortID] = realityParams.ShortID
+		env[state.KeyRealityDest] = realityParams.Dest
+		env[state.KeyRealitySNI] = realityParams.SNI
+	} else {
+		env[state.KeyXHTTPPath] = templates.VLESSPath
+	}
 	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
 		return fail(fmt.Errorf("save env: %w", err))
 	}
@@ -522,6 +542,17 @@ func validateIPv4(ip string) error {
 		return fmt.Errorf("detect public ip: expected IPv4 address, got %q", strings.TrimSpace(ip))
 	}
 	return nil
+}
+
+func loadRealityFromEnv(env map[string]string) (xray.RealityParams, bool) {
+	p := xray.RealityParams{
+		PrivateKey: env[state.KeyRealityPriv],
+		PublicKey:  env[state.KeyRealityPub],
+		ShortID:    env[state.KeyRealityShortID],
+		Dest:       env[state.KeyRealityDest],
+		SNI:        env[state.KeyRealitySNI],
+	}
+	return p, p.PrivateKey != "" && p.ShortID != ""
 }
 
 func usersFromCurrentXray() ([]templates.XrayUser, error) {
@@ -743,12 +774,6 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if err := deps.Cert.Issue(ctx, hy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {
 		return fmt.Errorf("issue cert for %s: %w", hy2Host, err)
 	}
-	certPath, keyPath := XrayCertPaths()
-	if in.Mode == "direct" {
-		if err := deps.Cert.Issue(ctx, domain, certPath, keyPath, in.CFAPIToken); err != nil {
-			return fmt.Errorf("issue cert for %s: %w", domain, err)
-		}
-	}
 
 	fmt.Fprintln(stdout, "creating admin tunnel...")
 	suffix, err := generatePassword(4)
@@ -792,6 +817,16 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		}
 	}
 
+	var realityParams xray.RealityParams
+	if in.Mode == "direct" {
+		var err error
+		realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{})
+		if err != nil {
+			return fmt.Errorf("generate reality params: %w", err)
+		}
+		fmt.Fprintf(stdout, "generated Reality keypair (pub: %s)\n", realityParams.PublicKey)
+	}
+
 	fmt.Fprintln(stdout, "configuring dns...")
 	if zoneID == "" {
 		zone := zoneOfDomain(domain)
@@ -821,14 +856,21 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 
 	fmt.Fprintln(stdout, "rendering configs...")
+	users := []templates.XrayUser{{Name: in.User1Name, UUID: userUUID}}
 	var xrayRendered string
 	if in.Mode == "direct" {
-		xrayRendered, err = templates.RenderXrayDirect(templates.XrayDirectInputs{Users: []templates.XrayUser{{Name: in.User1Name, UUID: userUUID}}, Certs: []templates.XrayCert{{Zone: zone, CertFile: certPath, KeyFile: keyPath}}})
+		xrayRendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+			Users:       users,
+			PrivateKey:  realityParams.PrivateKey,
+			ShortIDs:    []string{realityParams.ShortID},
+			Dest:        realityParams.Dest,
+			ServerNames: []string{realityParams.SNI},
+		})
 		if err != nil {
-			return fmt.Errorf("render xray direct config: %w", err)
+			return fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXray(in.User1Name, userUUID, hy2PassUser1)
+		xrayRendered, err = templates.RenderXrayCloudflare(users)
 		if err != nil {
 			return fmt.Errorf("render xray cloudflare config: %w", err)
 		}
@@ -859,7 +901,32 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		return fmt.Errorf("write cloudflared config: %w", err)
 	}
 
-	if err := state.SaveAtomic(envFilePath, map[string]string{"CF_API_TOKEN": in.CFAPIToken, "CF_ACCOUNT_ID": in.CFAccountID, "NODE_ID": in.NodeID, "DOMAIN": domain, "USER1_NAME": in.User1Name, "MODE": in.Mode, "PUBLIC_IP": ip, "ADMIN_HOST": adminHost, "ADMIN_TUNNEL_UUID": tunnelID, "UUID_USER1": userUUID, "HY2_HOST": hy2Host, "HY2_PORT": hy2Port, "HY2_OBFS_PW": hy2ObfsPW, "HY2_PASS_USER1": hy2PassUser1}, 0o600); err != nil {
+	envMap := map[string]string{
+		"CF_API_TOKEN":        in.CFAPIToken,
+		"CF_ACCOUNT_ID":       in.CFAccountID,
+		"NODE_ID":             in.NodeID,
+		"DOMAIN":              domain,
+		"USER1_NAME":          in.User1Name,
+		"MODE":                in.Mode,
+		"PUBLIC_IP":           ip,
+		"ADMIN_HOST":          adminHost,
+		"ADMIN_TUNNEL_UUID":   tunnelID,
+		"UUID_USER1":          userUUID,
+		"HY2_HOST":            hy2Host,
+		"HY2_PORT":            hy2Port,
+		"HY2_OBFS_PW":         hy2ObfsPW,
+		"HY2_PASS_USER1":      hy2PassUser1,
+	}
+	if in.Mode == "direct" {
+		envMap[state.KeyRealityPriv] = realityParams.PrivateKey
+		envMap[state.KeyRealityPub] = realityParams.PublicKey
+		envMap[state.KeyRealityShortID] = realityParams.ShortID
+		envMap[state.KeyRealityDest] = realityParams.Dest
+		envMap[state.KeyRealitySNI] = realityParams.SNI
+	} else {
+		envMap[state.KeyXHTTPPath] = templates.VLESSPath
+	}
+	if err := state.SaveAtomic(envFilePath, envMap, 0o600); err != nil {
 		return fmt.Errorf("save env: %w", err)
 	}
 
@@ -900,7 +967,15 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 
 	fmt.Fprintf(stdout, "install complete: %s mode %s -> %s, admin %s\n", in.Mode, domain, ip, adminHost)
-	sub := base64.StdEncoding.EncodeToString([]byte(subscription.BuildVLESSURI(in.User1Name, userUUID, domain)))
+	var vlessURI string
+	if in.Mode == "direct" {
+		vlessURI = subscription.BuildVLESSRealityURI(in.User1Name, userUUID, domain,
+			realityParams.SNI, realityParams.PublicKey, realityParams.ShortID)
+	} else {
+		// TODO(phase-1.3): switch to BuildVLESSXHTTPURI after Phase 0 spike
+		vlessURI = subscription.BuildVLESSURI(in.User1Name, userUUID, domain)
+	}
+	sub := base64.StdEncoding.EncodeToString([]byte(vlessURI))
 	fmt.Fprintln(stdout, sub)
 	return nil
 }

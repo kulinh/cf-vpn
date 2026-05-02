@@ -74,14 +74,28 @@ func regenerateSubscriptions(domain string) error {
 		return fmt.Errorf("load xray config: %w", err)
 	}
 
+	env, err := state.Load(envFilePath)
+	if err != nil {
+		return fmt.Errorf("load env: %w", err)
+	}
+
 	for _, name := range xray.ListUserNames(cfg) {
 		uuid, ok := xray.GetVLESSClient(cfg, name)
 		if !ok {
 			return fmt.Errorf("user %q has no vless client", name)
 		}
-		sub := subscription.BuildSubscriptionB64(
-			subscription.BuildVLESSURI(name, uuid, domain),
-		)
+		var uri string
+		if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
+			uri = subscription.BuildVLESSRealityURI(
+				strings.TrimSuffix(name, "@vpn"), uuid, domain,
+				env[state.KeyRealitySNI],
+				env[state.KeyRealityPub],
+				env[state.KeyRealityShortID],
+			)
+		} else {
+			uri = subscription.BuildVLESSURI(name, uuid, domain)
+		}
+		sub := subscription.BuildSubscriptionB64(uri)
 		if err := writeSubscriptionFile(name, sub+"\n"); err != nil {
 			return fmt.Errorf("write subscription for %s: %w", name, err)
 		}

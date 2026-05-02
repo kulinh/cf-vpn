@@ -45,8 +45,17 @@ func GenerateRealityParams(opts GenerateRealityOptions) (RealityParams, error) {
 			switch {
 			case strings.HasPrefix(line, "Private key:"):
 				kp.Private = strings.TrimSpace(strings.TrimPrefix(line, "Private key:"))
+			case strings.HasPrefix(line, "PrivateKey:"):
+				kp.Private = strings.TrimSpace(strings.TrimPrefix(line, "PrivateKey:"))
 			case strings.HasPrefix(line, "Public key:"):
 				kp.Public = strings.TrimSpace(strings.TrimPrefix(line, "Public key:"))
+			case strings.Contains(line, "PublicKey"):
+				// Handle "Password (PublicKey): <value>" format
+				idx := strings.Index(line, "PublicKey")
+				rest := line[idx+len("PublicKey"):]
+				rest = strings.TrimLeft(rest, "): ")
+				rest = strings.TrimRight(rest, ")")
+				kp.Public = strings.TrimSpace(rest)
 			}
 		}
 		if kp.Private == "" || kp.Public == "" {

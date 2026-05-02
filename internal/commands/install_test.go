@@ -372,7 +372,6 @@ func TestRunInstallIssuesHy2AndDirectVPNCertsToServicePaths(t *testing.T) {
 
 	want := []fakeCertIssue{
 		{host: "hy2.example.com", cert: "/etc/cfvpn/hysteria/cert.pem", key: "/etc/cfvpn/hysteria/key.pem", token: "cf-token"},
-		{host: "vpn.example.com", cert: "/etc/cfvpn/xray/cert.pem", key: "/etc/cfvpn/xray/key.pem", token: "cf-token"},
 	}
 	if !reflect.DeepEqual(cert.issues, want) {
 		t.Fatalf("cert issues = %#v, want %#v", cert.issues, want)
@@ -765,8 +764,8 @@ auth:
 	if !strings.Contains(stdoutStr, "creating admin tunnel...") {
 		t.Fatalf("stdout missing 'creating admin tunnel...': %q", stdoutStr)
 	}
-	if cert.host != "vpn.example.com" {
-		t.Fatalf("cert host = %q", cert.host)
+	if cert.host != "hy2.example.com" {
+		t.Fatalf("cert host = %q, want hy2.example.com (xray cert no longer issued for direct Reality mode)", cert.host)
 	}
 	if len(ufw.rules) != 2 || ufw.rules[0] != "443/tcp" || ufw.rules[1] != "24430/udp" {
 		t.Fatalf("ufw rules = %#v, want [443/tcp 24430/udp]", ufw.rules)
@@ -776,12 +775,12 @@ auth:
 		t.Fatalf("bad cloudflared config: %s", cfCfg)
 	}
 	xrayCfg, _ := os.ReadFile(xrayConfigPath)
-	for _, want := range []string{"\"listen\": \"0.0.0.0\"", "\"port\": 443", "\"network\": \"ws\"", "\"security\": \"tls\"", "\"path\": \"/api/v1/sync\"", "/etc/cfvpn/xray/cert.pem", "/etc/cfvpn/xray/key.pem", "alice@vpn"} {
+	for _, want := range []string{"\"listen\": \"0.0.0.0\"", "\"port\": 443", "\"network\": \"tcp\"", "\"security\": \"reality\"", "\"flow\": \"xtls-rprx-vision\"", "alice@vpn"} {
 		if !strings.Contains(string(xrayCfg), want) {
 			t.Fatalf("xray config missing %q: %s", want, xrayCfg)
 		}
 	}
-	for _, notWant := range []string{"127.0.0.1", "10001", "tls-fallback", "fallbacks"} {
+	for _, notWant := range []string{"127.0.0.1", "10001", "ws", "tls-fallback", "fallbacks"} {
 		if strings.Contains(string(xrayCfg), notWant) {
 			t.Fatalf("direct xray config contains fallback shim %q: %s", notWant, xrayCfg)
 		}
@@ -975,13 +974,10 @@ func TestRunUpgradePreservesUsersAndSetsDirectEnv(t *testing.T) {
 	if !strings.Contains(string(xrayRaw), "u-1") {
 		t.Fatalf("xray did not preserve credentials: %s", xrayRaw)
 	}
-	wantCertPath, wantKeyPath := CertPathsForHost(res.NewHost)
-	if cert.host != res.NewHost || cert.cert != wantCertPath || cert.key != wantKeyPath {
-		t.Fatalf("cert issue = host %q cert %q key %q, want new host %q cert %q key %q", cert.host, cert.cert, cert.key, res.NewHost, wantCertPath, wantKeyPath)
-	}
-	for _, want := range []string{wantCertPath, wantKeyPath} {
-		if !strings.Contains(string(xrayRaw), want) {
-			t.Fatalf("xray config missing new host cert path %q: %s", want, xrayRaw)
+	// Reality direct mode no longer issues xray certs.
+	for _, notWant := range []string{"/etc/cfvpn/certs/", "fullchain.pem", "privkey.pem"} {
+		if strings.Contains(string(xrayRaw), notWant) {
+			t.Fatalf("xray config should not contain cert path %q: %s", notWant, xrayRaw)
 		}
 	}
 	if len(cf.aRecords) != 2 || cf.aRecords[0][0] != "zone-1" || cf.aRecords[0][1] != res.NewHost || cf.aRecords[0][2] != "203.0.113.42" {
