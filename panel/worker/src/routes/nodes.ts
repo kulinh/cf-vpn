@@ -312,10 +312,15 @@ async function persistNodeRuntime(
     hy2: Hy2Runtime;
     last_seen_at: number;
     latency_ms: number | null;
+    reality_pubkey: string | null;
+    reality_sid: string | null;
+    reality_sni: string | null;
+    reality_dest: string | null;
+    xhttp_path: string | null;
   }
 ): Promise<void> {
   await env.DB.prepare(
-    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=? WHERE id=?"
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=? WHERE id=?"
   )
     .bind(
       fields.vpn_host,
@@ -327,6 +332,11 @@ async function persistNodeRuntime(
       fields.hy2.hy2_obfs_pw,
       fields.last_seen_at,
       fields.latency_ms,
+      fields.reality_pubkey,
+      fields.reality_sid,
+      fields.reality_sni,
+      fields.reality_dest,
+      fields.xhttp_path,
       id
     )
     .run();
@@ -351,6 +361,11 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       hy2: mergeHy2Runtime(row, status),
       last_seen_at: nowTs(),
       latency_ms: row.latency_ms ?? null,
+      reality_pubkey: syncRuntimeFields ? status.reality_pubkey ?? row.reality_pubkey : row.reality_pubkey,
+      reality_sid: syncRuntimeFields ? status.reality_sid ?? row.reality_sid : row.reality_sid,
+      reality_sni: syncRuntimeFields ? status.reality_sni ?? row.reality_sni : row.reality_sni,
+      reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
+      xhttp_path: syncRuntimeFields ? status.xhttp_path ?? row.xhttp_path : row.xhttp_path,
     });
     return json(status);
   } catch (e) {
@@ -514,6 +529,11 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
       hy2: mergeHy2Runtime(row, out),
       last_seen_at: nowTs(),
       latency_ms: row.latency_ms ?? null,
+      reality_pubkey: syncRuntimeFields ? out.reality_pubkey ?? row.reality_pubkey : row.reality_pubkey,
+      reality_sid: syncRuntimeFields ? out.reality_sid ?? row.reality_sid : row.reality_sid,
+      reality_sni: syncRuntimeFields ? out.reality_sni ?? row.reality_sni : row.reality_sni,
+      reality_dest: syncRuntimeFields ? out.reality_dest ?? row.reality_dest : row.reality_dest,
+      xhttp_path: syncRuntimeFields ? out.xhttp_path ?? row.xhttp_path : row.xhttp_path,
     });
     await logEvent(env, actor, "node.sync", "ok", out, id);
     return json(out);
