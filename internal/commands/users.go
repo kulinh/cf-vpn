@@ -11,8 +11,10 @@ import (
 
 	"github.com/kulinh/cf-vpn/internal/hysteria"
 	"github.com/kulinh/cf-vpn/internal/paths"
+	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/subscription"
 	"github.com/kulinh/cf-vpn/internal/systemd"
+	"github.com/kulinh/cf-vpn/internal/templates"
 	"github.com/kulinh/cf-vpn/internal/xray"
 )
 
@@ -95,10 +97,21 @@ func writeSubscriptionFile(name, content string) error {
 	return nil
 }
 
-// buildSubscriptionFor constructs the base64 subscription string for a user.
-func buildSubscriptionFor(name, uuid, domain string) string {
-	v := subscription.BuildVLESSURI(name, uuid, domain)
-	return subscription.BuildSubscriptionB64(v)
+// buildSubscriptionFor constructs the subscription string for a user, branching
+// on the node's mode.
+func buildSubscriptionFor(name, uuid, domain string, env map[string]string) string {
+	var uri string
+	if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
+		uri = subscription.BuildVLESSRealityURI(
+			name, uuid, domain,
+			env[state.KeyRealitySNI],
+			env[state.KeyRealityPub],
+			env[state.KeyRealityShortID],
+		)
+	} else {
+		uri = subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, templates.VLESSPath)
+	}
+	return subscription.BuildSubscriptionB64(uri)
 }
 
 func resolveRunner(r systemd.Runner) systemd.Runner {
@@ -147,7 +160,11 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 		return fmt.Errorf("save xray config: %w", err)
 	}
 
-	sub := buildSubscriptionFor(in.Name, uuid, in.Domain)
+	env, envErr := state.Load(envFilePath)
+	if envErr != nil {
+		env = map[string]string{}
+	}
+	sub := buildSubscriptionFor(in.Name, uuid, in.Domain, env)
 	if err := writeSubscriptionFile(in.Name, sub+"\n"); err != nil {
 		return fmt.Errorf("write subscription: %w", err)
 	}
@@ -223,12 +240,29 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 		return fmt.Errorf("load xray config: %w", err)
 	}
 
+	env, envErr := state.Load(envFilePath)
+	if envErr != nil {
+		env = map[string]string{}
+	}
+
+	buildURI := func(name, uuid string) string {
+		if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
+			return subscription.BuildVLESSRealityURI(
+				name, uuid, in.Domain,
+				env[state.KeyRealitySNI],
+				env[state.KeyRealityPub],
+				env[state.KeyRealityShortID],
+			)
+		}
+		return subscription.BuildVLESSHTTPUpgradeURI(name, uuid, in.Domain, templates.VLESSPath)
+	}
+
 	if in.Name != "" {
 		uuid, ok := xray.GetVLESSClient(cfg, in.Name)
 		if !ok {
 			return fmt.Errorf("user %q not found", in.Name)
 		}
-		fmt.Fprintln(stdout, subscription.BuildVLESSURI(in.Name, uuid, in.Domain))
+		fmt.Fprintln(stdout, buildURI(in.Name, uuid))
 		return nil
 	}
 
@@ -242,7 +276,7 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 			fmt.Fprintln(stdout)
 		}
 		fmt.Fprintf(stdout, "# %s\n", name)
-		fmt.Fprintln(stdout, subscription.BuildVLESSURI(name, uuid, in.Domain))
+		fmt.Fprintln(stdout, buildURI(name, uuid))
 	}
 	return nil
 }

@@ -448,7 +448,7 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	}
 	result := commands.RotateDirectResult{VpnHost: env["DOMAIN"], PublicIP: env["PUBLIC_IP"], Hy2Host: env["HY2_HOST"], Hy2Port: parseInt(env["HY2_PORT"]), Hy2ObfsPW: env["HY2_OBFS_PW"]}
 	if strings.TrimSpace(env["MODE"]) == "cloudflare" {
-		rendered, err := templates.RenderXrayCloudflare(toTemplateUsers(users))
+		rendered, err := templates.RenderXrayCloudflareHTTPUpgrade(toTemplateUsers(users), env["DOMAIN"])
 		if err != nil {
 			return nil, commands.RotateDirectResult{}, fmt.Errorf("render cloudflare xray: %w", err)
 		}
@@ -497,12 +497,12 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 
 func probeHealth(ctx context.Context, domain string, mode string) (int, error) {
 	if strings.TrimSpace(mode) == "cloudflare" {
-		return probeURL(ctx, "http://127.0.0.1:10001/vless")
+		return probeURL(ctx, "http://127.0.0.1:10001"+templates.VLESSPath)
 	}
 	if strings.TrimSpace(domain) == "" {
 		return 0, fmt.Errorf("DOMAIN is empty")
 	}
-	return probeURL(ctx, "https://"+domain+"/vless")
+	return probeURL(ctx, "https://"+domain+templates.VLESSPath)
 }
 
 func probeURL(ctx context.Context, url string) (int, error) {
