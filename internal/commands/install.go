@@ -20,6 +20,7 @@ import (
 	"github.com/kulinh/cf-vpn/internal/binary"
 	"github.com/kulinh/cf-vpn/internal/cert"
 	"github.com/kulinh/cf-vpn/internal/hysteria"
+	"github.com/kulinh/cf-vpn/internal/netcheck"
 	"github.com/kulinh/cf-vpn/internal/netinfo"
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/subscription"
@@ -177,6 +178,10 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 	}
 	if in.Mode == "" {
 		in.Mode = "direct"
+	}
+	if in.Mode == "auto" {
+		in.Mode = netcheck.SuggestMode()
+		fmt.Fprintf(stdout, "auto-detected mode: %s\n", in.Mode)
 	}
 	if in.Mode != "direct" && in.Mode != "cloudflare" {
 		return UpgradeResult{}, fmt.Errorf("MODE must be direct or cloudflare")
@@ -635,6 +640,10 @@ func copyTree(src, dst string) error {
 // RunInstall performs the full install orchestration per section 6 of the
 // standalone design spec.
 func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout, stderr io.Writer) error {
+	if in.Mode == "" || in.Mode == "auto" {
+		in.Mode = netcheck.SuggestMode()
+		fmt.Fprintf(stdout, "auto-detected mode: %s\n", in.Mode)
+	}
 	if in.Mode != "direct" && in.Mode != "cloudflare" {
 		return fmt.Errorf("MODE must be direct or cloudflare")
 	}

@@ -416,7 +416,7 @@ func TestInstallRequiresToken(t *testing.T) {
 }
 
 func TestInstallRejectsBadModeBeforeDNS(t *testing.T) {
-	for _, mode := range []string{"", "proxy", "DIRECT"} {
+	for _, mode := range []string{"proxy", "DIRECT"} {
 		var out, errBuf bytes.Buffer
 		cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-1", adminHostZone: "admin-zone"}}
 		cfg := InstallInputs{CFAPIToken: "t", CFAccountID: "a", Domain: "vpn.example.com", NodeID: "JPY-04", User1Name: "alice", Mode: mode}

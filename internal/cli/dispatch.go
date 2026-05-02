@@ -59,7 +59,7 @@ func parseUpgradeArgs(args []string, allowCheck bool) (commands.UpgradeInputs, b
 			}
 			check = true
 		case "--mode":
-			if i+1 >= len(args) || (args[i+1] != "direct" && args[i+1] != "cloudflare") {
+			if i+1 >= len(args) || (args[i+1] != "direct" && args[i+1] != "cloudflare" && args[i+1] != "auto") {
 				return commands.UpgradeInputs{}, false, false
 			}
 			in.Mode = args[i+1]
@@ -93,7 +93,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		}
 		upgradeIn, check, ok := parseUpgradeArgs(upgradeArgs, true)
 		if !ok || check && !upgrade || !upgrade && len(upgradeArgs) > 0 {
-			fmt.Fprintln(stderr, "usage: cfvpnctl install [--upgrade [--check] [--mode direct|cloudflare]]")
+			fmt.Fprintln(stderr, "usage: cfvpnctl install [--upgrade [--check] [--mode auto|direct|cloudflare]]")
 			return 2
 		}
 		if upgrade {
@@ -135,7 +135,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "upgrade":
 		upgradeIn, check, ok := parseUpgradeArgs(args[1:], false)
 		if !ok || check {
-			fmt.Fprintln(stderr, "usage: cfvpnctl upgrade [--mode direct|cloudflare]")
+			fmt.Fprintln(stderr, "usage: cfvpnctl upgrade [--mode auto|direct|cloudflare]")
 			return 2
 		}
 		env, err := state.Load(envFile)
