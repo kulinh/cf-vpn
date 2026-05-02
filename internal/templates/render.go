@@ -102,10 +102,14 @@ func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, e
 	return b.String(), err
 }
 
+// Deprecated: WS-path renderer. Use RenderXrayDirectReality for direct mode or
+// RenderXrayCloudflareXHTTP for cloudflare mode once all nodes are migrated.
 func RenderXray(user, uuid, password string) (string, error) {
 	return RenderXrayCloudflare([]XrayUser{{Name: user, UUID: uuid}})
 }
 
+// Deprecated: WS-path renderer. Use RenderXrayDirectReality for direct mode or
+// RenderXrayCloudflareXHTTP for cloudflare mode once all nodes are migrated.
 func RenderXrayCloudflare(users []XrayUser) (string, error) {
 	clients := make([]map[string]string, 0, len(users))
 	for _, u := range users {
@@ -164,6 +168,8 @@ func RenderHysteriaConfig(in HysteriaInputs) ([]byte, error) {
 	})
 }
 
+// Deprecated: WS-path renderer. Use RenderXrayDirectReality for direct mode or
+// RenderXrayCloudflareXHTTP for cloudflare mode once all nodes are migrated.
 func RenderXrayDirect(in XrayDirectInputs) (string, error) {
 	if len(in.Certs) == 0 {
 		return "", errors.New("at least one certificate is required")

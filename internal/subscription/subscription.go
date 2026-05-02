@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-// Deprecated: WS path. Will be removed once all nodes are migrated to Reality or XHTTP.
+// Deprecated: WS-path URI. Use BuildVLESSRealityURI for direct mode or
+// BuildVLESSXHTTPURI for cloudflare mode.
 func BuildVLESSURI(name, uuid, domain string) string {
 	return fmt.Sprintf("vless://%s@%s:443?encryption=none&security=tls&type=ws&host=%s&path=%%2Fvless&sni=%s#%s-VLESS", uuid, domain, domain, domain, name)
 }

@@ -11,6 +11,10 @@ export interface SubscriptionRow {
   node_id: string;
 }
 
+/**
+ * @deprecated WS-path URI. Use buildVLESSRealityURI for direct mode or
+ * buildVLESSXHTTPURI for cloudflare mode once all nodes are migrated.
+ */
 export function buildVLESSURI(name: string, uuid: string, domain: string): string {
   const enc = encodeURIComponent;
   return `vless://${uuid}@${domain}:443?encryption=none&security=tls&type=ws&host=${enc(domain)}&path=%2Fvless&sni=${enc(domain)}#${enc(name)}-VLESS`;
