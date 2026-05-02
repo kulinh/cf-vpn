@@ -1,29 +1,33 @@
-# cf-vpn
+# cfvpn
 
-Multi-VPS VPN control system for VLESS + Hysteria2 nodes, with Cloudflare used for DNS, the admin tunnel, the Worker API, D1 storage, and the React management panel.
+Multi-VPS VPN control system: Cloudflare Worker backend with D1 storage, React admin panel, and per-node `cfvpn-agent` managing Xray (VLESS) + Hysteria2 via systemd.
 
 ## Architecture
 
-- Direct-mode clients connect to each VPS public IP through Cloudflare DNS-only hostnames.
-- Cloudflare-mode VLESS clients connect through Cloudflare Tunnel when a VPS cannot expose TCP 443 directly.
-- VLESS runs on Xray with WebSocket path `/vless`; direct mode uses TCP 443 with TLS, and cloudflare mode uses local `127.0.0.1:10001` behind cloudflared.
-- Hysteria2 runs over UDP on a generated high port with salamander obfs.
-- Cloudflare Tunnel always carries node admin/control traffic to the local `cfvpn-agent` on `127.0.0.1:6788`.
-- The Worker stores nodes, users, per-user node credentials, public subscription tokens, zones, and events in D1.
-- The panel calls authenticated `/api/*` routes; mobile clients fetch unauthenticated token subscriptions from `/sub/:token`.
+```
+Panel (React + Cloudflare Pages)
+  └─ Worker API (Hono + D1) ──┐
+                                │ Bearer
+  cfvpn-agent (:6788) ◄────────┘  cloudflared tunnel (admin)
+    ├─ xray (VLESS Reality / HTTPUpgrade) :10001
+    ├─ hysteria2 (UDP salamander obfs)
+    └─ cloudflared ingress → /api/v1/sync → 127.0.0.1:10001
+```
+
+**Direct mode** (port 443 reachable): VLESS + XTLS-Reality (Vision flow `xtls-rprx-vision`), TLS camouflage via `dest=www.microsoft.com:443`, X25519 keypair + 8-byte shortId per node. No Let's Encrypt cert needed.
+
+**Cloudflare mode** (no inbound 443): VLESS + HTTPUpgrade on `127.0.0.1:10001`, path `/api/v1/sync`, tunneled via cloudflared.
+
+**Hysteria2** runs alongside VLESS on both modes over UDP with salamander obfs.
 
 ## Build
 
 ```bash
 go build -o bin/cfvpnctl ./cmd/cfvpnctl
 go build -o bin/cfvpn-agent ./cmd/cfvpn-agent
-sudo install -m 0755 bin/cfvpnctl /usr/local/bin/cfvpnctl
-sudo install -m 0755 bin/cfvpn-agent /usr/local/bin/cfvpn-agent
 ```
 
 ## Fresh VPS install
-
-Use the bootstrap script — it validates inputs, builds both binaries, writes the full env file, runs the installer, and verifies units. See [docs/INSTALL_MINIMAL.md](docs/INSTALL_MINIMAL.md) for full prerequisites and troubleshooting.
 
 ```bash
 sudo -E \
@@ -33,27 +37,15 @@ sudo -E \
   bash scripts/install-node.sh
 ```
 
-The installer writes Xray, Hysteria2, cloudflared admin tunnel, systemd units, TLS certs, DNS records, firewall rules, and the bootstrap user subscription.
+Port 443 is auto-detected — free → `direct+Reality`, blocked → `cloudflare+HTTPUpgrade`. Explicit override: `--mode=direct` or `--mode=cloudflare`.
 
 ## Upgrade an existing VPS
 
-Use upgrade for nodes already deployed by older cf-vpn builds. Direct is the default and preferred mode:
-
 ```bash
-sudo cfvpnctl upgrade --mode direct
-# equivalent legacy entrypoint:
-sudo cfvpnctl install --upgrade --mode direct
+sudo cfvpnctl upgrade --mode auto      # auto-detect
+sudo cfvpnctl upgrade --mode direct    # force Reality
+sudo cfvpnctl upgrade --mode cloudflare # force HTTPUpgrade via tunnel
 ```
-
-Use Cloudflare tunnel mode when the VPS cannot expose direct TCP 443:
-
-```bash
-sudo cfvpnctl upgrade --mode cloudflare
-# equivalent legacy entrypoint:
-sudo cfvpnctl install --upgrade --mode cloudflare
-```
-
-Upgrade preserves existing users where possible, keeps the admin tunnel, backfills Hysteria2 config and credentials, and renders VLESS either as direct TCP 443 or as a Cloudflare Tunnel ingress depending on `--mode`.
 
 ## Daily ops
 
@@ -79,23 +71,42 @@ sudo cfvpnctl status
 sudo cfvpnctl healthcheck run
 ```
 
-Full checklist: [docs/TESTING.md](docs/TESTING.md).
-
 ## Files of note
 
 ```text
-/etc/cfvpn/cfvpn.env                       # Secrets and runtime settings, chmod 600
+/etc/cfvpn/cfvpn.env                       # Secrets, runtime settings, Reality keys (chmod 600)
 /etc/cfvpn/xray/config.json                # Generated VLESS config
 /etc/cfvpn/hysteria/config.yaml            # Generated Hysteria2 config
-/etc/cfvpn/cloudflared/config.yml          # Admin tunnel ingress to cfvpn-agent
-/etc/cfvpn/cloudflared/<tunnel-uuid>.json  # Tunnel credentials, chmod 600
-/var/lib/cfvpn/subscriptions/<user>.txt    # Per-user subscription, chmod 600
+/etc/cfvpn/cloudflared/config.yml          # Admin tunnel ingress
+/etc/cfvpn/cloudflared/<tunnel-uuid>.json  # Tunnel credentials (chmod 600)
+/var/lib/cfvpn/subscriptions/<user>.txt    # Per-user subscription (chmod 600)
 /var/lib/cfvpn/state/                      # Runtime state
 /etc/systemd/system/cfvpn-xray.service
 /etc/systemd/system/cfvpn-hysteria.service
 /etc/systemd/system/cfvpn-cloudflared.service
 /etc/systemd/system/cfvpn-agent.service
+/etc/systemd/system/cfvpn-healthcheck.service
+/etc/systemd/system/cfvpn-healthcheck.timer
 ```
+
+### cfvpn.env keys
+
+| Key | Mode | Description |
+|---|---|---|
+| `MODE` | both | `direct` or `cloudflare` |
+| `DOMAIN` | both | Public VPN hostname |
+| `PUBLIC_IP` | direct | Detected IPv4 |
+| `REALITY_PRIVATE_KEY` | direct | X25519 private key |
+| `REALITY_PUBLIC_KEY` | direct | X25519 public key |
+| `REALITY_SHORT_ID` | direct | 16-hex shortId for Reality |
+| `REALITY_DEST` | direct | Fallback dest (e.g. `www.microsoft.com:443`) |
+| `REALITY_SNI` | direct | Fallback SNI (e.g. `www.microsoft.com`) |
+| `XHTTP_PATH` | cloudflare | VLESS path (`/api/v1/sync`) |
+| `ADMIN_HOST` | both | cloudflared admin hostname |
+| `ADMIN_TUNNEL_UUID` | both | Admin tunnel ID |
+| `HY2_HOST` | both | Hysteria2 hostname |
+| `HY2_PORT` | both | Hysteria2 UDP port |
+| `HY2_OBFS_PW` | both | Hysteria2 obfuscation password |
 
 ## Control panel
 
@@ -105,15 +116,25 @@ npm --prefix panel/web dev
 npm --prefix panel/web test -- --run
 ```
 
-The Users tab exposes a stable public subscription URL per user at `https://<panel-host>/sub/<32-hex-token>`. Cloudflare Access must bypass `/sub/*`; `/api/*` should remain protected.
+The Users tab exposes a public subscription URL per user at `https://<panel-host>/sub/<32-hex-token>`. Cloudflare Access must bypass `/sub/*`; `/api/*` should remain protected.
 
-## Development validation
+## Development
 
 ```bash
-go test ./...
+go test ./internal/...
 go build ./cmd/cfvpnctl ./cmd/cfvpn-agent
 npm --prefix panel/worker run check
 npm --prefix panel/worker test
 npm --prefix panel/web run test:run
 npm --prefix panel/web run build
+```
+
+## D1 schema migrations
+
+```bash
+# Local
+wrangler d1 execute cfvpn --local --file panel/worker/migrations/0010_nodes_reality_xhttp.sql
+
+# Production
+wrangler d1 execute cfvpn --remote --file panel/worker/migrations/0010_nodes_reality_xhttp.sql
 ```
