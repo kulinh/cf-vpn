@@ -10,11 +10,14 @@ import (
 )
 
 func TestIsHealthyCode(t *testing.T) {
+	if !IsHealthyCode(101) {
+		t.Fatalf("101 (WebSocket Upgrade accepted) must be healthy")
+	}
 	if !IsHealthyCode(400) || !IsHealthyCode(426) {
 		t.Fatalf("400 and 426 must be healthy")
 	}
-	if IsHealthyCode(502) {
-		t.Fatalf("502 must be unhealthy")
+	if IsHealthyCode(502) || IsHealthyCode(0) || IsHealthyCode(200) {
+		t.Fatalf("502/0/200 must be unhealthy")
 	}
 }
 

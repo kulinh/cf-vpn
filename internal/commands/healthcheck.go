@@ -18,11 +18,12 @@ import (
 // override this to redirect to a temp directory.
 var systemdUnitDir = "/etc/systemd/system"
 
-// IsHealthyCode reports whether a response code from a bare GET against the
-// VLESS path is considered healthy. Xray returns 400 / 426 for non-websocket
-// requests; anything else (e.g. 502 from cloudflared when xray is down) is
-// unhealthy.
-func IsHealthyCode(code int) bool { return code == 400 || code == 426 }
+// IsHealthyCode reports whether a response code is considered healthy.
+//   - 101: WebSocket upgrade accepted (HTTPUpgrade probe with proper headers)
+//   - 400 / 426: xray rejecting a bare GET on the VLESS path (legacy probe)
+//
+// Anything else (e.g. 502 from cloudflared when xray is down) is unhealthy.
+func IsHealthyCode(code int) bool { return code == 101 || code == 400 || code == 426 }
 
 // IsRealityMode reports whether the env describes a Reality direct node.
 // Reality nodes do not expose a real TLS endpoint on :443 (the handshake is

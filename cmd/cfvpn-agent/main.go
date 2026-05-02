@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -553,7 +555,11 @@ func probeHealth(ctx context.Context, env map[string]string) (int, error) {
 	mode := strings.TrimSpace(env["MODE"])
 	domain := strings.TrimSpace(env["DOMAIN"])
 	if mode == "cloudflare" {
-		return probeURL(ctx, "http://127.0.0.1:10001"+templates.VLESSPath)
+		host := domain
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		return probeHTTPUpgrade(ctx, "127.0.0.1:10001", templates.VLESSPath, host)
 	}
 	if domain == "" {
 		return 0, fmt.Errorf("DOMAIN is empty")
@@ -585,6 +591,48 @@ func probeURL(ctx context.Context, url string) (int, error) {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode, nil
+}
+
+// probeHTTPUpgrade sends a minimal WebSocket-style upgrade request to addr+path
+// and returns the parsed HTTP status line code. xray's HTTPUpgrade transport
+// (>= 26.x) closes plain GETs without writing a status line, so a real upgrade
+// handshake is the only reliable health signal. Caller treats 101 as healthy.
+func probeHTTPUpgrade(ctx context.Context, addr, path, host string) (int, error) {
+	d := net.Dialer{Timeout: 5 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
+		deadline = dl
+	}
+	_ = conn.SetDeadline(deadline)
+	req := "GET " + path + " HTTP/1.1\r\n" +
+		"Host: " + host + "\r\n" +
+		"Connection: Upgrade\r\n" +
+		"Upgrade: websocket\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n" +
+		"\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		return 0, err
+	}
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return 0, err
+	}
+	parts := strings.SplitN(strings.TrimRight(line, "\r\n"), " ", 3)
+	if len(parts) < 2 {
+		return 0, fmt.Errorf("invalid status line: %q", line)
+	}
+	code, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, fmt.Errorf("invalid status code %q: %w", parts[1], err)
+	}
+	return code, nil
 }
 
 func serviceState(name string) string {
