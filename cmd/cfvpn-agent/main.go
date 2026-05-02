@@ -196,13 +196,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "env_load_failed", err.Error())
 		return
 	}
-	// rotate-domain is direct-mode-only: cloudflare nodes don't have a
-	// rotateable VPN host (cloudflared fronts a single hostname per node)
-	// and RunRotateDirect would clobber MODE + try to issue a host cert.
-	if mode := strings.TrimSpace(env["MODE"]); mode != "direct" {
-		writeError(w, http.StatusBadRequest, "rotate_unsupported", fmt.Sprintf("rotate-domain is only supported on direct-mode nodes (current mode=%q)", mode))
-		return
-	}
+	mode := strings.TrimSpace(env["MODE"])
 	cfg, err := xray.Load(paths.XrayConfigFile)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "xray_load_failed", err.Error())
@@ -217,31 +211,62 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		}
 		users = append(users, commands.ExistingUser{Name: baseVPNName(name), UUID: uuid})
 	}
-	result, err := commands.RunRotateDirect(
-		r.Context(),
-		commands.RotateDirectInputs{
-			NewHost:       req.NewHost,
-			NewZone:       zoneForHost(req.NewHost),
-			NewZoneID:     req.NewZoneID,
-			OldHost:       req.OldHost,
-			OldZoneID:     req.OldZoneID,
-			NewHy2Host:    req.NewHy2Host,
-			NewHy2Zone:    req.NewHy2Zone,
-			NewHy2ZoneID:  req.NewHy2ZoneID,
-			OldHy2Host:    req.OldHy2Host,
-			OldHy2ZoneID:  req.OldHy2ZoneID,
-			CFAPIToken:    env["CF_API_TOKEN"],
-			ExistingUsers: users,
-		},
-		commands.RotateDirectDeps{
-			CF:     &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient},
-			IP:     netinfo.NewDefault(),
-			Cert:   cert.NewDefault(),
-			Runner: systemd.ExecRunner{},
-		},
-		io.Discard,
-		io.Discard,
-	)
+	cfClient := &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient}
+	var result commands.RotateDirectResult
+	switch mode {
+	case "direct":
+		result, err = commands.RunRotateDirect(
+			r.Context(),
+			commands.RotateDirectInputs{
+				NewHost:       req.NewHost,
+				NewZone:       zoneForHost(req.NewHost),
+				NewZoneID:     req.NewZoneID,
+				OldHost:       req.OldHost,
+				OldZoneID:     req.OldZoneID,
+				NewHy2Host:    req.NewHy2Host,
+				NewHy2Zone:    req.NewHy2Zone,
+				NewHy2ZoneID:  req.NewHy2ZoneID,
+				OldHy2Host:    req.OldHy2Host,
+				OldHy2ZoneID:  req.OldHy2ZoneID,
+				CFAPIToken:    env["CF_API_TOKEN"],
+				ExistingUsers: users,
+			},
+			commands.RotateDirectDeps{
+				CF:     cfClient,
+				IP:     netinfo.NewDefault(),
+				Cert:   cert.NewDefault(),
+				Runner: systemd.ExecRunner{},
+			},
+			io.Discard,
+			io.Discard,
+		)
+	case "cloudflare":
+		result, err = commands.RunRotateCloudflare(
+			r.Context(),
+			commands.RotateCloudflareInputs{
+				NewHost:       req.NewHost,
+				NewZoneID:     req.NewZoneID,
+				OldHost:       req.OldHost,
+				OldZoneID:     req.OldZoneID,
+				NewHy2Host:    req.NewHy2Host,
+				NewHy2ZoneID:  req.NewHy2ZoneID,
+				OldHy2Host:    req.OldHy2Host,
+				OldHy2ZoneID:  req.OldHy2ZoneID,
+				CFAPIToken:    env["CF_API_TOKEN"],
+				ExistingUsers: users,
+			},
+			commands.RotateCloudflareDeps{
+				CF:     cfClient,
+				Cert:   cert.NewDefault(),
+				Runner: systemd.ExecRunner{},
+			},
+			io.Discard,
+			io.Discard,
+		)
+	default:
+		writeError(w, http.StatusBadRequest, "rotate_unsupported", fmt.Sprintf("rotate-domain is not supported for mode=%q", mode))
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "rotate_failed", err.Error())
 		return
@@ -252,6 +277,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		"hy2_host":    result.Hy2Host,
 		"hy2_port":    result.Hy2Port,
 		"hy2_obfs_pw": result.Hy2ObfsPW,
+		"mode":        mode,
 	})
 }
 

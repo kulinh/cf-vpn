@@ -165,8 +165,16 @@ func (c Client) UpsertARecord(ctx context.Context, zoneID, name, ip string) erro
 }
 
 func (c Client) DeleteARecordByName(ctx context.Context, zoneID, name string) error {
+	return c.deleteRecordsByName(ctx, zoneID, "A", name)
+}
+
+func (c Client) DeleteCNAMEByName(ctx context.Context, zoneID, name string) error {
+	return c.deleteRecordsByName(ctx, zoneID, "CNAME", name)
+}
+
+func (c Client) deleteRecordsByName(ctx context.Context, zoneID, recordType, name string) error {
 	q := url.Values{
-		"type":       {"A"},
+		"type":       {recordType},
 		"name.exact": {name},
 		"match":      {"all"},
 	}.Encode()

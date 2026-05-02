@@ -425,6 +425,225 @@ func rotateHy2Config(ctx context.Context, newHy2Host, certPath, keyPath string, 
 	return nil
 }
 
+type RotateCloudflareCF interface {
+	UpsertCNAME(ctx context.Context, zoneID, name, target string) error
+	DeleteCNAMEByName(ctx context.Context, zoneID, name string) error
+	UpsertARecord(ctx context.Context, zoneID, name, ip string) error
+	DeleteARecordByName(ctx context.Context, zoneID, name string) error
+}
+
+type RotateCloudflareInputs struct {
+	NewHost       string
+	NewZoneID     string
+	OldHost       string
+	OldZoneID     string
+	CFAPIToken    string
+	ExistingUsers []ExistingUser
+	NewHy2Host    string
+	NewHy2ZoneID  string
+	OldHy2Host    string
+	OldHy2ZoneID  string
+}
+
+type RotateCloudflareDeps struct {
+	CF     RotateCloudflareCF
+	Cert   cert.Manager
+	Runner systemd.Runner
+}
+
+// RunRotateCloudflare rotates the VPN host of a cloudflare-mode node. Unlike
+// direct mode, the node's IP is unchanged: the VPN host is a CNAME to
+// <admin_tunnel_uuid>.cfargotunnel.com fronted by Cloudflare's edge, xray
+// listens only on 127.0.0.1:10001 with HTTPUpgrade transport, and the host
+// header in xray's streamSettings + the cloudflared.yml ingress hostname
+// must both be rewritten to the new host. HY2 still goes direct (A record +
+// real cert), so its rotation is identical to the direct-mode flow.
+func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps RotateCloudflareDeps, stdout, stderr io.Writer) (RotateDirectResult, error) {
+	if deps.CF == nil {
+		return RotateDirectResult{}, fmt.Errorf("cloudflare client is required")
+	}
+	if deps.Cert == nil {
+		return RotateDirectResult{}, fmt.Errorf("cert manager is required")
+	}
+	in.NewHost = strings.TrimSpace(in.NewHost)
+	in.NewZoneID = strings.TrimSpace(in.NewZoneID)
+	if in.NewHost == "" {
+		return RotateDirectResult{}, fmt.Errorf("new host is required")
+	}
+	if in.NewZoneID == "" {
+		return RotateDirectResult{}, fmt.Errorf("new zone id is required")
+	}
+
+	env, err := state.Load(envFilePath)
+	if err != nil {
+		return RotateDirectResult{}, fmt.Errorf("load env: %w", err)
+	}
+	tunnelUUID := strings.TrimSpace(env["ADMIN_TUNNEL_UUID"])
+	if tunnelUUID == "" {
+		tunnelUUID = strings.TrimSpace(env["TUNNEL_UUID"])
+	}
+	if tunnelUUID == "" {
+		return RotateDirectResult{}, fmt.Errorf("ADMIN_TUNNEL_UUID is required in env for cloudflare rotation")
+	}
+	adminHost := strings.TrimSpace(env["ADMIN_HOST"])
+	if adminHost == "" {
+		return RotateDirectResult{}, fmt.Errorf("ADMIN_HOST is required in env for cloudflare rotation")
+	}
+
+	in.NewHy2Host = strings.TrimSpace(in.NewHy2Host)
+	in.NewHy2ZoneID = strings.TrimSpace(in.NewHy2ZoneID)
+	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
+	if in.NewHy2Host != "" {
+		if err := deps.Cert.Issue(ctx, in.NewHy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {
+			return RotateDirectResult{}, fmt.Errorf("issue cert for %s: %w", in.NewHy2Host, err)
+		}
+	}
+
+	users, err := rotateDirectUsers(in.ExistingUsers)
+	if err != nil {
+		return RotateDirectResult{}, err
+	}
+
+	xrayRendered, err := templates.RenderXrayCloudflareHTTPUpgrade(users, in.NewHost)
+	if err != nil {
+		return RotateDirectResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
+	}
+	cfRendered, err := templates.RenderCloudflaredWithAdmin(tunnelUUID, in.NewHost, adminHost)
+	if err != nil {
+		return RotateDirectResult{}, fmt.Errorf("render cloudflared config: %w", err)
+	}
+
+	oldXray, oldXrayErr := os.ReadFile(xrayConfigPath)
+	oldXrayExists := oldXrayErr == nil
+	if oldXrayErr != nil && !os.IsNotExist(oldXrayErr) {
+		return RotateDirectResult{}, fmt.Errorf("read existing xray config: %w", oldXrayErr)
+	}
+	oldCfd, oldCfdErr := os.ReadFile(cloudflaredConfig)
+	oldCfdExists := oldCfdErr == nil
+	if oldCfdErr != nil && !os.IsNotExist(oldCfdErr) {
+		return RotateDirectResult{}, fmt.Errorf("read existing cloudflared config: %w", oldCfdErr)
+	}
+
+	cnameCreated := false
+	hy2DnsCreated := false
+	rollbackDNS := func(cause error) (RotateDirectResult, error) {
+		if hy2DnsCreated {
+			if derr := deps.CF.DeleteARecordByName(ctx, in.NewHy2ZoneID, in.NewHy2Host); derr != nil && stderr != nil {
+				fmt.Fprintf(stderr, "warning: rollback delete HY2 A record failed: %v\n", derr)
+			}
+		}
+		if cnameCreated {
+			if derr := deps.CF.DeleteCNAMEByName(ctx, in.NewZoneID, in.NewHost); derr != nil && stderr != nil {
+				fmt.Fprintf(stderr, "warning: rollback delete VPN CNAME failed: %v\n", derr)
+			}
+		}
+		return RotateDirectResult{}, cause
+	}
+	restoreXray := func() {
+		if oldXrayExists {
+			_ = writeAtomicFile(xrayConfigPath, oldXray, 0o600)
+		} else {
+			_ = os.Remove(xrayConfigPath)
+		}
+	}
+	restoreCfd := func() {
+		if oldCfdExists {
+			_ = writeAtomicFile(cloudflaredConfig, oldCfd, 0o600)
+		} else {
+			_ = os.Remove(cloudflaredConfig)
+		}
+	}
+
+	if err := deps.CF.UpsertCNAME(ctx, in.NewZoneID, in.NewHost, tunnelUUID+".cfargotunnel.com"); err != nil {
+		return RotateDirectResult{}, fmt.Errorf("upsert vpn cname: %w", err)
+	}
+	cnameCreated = true
+
+	if in.NewHy2Host != "" && in.NewHy2ZoneID != "" {
+		ip := strings.TrimSpace(env["PUBLIC_IP"])
+		if ip == "" {
+			return rollbackDNS(fmt.Errorf("PUBLIC_IP is required in env to upsert HY2 A record"))
+		}
+		if err := deps.CF.UpsertARecord(ctx, in.NewHy2ZoneID, in.NewHy2Host, ip); err != nil {
+			return rollbackDNS(fmt.Errorf("upsert hy2 dns a record: %w", err))
+		}
+		hy2DnsCreated = true
+	}
+
+	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+		return rollbackDNS(fmt.Errorf("write xray config: %w", err))
+	}
+	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {
+		restoreXray()
+		return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w", err))
+	}
+
+	if err := writeAtomicFile(cloudflaredConfig, []byte(cfRendered), 0o600); err != nil {
+		restoreXray()
+		_ = systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service")
+		return rollbackDNS(fmt.Errorf("write cloudflared config: %w", err))
+	}
+	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-cloudflared.service"); err != nil {
+		restoreCfd()
+		restoreXray()
+		_ = systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service")
+		return rollbackDNS(fmt.Errorf("restart cfvpn-cloudflared.service: %w", err))
+	}
+
+	env["DOMAIN"] = in.NewHost
+	env["MODE"] = "cloudflare"
+
+	if in.NewHy2Host != "" {
+		if err := rotateHy2Config(ctx, in.NewHy2Host, hy2CertPath, hy2KeyPath, env, resolveRunner(deps.Runner)); err != nil {
+			// xray + cloudflared are already live with the new host; persist
+			// partial state so the system state is visible.
+			_ = state.SaveAtomic(envFilePath, env, 0o600)
+			return RotateDirectResult{}, err
+		}
+		env["HY2_HOST"] = in.NewHy2Host
+	}
+
+	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
+		return RotateDirectResult{}, fmt.Errorf("save env: %w", err)
+	}
+
+	if err := RegenerateSubscriptions(in.NewHost); err != nil {
+		return RotateDirectResult{}, err
+	}
+
+	if strings.TrimSpace(in.OldHost) != "" && strings.TrimSpace(in.OldZoneID) != "" {
+		if err := deps.CF.DeleteCNAMEByName(ctx, in.OldZoneID, in.OldHost); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: delete old vpn cname failed: %v\n", err)
+		}
+	}
+	if strings.TrimSpace(in.OldHy2Host) != "" && strings.TrimSpace(in.OldHy2ZoneID) != "" {
+		if err := deps.CF.DeleteARecordByName(ctx, in.OldHy2ZoneID, in.OldHy2Host); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: delete old hy2 a record failed: %v\n", err)
+		}
+	}
+
+	hy2Port := 0
+	if p, err := strconv.Atoi(env["HY2_PORT"]); err == nil {
+		hy2Port = p
+	}
+	result := RotateDirectResult{
+		VpnHost:   in.NewHost,
+		PublicIP:  env["PUBLIC_IP"],
+		Hy2ObfsPW: env["HY2_OBFS_PW"],
+		Hy2Port:   hy2Port,
+	}
+	if in.NewHy2Host != "" {
+		result.Hy2Host = in.NewHy2Host
+	} else {
+		result.Hy2Host = env["HY2_HOST"]
+	}
+
+	if stdout != nil {
+		fmt.Fprintf(stdout, "cloudflare rotation complete: %s\n", in.NewHost)
+	}
+	return result, nil
+}
+
 func rotateDirectUsers(existing []ExistingUser) ([]templates.XrayUser, error) {
 	if existing != nil {
 		users := make([]templates.XrayUser, 0, len(existing))

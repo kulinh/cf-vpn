@@ -691,3 +691,286 @@ func TestRegenerateSubscriptionsRealityTemplateStripsVpnSuffix(t *testing.T) {
 		t.Errorf("URI fragment must not contain @vpn: %s", decoded)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Cloudflare-mode rotation tests
+// ---------------------------------------------------------------------------
+
+type fakeRotateCloudflareCF struct {
+	upsertCNAME []struct{ zoneID, name, target string }
+	deleteCNAME []struct{ zoneID, name string }
+	upsertA     []struct{ zoneID, name, ip string }
+	deleteA     []struct{ zoneID, name string }
+}
+
+func (f *fakeRotateCloudflareCF) UpsertCNAME(_ context.Context, zoneID, name, target string) error {
+	f.upsertCNAME = append(f.upsertCNAME, struct{ zoneID, name, target string }{zoneID, name, target})
+	return nil
+}
+
+func (f *fakeRotateCloudflareCF) DeleteCNAMEByName(_ context.Context, zoneID, name string) error {
+	f.deleteCNAME = append(f.deleteCNAME, struct{ zoneID, name string }{zoneID, name})
+	return nil
+}
+
+func (f *fakeRotateCloudflareCF) UpsertARecord(_ context.Context, zoneID, name, ip string) error {
+	f.upsertA = append(f.upsertA, struct{ zoneID, name, ip string }{zoneID, name, ip})
+	return nil
+}
+
+func (f *fakeRotateCloudflareCF) DeleteARecordByName(_ context.Context, zoneID, name string) error {
+	f.deleteA = append(f.deleteA, struct{ zoneID, name string }{zoneID, name})
+	return nil
+}
+
+// withRotateCloudflareTempPaths is the cloudflare-mode counterpart of
+// withRotateDirectTempPaths: it ALSO overrides cloudflaredConfig so the
+// rotate flow can write the rendered ingress without touching /etc.
+func withRotateCloudflareTempPaths(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	oldEnv, oldXray, oldSub, oldHy, oldCfd := envFilePath, xrayConfigPath, subscriptionDir, hysteriaConfigPath, cloudflaredConfig
+	envFilePath = filepath.Join(dir, "cfvpn.env")
+	xrayConfigPath = filepath.Join(dir, "xray.json")
+	subscriptionDir = filepath.Join(dir, "subs")
+	hysteriaConfigPath = filepath.Join(dir, "hysteria.yaml")
+	cloudflaredConfig = filepath.Join(dir, "cloudflared.yml")
+	t.Cleanup(func() {
+		envFilePath, xrayConfigPath, subscriptionDir, hysteriaConfigPath, cloudflaredConfig = oldEnv, oldXray, oldSub, oldHy, oldCfd
+	})
+	if err := state.SaveAtomic(envFilePath, map[string]string{}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func TestRunRotateCloudflareHappyPath(t *testing.T) {
+	withRotateCloudflareTempPaths(t)
+	if err := state.SaveAtomic(envFilePath, map[string]string{
+		"DOMAIN":            "old.example.com",
+		"MODE":              "cloudflare",
+		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_HOST":        "admin.example.com",
+		"PUBLIC_IP":         "203.0.113.10",
+		"HY2_PORT":          "45321",
+		"HY2_OBFS_PW":       "obfs-test",
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestHysteriaConfig(t)
+
+	cf := &fakeRotateCloudflareCF{}
+	cm := &trackingCertManager{}
+	runner := &recordingRunner{}
+	var out, errBuf bytes.Buffer
+
+	res, err := RunRotateCloudflare(context.Background(), RotateCloudflareInputs{
+		NewHost:       "vpn-new.example.com",
+		NewZoneID:     "vpn-zone",
+		OldHost:       "old.example.com",
+		OldZoneID:     "old-zone",
+		NewHy2Host:    "hy2-new.example.com",
+		NewHy2ZoneID:  "hy2-zone",
+		OldHy2Host:    "hy2-old.example.com",
+		OldHy2ZoneID:  "hy2-old-zone",
+		ExistingUsers: []ExistingUser{{Name: "alice", UUID: "uuid-a"}},
+	}, RotateCloudflareDeps{CF: cf, Cert: cm, Runner: runner}, &out, &errBuf)
+	if err != nil {
+		t.Fatalf("RunRotateCloudflare: %v", err)
+	}
+
+	// Result fields: VpnHost = new host, PublicIP unchanged, Hy2Host = new HY2 host.
+	if res.VpnHost != "vpn-new.example.com" {
+		t.Errorf("res.VpnHost: got %q want vpn-new.example.com", res.VpnHost)
+	}
+	if res.PublicIP != "203.0.113.10" {
+		t.Errorf("res.PublicIP: got %q want 203.0.113.10 (unchanged)", res.PublicIP)
+	}
+	if res.Hy2Host != "hy2-new.example.com" {
+		t.Errorf("res.Hy2Host: got %q want hy2-new.example.com", res.Hy2Host)
+	}
+
+	// CNAME points at <tunnel>.cfargotunnel.com.
+	if len(cf.upsertCNAME) != 1 ||
+		cf.upsertCNAME[0].zoneID != "vpn-zone" ||
+		cf.upsertCNAME[0].name != "vpn-new.example.com" ||
+		cf.upsertCNAME[0].target != "tunnel-uuid-1.cfargotunnel.com" {
+		t.Fatalf("unexpected CNAME upsert: %#v", cf.upsertCNAME)
+	}
+	// HY2 A record upserted with PUBLIC_IP from env.
+	if len(cf.upsertA) != 1 ||
+		cf.upsertA[0].zoneID != "hy2-zone" ||
+		cf.upsertA[0].name != "hy2-new.example.com" ||
+		cf.upsertA[0].ip != "203.0.113.10" {
+		t.Fatalf("unexpected HY2 A upsert: %#v", cf.upsertA)
+	}
+	// Old VPN CNAME and old HY2 A record cleaned up.
+	if len(cf.deleteCNAME) != 1 ||
+		cf.deleteCNAME[0].zoneID != "old-zone" ||
+		cf.deleteCNAME[0].name != "old.example.com" {
+		t.Fatalf("unexpected CNAME delete: %#v", cf.deleteCNAME)
+	}
+	if len(cf.deleteA) != 1 ||
+		cf.deleteA[0].zoneID != "hy2-old-zone" ||
+		cf.deleteA[0].name != "hy2-old.example.com" {
+		t.Fatalf("unexpected HY2 A delete: %#v", cf.deleteA)
+	}
+
+	// xray + cloudflared restarted (HY2 also restarted because rotateHy2Config kicks it).
+	wantRestart := map[string]bool{
+		"cfvpn-xray.service":         false,
+		"cfvpn-cloudflared.service":  false,
+		"cfvpn-hysteria.service":     false,
+	}
+	for _, c := range runner.calls {
+		joined := strings.Join(c, " ")
+		for svc := range wantRestart {
+			if strings.Contains(joined, svc) && strings.Contains(joined, "restart") {
+				wantRestart[svc] = true
+			}
+		}
+	}
+	for svc, ok := range wantRestart {
+		if !ok {
+			t.Errorf("missing restart for %s; calls=%#v", svc, runner.calls)
+		}
+	}
+
+	// Cert issued for HY2 only (cloudflare-mode VPN host has no cert).
+	if len(cm.hosts) != 1 || cm.hosts[0] != "hy2-new.example.com" {
+		t.Errorf("expected one cert.Issue for hy2-new only, got %v", cm.hosts)
+	}
+
+	// xray config rewritten with new host header.
+	xrayBytes, err := os.ReadFile(xrayConfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(xrayBytes, []byte("vpn-new.example.com")) {
+		t.Errorf("xray config missing new host: %s", xrayBytes)
+	}
+	if !bytes.Contains(xrayBytes, []byte("httpupgrade")) {
+		t.Errorf("xray config missing httpupgrade transport: %s", xrayBytes)
+	}
+
+	// cloudflared.yml rewritten with new VPN host + same admin host.
+	cfdBytes, err := os.ReadFile(cloudflaredConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(cfdBytes, []byte("vpn-new.example.com")) {
+		t.Errorf("cloudflared.yml missing new VPN host: %s", cfdBytes)
+	}
+	if !bytes.Contains(cfdBytes, []byte("admin.example.com")) {
+		t.Errorf("cloudflared.yml missing admin host: %s", cfdBytes)
+	}
+	if !bytes.Contains(cfdBytes, []byte("tunnel-uuid-1")) {
+		t.Errorf("cloudflared.yml missing tunnel uuid: %s", cfdBytes)
+	}
+
+	// env updated.
+	envBytes, _ := os.ReadFile(envFilePath)
+	for _, want := range []string{
+		"DOMAIN=vpn-new.example.com",
+		"MODE=cloudflare",
+		"HY2_HOST=hy2-new.example.com",
+		"PUBLIC_IP=203.0.113.10",
+	} {
+		if !bytes.Contains(envBytes, []byte(want)) {
+			t.Errorf("env missing %q: %s", want, envBytes)
+		}
+	}
+
+	// Subscription regenerated under new host.
+	subBytes, err := os.ReadFile(filepath.Join(subscriptionDir, "alice.txt"))
+	if err != nil {
+		t.Fatalf("read alice.txt: %v", err)
+	}
+	decoded, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(string(subBytes)))
+	if decErr != nil {
+		t.Fatalf("subscription not valid base64: %v", decErr)
+	}
+	if !bytes.Contains(decoded, []byte("vpn-new.example.com")) {
+		t.Errorf("subscription URI missing new host: %s", decoded)
+	}
+}
+
+func TestRunRotateCloudflareWithoutHy2(t *testing.T) {
+	withRotateCloudflareTempPaths(t)
+	if err := state.SaveAtomic(envFilePath, map[string]string{
+		"DOMAIN":            "old.example.com",
+		"MODE":              "cloudflare",
+		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_HOST":        "admin.example.com",
+		"PUBLIC_IP":         "203.0.113.10",
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cf := &fakeRotateCloudflareCF{}
+	cm := &trackingCertManager{}
+	res, err := RunRotateCloudflare(context.Background(), RotateCloudflareInputs{
+		NewHost:       "vpn-new.example.com",
+		NewZoneID:     "vpn-zone",
+		ExistingUsers: []ExistingUser{{Name: "alice", UUID: "uuid-a"}},
+	}, RotateCloudflareDeps{CF: cf, Cert: cm, Runner: &recordingRunner{}}, nil, &bytes.Buffer{})
+	if err != nil {
+		t.Fatalf("RunRotateCloudflare: %v", err)
+	}
+
+	// No cert issued (no HY2).
+	if len(cm.hosts) != 0 {
+		t.Errorf("expected zero cert.Issue calls when HY2 omitted, got %v", cm.hosts)
+	}
+	// No A record touched.
+	if len(cf.upsertA) != 0 || len(cf.deleteA) != 0 {
+		t.Errorf("expected no A record mutations when HY2 omitted; upsertA=%#v deleteA=%#v", cf.upsertA, cf.deleteA)
+	}
+	if res.Hy2Host != "" {
+		t.Errorf("res.Hy2Host: got %q want empty", res.Hy2Host)
+	}
+}
+
+func TestRunRotateCloudflareRollsBackOnXrayRestartFailure(t *testing.T) {
+	withRotateCloudflareTempPaths(t)
+	if err := state.SaveAtomic(envFilePath, map[string]string{
+		"DOMAIN":            "old.example.com",
+		"MODE":              "cloudflare",
+		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_HOST":        "admin.example.com",
+		"PUBLIC_IP":         "203.0.113.10",
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Pre-populate an old xray config so the rollback path has something to restore.
+	oldXray := []byte(`{"old":true}`)
+	if err := os.WriteFile(xrayConfigPath, oldXray, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cf := &fakeRotateCloudflareCF{}
+	_, err := RunRotateCloudflare(context.Background(), RotateCloudflareInputs{
+		NewHost:       "vpn-new.example.com",
+		NewZoneID:     "vpn-zone",
+		ExistingUsers: []ExistingUser{{Name: "alice", UUID: "uuid-a"}},
+	}, RotateCloudflareDeps{CF: cf, Cert: &trackingCertManager{}, Runner: failingRunner{}}, nil, &bytes.Buffer{})
+	if err == nil {
+		t.Fatal("expected restart failure")
+	}
+
+	// Old xray config restored on rollback.
+	got, readErr := os.ReadFile(xrayConfigPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !bytes.Equal(got, oldXray) {
+		t.Errorf("xray config not restored: got %s want %s", got, oldXray)
+	}
+
+	// New CNAME deleted as part of rollback.
+	if len(cf.deleteCNAME) != 1 ||
+		cf.deleteCNAME[0].zoneID != "vpn-zone" ||
+		cf.deleteCNAME[0].name != "vpn-new.example.com" {
+		t.Errorf("expected rollback delete of new CNAME, got %#v", cf.deleteCNAME)
+	}
+}
