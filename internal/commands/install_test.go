@@ -1383,8 +1383,9 @@ func TestRunUpgradeWithExistingHY2IsIdempotent(t *testing.T) {
 		t.Fatalf("res.Skipped = false, want true for existing HY2")
 	}
 
-	// Stdout shows no-op message.
-	if !strings.Contains(out.String(), "HY2 already configured") {
-		t.Fatalf("stdout missing idempotent no-op message: %s", out.String())
+	// Stdout shows the in-place re-render skip path (legacy WS+TLS direct
+	// node has no Reality params, so reRenderInPlace can't safely re-render).
+	if !strings.Contains(out.String(), "in-place re-render skipped") {
+		t.Fatalf("stdout missing in-place re-render skip message: %s", out.String())
 	}
 }

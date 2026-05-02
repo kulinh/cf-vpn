@@ -68,7 +68,11 @@ func RunRotateCleanup(ctx context.Context, tunnelID string, deps RotateDeps, std
 	return nil
 }
 
-func regenerateSubscriptions(domain string) error {
+// RegenerateSubscriptions rebuilds per-user subscription files for all users
+// currently in the xray config, using the active mode + Reality params from env.
+// Callers must invoke this after any user-set or host change so panel-served
+// subscriptions stay in sync with the live xray state.
+func RegenerateSubscriptions(domain string) error {
 	cfg, err := xray.Load(xrayConfigPath)
 	if err != nil {
 		return fmt.Errorf("load xray config: %w", err)
@@ -202,6 +206,12 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		return RotateDirectResult{}, fmt.Errorf("new zone id is required")
 	}
 
+	env, err := state.Load(envFilePath)
+	if err != nil {
+		return RotateDirectResult{}, fmt.Errorf("load env: %w", err)
+	}
+	realityParams, realityMode := loadRealityFromEnv(env)
+
 	ip, err := deps.IP.Detect(ctx)
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("detect public ip: %w", err)
@@ -212,9 +222,14 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		return RotateDirectResult{}, fmt.Errorf("detect public ip: expected IPv4 address, got %q", ip)
 	}
 
-	cert, key := CertPathsForHost(in.NewHost)
-	if err := deps.Cert.Issue(ctx, in.NewHost, cert, key, in.CFAPIToken); err != nil {
-		return RotateDirectResult{}, fmt.Errorf("issue cert for %s: %w", in.NewHost, err)
+	// Reality nodes have no public LE cert on :443 (TLS is camouflaged via
+	// Reality dest). Only legacy WS+TLS direct nodes need a VPN-host cert.
+	var hostCert, hostKey string
+	if !realityMode {
+		hostCert, hostKey = CertPathsForHost(in.NewHost)
+		if err := deps.Cert.Issue(ctx, in.NewHost, hostCert, hostKey, in.CFAPIToken); err != nil {
+			return RotateDirectResult{}, fmt.Errorf("issue cert for %s: %w", in.NewHost, err)
+		}
 	}
 
 	in.NewHy2Host = strings.TrimSpace(in.NewHy2Host)
@@ -230,15 +245,24 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 	if err != nil {
 		return RotateDirectResult{}, err
 	}
-	certs := append([]templates.XrayCert{{Zone: in.NewZone, CertFile: cert, KeyFile: key}}, in.ExtraCerts...)
-	rendered, err := templates.RenderXrayDirect(templates.XrayDirectInputs{Users: users, Certs: certs})
-	if err != nil {
-		return RotateDirectResult{}, fmt.Errorf("render xray direct config: %w", err)
-	}
-
-	env, err := state.Load(envFilePath)
-	if err != nil {
-		return RotateDirectResult{}, fmt.Errorf("load env: %w", err)
+	var rendered string
+	if realityMode {
+		rendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+			Users:       users,
+			PrivateKey:  realityParams.PrivateKey,
+			ShortIDs:    []string{realityParams.ShortID},
+			Dest:        realityParams.Dest,
+			ServerNames: []string{realityParams.SNI},
+		})
+		if err != nil {
+			return RotateDirectResult{}, fmt.Errorf("render xray reality config: %w", err)
+		}
+	} else {
+		certs := append([]templates.XrayCert{{Zone: in.NewZone, CertFile: hostCert, KeyFile: hostKey}}, in.ExtraCerts...)
+		rendered, err = templates.RenderXrayDirect(templates.XrayDirectInputs{Users: users, Certs: certs})
+		if err != nil {
+			return RotateDirectResult{}, fmt.Errorf("render xray direct config: %w", err)
+		}
 	}
 
 	oldConfig, oldConfigErr := os.ReadFile(xrayConfigPath)
@@ -307,7 +331,7 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		return RotateDirectResult{}, fmt.Errorf("save env: %w", err)
 	}
 
-	if err := regenerateSubscriptions(in.NewHost); err != nil {
+	if err := RegenerateSubscriptions(in.NewHost); err != nil {
 		return RotateDirectResult{}, err
 	}
 

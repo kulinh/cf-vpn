@@ -24,14 +24,116 @@ type Inbound struct {
 	Extras   map[string]json.RawMessage
 }
 
+// vlessClient preserves any fields the control plane does not know about
+// (notably `flow` for XTLS-Reality clients) via the Extras catch-all so
+// JSON round-trips through Load/SaveAtomic don't strip them.
 type vlessClient struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
+	ID     string
+	Email  string
+	Flow   string
+	Extras map[string]json.RawMessage
 }
 
 type vlessSettings struct {
-	Clients    []vlessClient `json:"clients"`
-	Decryption string        `json:"decryption"`
+	Clients    []vlessClient
+	Decryption string
+	Extras     map[string]json.RawMessage
+}
+
+var (
+	vlessClientOrder   = []string{"id", "email", "flow"}
+	vlessSettingsOrder = []string{"clients", "decryption"}
+)
+
+func (c vlessClient) MarshalJSON() ([]byte, error) {
+	merged := make(map[string]json.RawMessage, len(c.Extras)+3)
+	for k, v := range c.Extras {
+		merged[k] = v
+	}
+	idRaw, err := json.Marshal(c.ID)
+	if err != nil {
+		return nil, err
+	}
+	merged["id"] = idRaw
+	emailRaw, err := json.Marshal(c.Email)
+	if err != nil {
+		return nil, err
+	}
+	merged["email"] = emailRaw
+	if c.Flow != "" {
+		flowRaw, err := json.Marshal(c.Flow)
+		if err != nil {
+			return nil, err
+		}
+		merged["flow"] = flowRaw
+	}
+	return marshalStableObject(merged, vlessClientOrder)
+}
+
+func (c *vlessClient) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["id"]; ok {
+		if err := json.Unmarshal(v, &c.ID); err != nil {
+			return err
+		}
+		delete(raw, "id")
+	}
+	if v, ok := raw["email"]; ok {
+		if err := json.Unmarshal(v, &c.Email); err != nil {
+			return err
+		}
+		delete(raw, "email")
+	}
+	if v, ok := raw["flow"]; ok {
+		if err := json.Unmarshal(v, &c.Flow); err != nil {
+			return err
+		}
+		delete(raw, "flow")
+	}
+	c.Extras = raw
+	return nil
+}
+
+func (s vlessSettings) MarshalJSON() ([]byte, error) {
+	merged := make(map[string]json.RawMessage, len(s.Extras)+2)
+	for k, v := range s.Extras {
+		merged[k] = v
+	}
+	clientsRaw, err := json.Marshal(s.Clients)
+	if err != nil {
+		return nil, err
+	}
+	merged["clients"] = clientsRaw
+	decRaw, err := json.Marshal(s.Decryption)
+	if err != nil {
+		return nil, err
+	}
+	merged["decryption"] = decRaw
+	return marshalStableObject(merged, vlessSettingsOrder)
+}
+
+func (s *vlessSettings) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["clients"]; ok {
+		if err := json.Unmarshal(v, &s.Clients); err != nil {
+			return err
+		}
+		delete(raw, "clients")
+	}
+	if v, ok := raw["decryption"]; ok {
+		if err := json.Unmarshal(v, &s.Decryption); err != nil {
+			return err
+		}
+		delete(raw, "decryption")
+	}
+	s.Extras = raw
+	return nil
 }
 
 var userNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
@@ -44,9 +146,11 @@ func ValidateUserName(name string) error {
 }
 
 // NewBaseConfig returns a minimal Config suitable for tests. Production
-// installs use templates.RenderXray so the full runtime config (ports,
-// streamSettings, outbounds, routing) is written verbatim.
+// installs render the full runtime config (ports, streamSettings, outbounds,
+// routing) via templates.RenderXrayDirectReality or
+// RenderXrayCloudflareHTTPUpgrade.
 func NewBaseConfig(user, uuid, password string) Config {
+	_ = password
 	vless, _ := json.Marshal(vlessSettings{
 		Clients:    []vlessClient{{ID: uuid, Email: user}},
 		Decryption: "none",
@@ -247,7 +351,10 @@ func GetVLESSClient(cfg Config, name string) (string, bool) {
 	return "", false
 }
 
-func AddUser(cfg *Config, name, uuid, password string) error {
+// AddUser appends a new VLESS client. If flow is non-empty (e.g.
+// "xtls-rprx-vision" for Reality nodes) it is stored on the client so
+// xray will accept connections from this user.
+func AddUser(cfg *Config, name, uuid, flow string) error {
 	if err := ValidateUserName(name); err != nil {
 		return err
 	}
@@ -264,7 +371,7 @@ func AddUser(cfg *Config, name, uuid, password string) error {
 	if err != nil {
 		return err
 	}
-	vs.Clients = append(vs.Clients, vlessClient{ID: uuid, Email: name})
+	vs.Clients = append(vs.Clients, vlessClient{ID: uuid, Email: name, Flow: flow})
 	return saveVLESS(vin, vs)
 }
 

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -221,15 +222,10 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 			currentMode = "direct"
 		}
 		if currentMode == in.Mode {
-			if stdout != nil {
-				fmt.Fprintln(stdout, "HY2 already configured; upgrade is a no-op")
-			}
-			return UpgradeResult{
-				OldHost:  env["DOMAIN"],
-				NewHost:  env["DOMAIN"],
-				PublicIP: env["PUBLIC_IP"],
-				Skipped:  true,
-			}, nil
+			// Same-mode upgrade: don't rotate the host (would burn a new
+			// domain + leak DNS), but DO re-render xray + cloudflared from
+			// the latest templates and restart if anything changed.
+			return reRenderInPlace(ctx, in, deps, env, stdout, stderr)
 		}
 		return runUpgradeCore(ctx, in, deps, env, rng, stdout, stderr)
 	}
@@ -477,7 +473,7 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
 		return fail(fmt.Errorf("save env: %w", err))
 	}
-	if err := regenerateSubscriptions(newHost); err != nil {
+	if err := RegenerateSubscriptions(newHost); err != nil {
 		return fail(err)
 	}
 	adminZoneID, err := deps.CF.GetZoneID(ctx, adminHostZone)
@@ -518,6 +514,114 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 		fmt.Fprintf(stdout, "upgrade complete: %s -> %s mode %s (%s)\n", oldHost, newHost, in.Mode, ip)
 	}
 	return UpgradeResult{OldHost: oldHost, NewHost: newHost, PublicIP: ip}, nil
+}
+
+// reRenderInPlace re-renders xray + cloudflared configs against the current
+// env (no DNS, no host change, no HY2 mutations) and restarts services only
+// if the rendered config differs from what's on disk. Used by RunUpgrade
+// when the requested mode equals the current mode — a re-deploy of the
+// binary without rotating the public domain.
+func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, env map[string]string, stdout, stderr io.Writer) (UpgradeResult, error) {
+	domain := env["DOMAIN"]
+	adminHost := env["ADMIN_HOST"]
+	tunnelUUID := env["ADMIN_TUNNEL_UUID"]
+	if tunnelUUID == "" {
+		tunnelUUID = env["TUNNEL_UUID"]
+	}
+	users, err := usersFromCurrentXray()
+	if err != nil {
+		return UpgradeResult{}, err
+	}
+
+	var xrayRendered string
+	if in.Mode == "direct" {
+		realityParams, ok := loadRealityFromEnv(env)
+		if !ok {
+			// Legacy direct node without Reality; nothing safe to re-render.
+			if stdout != nil {
+				fmt.Fprintln(stdout, "in-place re-render skipped: legacy direct node without Reality params")
+			}
+			return UpgradeResult{OldHost: domain, NewHost: domain, PublicIP: env["PUBLIC_IP"], Skipped: true}, nil
+		}
+		xrayRendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+			Users:       users,
+			PrivateKey:  realityParams.PrivateKey,
+			ShortIDs:    []string{realityParams.ShortID},
+			Dest:        realityParams.Dest,
+			ServerNames: []string{realityParams.SNI},
+		})
+		if err != nil {
+			return UpgradeResult{}, fmt.Errorf("render xray reality config: %w", err)
+		}
+	} else {
+		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain)
+		if err != nil {
+			return UpgradeResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
+		}
+	}
+
+	var cfRendered string
+	if in.Mode == "direct" {
+		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelUUID, adminHost)
+	} else {
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost)
+	}
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("render cloudflared config: %w", err)
+	}
+
+	runner := resolveRunner(deps.SystemdRunner)
+	xrayChanged, err := writeIfChanged(xrayConfigPath, []byte(xrayRendered), 0o600)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("write xray config: %w", err)
+	}
+	cfChanged, err := writeIfChanged(cloudflaredConfig, []byte(cfRendered), 0o600)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("write cloudflared config: %w", err)
+	}
+
+	if xrayChanged {
+		if err := systemd.Restart(ctx, runner, "cfvpn-xray.service"); err != nil {
+			return UpgradeResult{}, fmt.Errorf("restart cfvpn-xray.service: %w", err)
+		}
+	}
+	if cfChanged {
+		if err := systemd.Restart(ctx, runner, "cfvpn-cloudflared.service"); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: restart cfvpn-cloudflared.service failed: %v\n", err)
+		}
+	}
+
+	if stdout != nil {
+		switch {
+		case xrayChanged && cfChanged:
+			fmt.Fprintln(stdout, "in-place re-render: xray + cloudflared updated")
+		case xrayChanged:
+			fmt.Fprintln(stdout, "in-place re-render: xray updated")
+		case cfChanged:
+			fmt.Fprintln(stdout, "in-place re-render: cloudflared updated")
+		default:
+			fmt.Fprintln(stdout, "in-place re-render: configs already up to date")
+		}
+	}
+	return UpgradeResult{
+		OldHost:  domain,
+		NewHost:  domain,
+		PublicIP: env["PUBLIC_IP"],
+		Skipped:  !xrayChanged && !cfChanged,
+	}, nil
+}
+
+// writeIfChanged writes content to path only if it differs from current
+// on-disk content (or path doesn't exist). Returns true if a write occurred.
+func writeIfChanged(path string, content []byte, mode os.FileMode) (bool, error) {
+	existing, err := os.ReadFile(path)
+	if err == nil && bytes.Equal(existing, content) {
+		return false, nil
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return false, err
+	}
+	return true, writeAtomicFile(path, content, mode)
 }
 
 func loadUpgradeEnv() (map[string]string, error) {

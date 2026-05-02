@@ -285,12 +285,11 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 				fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
 				return 1
 			}
-			domain := env["DOMAIN"]
-			if domain == "" {
+			if env["DOMAIN"] == "" {
 				fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck run (DOMAIN must be set)")
 				return 2
 			}
-			if err := commands.RunHealthcheckRun(context.Background(), domain, stdout); err != nil {
+			if err := commands.RunHealthcheckRun(context.Background(), env, stdout); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}

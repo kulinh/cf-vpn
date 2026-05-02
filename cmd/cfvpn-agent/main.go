@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -97,6 +99,9 @@ type addUserResponse struct {
 }
 
 func main() {
+	if strings.TrimSpace(os.Getenv("AGENT_SHARED_SECRET")) == "" {
+		log.Fatal("AGENT_SHARED_SECRET is required (set in /etc/cfvpn/cfvpn.env); refusing to start with no auth on a publicly-resolvable admin tunnel")
+	}
 	addr := strings.TrimSpace(os.Getenv("CFVPN_AGENT_ADDR"))
 	if addr == "" {
 		addr = "127.0.0.1:6788"
@@ -167,7 +172,7 @@ func handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	code, err := probeHealth(r.Context(), env["DOMAIN"], env["MODE"])
+	code, err := probeHealth(r.Context(), env)
 	latency := time.Since(start).Milliseconds()
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "healthcheck_failed", err.Error())
@@ -447,40 +452,15 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("load env: %w", err)
 	}
 	result := commands.RotateDirectResult{VpnHost: env["DOMAIN"], PublicIP: env["PUBLIC_IP"], Hy2Host: env["HY2_HOST"], Hy2Port: parseInt(env["HY2_PORT"]), Hy2ObfsPW: env["HY2_OBFS_PW"]}
-	if strings.TrimSpace(env["MODE"]) == "cloudflare" {
-		rendered, err := templates.RenderXrayCloudflareHTTPUpgrade(toTemplateUsers(users), env["DOMAIN"])
-		if err != nil {
-			return nil, commands.RotateDirectResult{}, fmt.Errorf("render cloudflare xray: %w", err)
-		}
-		if err := os.WriteFile(paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
-			return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
-		}
-		if err := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); err != nil {
-			return nil, commands.RotateDirectResult{}, fmt.Errorf("restart xray: %w", err)
-		}
-	} else {
-		var err error
-		result, err = commands.RunRotateDirect(
-			ctx,
-			commands.RotateDirectInputs{
-				NewHost:       env["DOMAIN"],
-				NewZone:       zoneForHost(env["DOMAIN"]),
-				NewZoneID:     zoneIDForHost(env["DOMAIN"]),
-				CFAPIToken:    env["CF_API_TOKEN"],
-				ExistingUsers: users,
-			},
-			commands.RotateDirectDeps{
-				CF:     &cloudflare.Client{BaseURL: "https://api.cloudflare.com/client/v4", Token: env["CF_API_TOKEN"], AccountID: env["CF_ACCOUNT_ID"], HTTP: http.DefaultClient},
-				IP:     netinfo.NewDefault(),
-				Cert:   cert.NewDefault(),
-				Runner: systemd.ExecRunner{},
-			},
-			io.Discard,
-			io.Discard,
-		)
-		if err != nil {
-			return nil, commands.RotateDirectResult{}, err
-		}
+	rendered, err := renderXrayForMode(env, users)
+	if err != nil {
+		return nil, commands.RotateDirectResult{}, err
+	}
+	if err := os.WriteFile(paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
+		return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
+	}
+	if err := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); err != nil {
+		return nil, commands.RotateDirectResult{}, fmt.Errorf("restart xray: %w", err)
 	}
 	hy2Users := make([]hysteria.User, len(reqUsers))
 	for i, u := range reqUsers {
@@ -492,15 +472,70 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	if err := hysteria.ReloadService(ctx, systemd.ExecRunner{}); err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("reload hysteria: %w", err)
 	}
+	if err := commands.RegenerateSubscriptions(env["DOMAIN"]); err != nil {
+		return nil, commands.RotateDirectResult{}, fmt.Errorf("regenerate subscriptions: %w", err)
+	}
 	return env, result, nil
 }
 
-func probeHealth(ctx context.Context, domain string, mode string) (int, error) {
-	if strings.TrimSpace(mode) == "cloudflare" {
+// renderXrayForMode produces the xray config for a user-mutation event.
+// User mutations (add/remove/sync) re-render against the EXISTING host — no
+// DNS, no cert reissue, no host rotation. Branches on Mode + Reality params.
+func renderXrayForMode(env map[string]string, users []commands.ExistingUser) (string, error) {
+	tplUsers := toTemplateUsers(users)
+	mode := strings.TrimSpace(env["MODE"])
+	if mode == "cloudflare" {
+		out, err := templates.RenderXrayCloudflareHTTPUpgrade(tplUsers, env["DOMAIN"])
+		if err != nil {
+			return "", fmt.Errorf("render cloudflare xray: %w", err)
+		}
+		return out, nil
+	}
+	if commands.IsRealityMode(env) {
+		out, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+			Users:       tplUsers,
+			PrivateKey:  env[state.KeyRealityPriv],
+			ShortIDs:    []string{env[state.KeyRealityShortID]},
+			Dest:        env[state.KeyRealityDest],
+			ServerNames: []string{env[state.KeyRealitySNI]},
+		})
+		if err != nil {
+			return "", fmt.Errorf("render reality xray: %w", err)
+		}
+		return out, nil
+	}
+	// Legacy direct (WS+TLS): reuse existing host cert, no reissue.
+	hostCert, hostKey := commands.CertPathsForHost(env["DOMAIN"])
+	out, err := templates.RenderXrayDirect(templates.XrayDirectInputs{
+		Users: tplUsers,
+		Certs: []templates.XrayCert{{Zone: zoneForHost(env["DOMAIN"]), CertFile: hostCert, KeyFile: hostKey}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("render direct xray: %w", err)
+	}
+	return out, nil
+}
+
+func probeHealth(ctx context.Context, env map[string]string) (int, error) {
+	mode := strings.TrimSpace(env["MODE"])
+	domain := strings.TrimSpace(env["DOMAIN"])
+	if mode == "cloudflare" {
 		return probeURL(ctx, "http://127.0.0.1:10001"+templates.VLESSPath)
 	}
-	if strings.TrimSpace(domain) == "" {
+	if domain == "" {
 		return 0, fmt.Errorf("DOMAIN is empty")
+	}
+	// Reality nodes don't expose a real TLS endpoint on :443 — use TCP connect.
+	// Return synthetic 426 so the existing IsHealthyCode check in the caller
+	// treats a successful TCP open as healthy.
+	if commands.IsRealityMode(env) {
+		d := net.Dialer{Timeout: 10 * time.Second}
+		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(domain, "443"))
+		if err != nil {
+			return 0, err
+		}
+		conn.Close()
+		return 426, nil
 	}
 	return probeURL(ctx, "https://"+domain+templates.VLESSPath)
 }
@@ -603,14 +638,15 @@ func writeError(w http.ResponseWriter, status int, code, detail string) {
 	writeJSON(w, status, map[string]string{"error": code, "detail": detail})
 }
 
+// withAuth wraps the admin mux in Bearer-token auth. The agent refuses to
+// start if AGENT_SHARED_SECRET is empty (see main()): the admin tunnel is
+// publicly resolvable, so default-allow would leave /admin/v1/* exposed.
 func withAuth(next http.Handler) http.Handler {
 	secret := strings.TrimSpace(os.Getenv("AGENT_SHARED_SECRET"))
-	if secret == "" {
-		return next
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		if !strings.HasPrefix(auth, "Bearer ") || strings.TrimPrefix(auth, "Bearer ") != secret {
+		if !strings.HasPrefix(auth, "Bearer ") || subtle.ConstantTimeCompare(
+			[]byte(strings.TrimPrefix(auth, "Bearer ")), []byte(secret)) != 1 {
 			writeError(w, http.StatusUnauthorized, "unauthorized", "invalid or missing agent shared secret")
 			return
 		}

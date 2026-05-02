@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"path/filepath"
 	"time"
 
+	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 	"github.com/kulinh/cf-vpn/internal/templates"
 )
@@ -22,9 +24,36 @@ var systemdUnitDir = "/etc/systemd/system"
 // unhealthy.
 func IsHealthyCode(code int) bool { return code == 400 || code == 426 }
 
-// RunHealthcheckRun probes https://<domain>/api/v1/sync and prints OK / FAIL.
-// Returns a non-nil error on transport failure or an unhealthy response code.
-func RunHealthcheckRun(ctx context.Context, domain string, stdout io.Writer) error {
+// IsRealityMode reports whether the env describes a Reality direct node.
+// Reality nodes do not expose a real TLS endpoint on :443 (the handshake is
+// camouflaged via Reality dest), so HTTPS probes will always fail and the
+// healthcheck must fall back to a TCP connect.
+func IsRealityMode(env map[string]string) bool {
+	return env["MODE"] == "direct" &&
+		env[state.KeyRealityPriv] != "" &&
+		env[state.KeyRealityShortID] != ""
+}
+
+// RunHealthcheckRun probes the VPN endpoint and prints OK / FAIL.
+//   - Reality direct nodes: TCP connect to <DOMAIN>:443 (HTTPS is camouflaged)
+//   - everything else:      HTTPS GET <DOMAIN>/api/v1/sync, expect 400/426
+//
+// Returns a non-nil error on transport failure or an unhealthy response.
+func RunHealthcheckRun(ctx context.Context, env map[string]string, stdout io.Writer) error {
+	domain := env["DOMAIN"]
+	if domain == "" {
+		return fmt.Errorf("DOMAIN is empty")
+	}
+	if IsRealityMode(env) {
+		d := net.Dialer{Timeout: 10 * time.Second}
+		conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(domain, "443"))
+		if err != nil {
+			return err
+		}
+		conn.Close()
+		fmt.Fprintln(stdout, "OK reality tcp=open")
+		return nil
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)

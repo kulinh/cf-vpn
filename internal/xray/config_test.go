@@ -94,7 +94,10 @@ func TestRemoveUserMissing(t *testing.T) {
 // xray template, mutating users, and saving preserves every field required
 // by xray at runtime — including the private-IP egress block per spec §10.
 func TestTemplateRoundTripPreservesFields(t *testing.T) {
-	rendered, err := templates.RenderXray("user1", "uuid-1", "pass-1")
+	rendered, err := templates.RenderXrayCloudflareHTTPUpgrade(
+		[]templates.XrayUser{{Name: "user1", UUID: "uuid-1"}},
+		"vpn.example.com",
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

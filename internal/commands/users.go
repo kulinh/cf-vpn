@@ -148,22 +148,23 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 	if err != nil {
 		return fmt.Errorf("generate uuid: %w", err)
 	}
-	password, err := generatePassword(24)
-	if err != nil {
-		return fmt.Errorf("generate password: %w", err)
+
+	env, envErr := state.Load(envFilePath)
+	if envErr != nil {
+		env = map[string]string{}
+	}
+	flow := ""
+	if env["MODE"] == "direct" && env[state.KeyRealityPriv] != "" {
+		flow = "xtls-rprx-vision"
 	}
 
-	if err := xray.AddUser(&cfg, in.Name, uuid, password); err != nil {
+	if err := xray.AddUser(&cfg, in.Name, uuid, flow); err != nil {
 		return err
 	}
 	if err := xray.SaveAtomic(xrayConfigPath, cfg, 0o600); err != nil {
 		return fmt.Errorf("save xray config: %w", err)
 	}
 
-	env, envErr := state.Load(envFilePath)
-	if envErr != nil {
-		env = map[string]string{}
-	}
 	sub := buildSubscriptionFor(in.Name, uuid, in.Domain, env)
 	if err := writeSubscriptionFile(in.Name, sub+"\n"); err != nil {
 		return fmt.Errorf("write subscription: %w", err)
