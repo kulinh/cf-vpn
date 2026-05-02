@@ -4,11 +4,11 @@
 >
 > **Resumability:** Future sessions resume by scanning unchecked `- [ ]` boxes top-to-bottom. After finishing each task, mark its checkboxes `- [x]` and append a `<!-- DONE @ <commit-sha> on <date>: <one-line note> -->` comment immediately under the task header. Do NOT delete completed tasks; the trail is the audit log.
 
-**Goal:** Migrate VPN protocol so `direct mode` uses VLESS+XTLS-Reality (Vision flow), `cloudflare mode` uses VLESS+XHTTP stream-up (no WS), apply to install + upgrade + rotate, change default WS path `/vless` to a neutral path, and ship a panel + D1 schema bump so subscription URIs are produced correctly per node.
+**Goal:** Migrate VPN protocol so `direct mode` uses VLESS+XTLS-Reality (Vision flow), `cloudflare mode` uses VLESS+HTTPUpgrade (no WS), apply to install + upgrade + rotate, change default WS path `/vless` to `/api/v1/sync`, and ship a panel + D1 schema bump so subscription URIs are produced correctly per node.
 
 **Architecture:**
 - **Direct nodes** (port 443 reachable, no Cloudflare proxy in front): Reality with `dest=www.microsoft.com:443`, `serverNames=[www.microsoft.com]`, X25519 keypair + 8-byte shortId per node. Vision flow (`xtls-rprx-vision`). No Let's Encrypt cert needed.
-- **Cloudflare-tunnel nodes**: VLESS XHTTP `mode=stream-up` listening 127.0.0.1:10001, behind cloudflared. Path moved from `/vless` → `/api/v1/sync` (neutral). HTTP/2 streaming friendlier with cloudflared than WS, drops the obvious WS framing fingerprint.
+- **Cloudflare-tunnel nodes**: VLESS HTTPUpgrade listening 127.0.0.1:10001, behind cloudflared. Path moved from `/vless` → `/api/v1/sync` (neutral). XHTTP was tested and FAILED through cloudflared (stream-up: 404, stream-one: 403 via CF edge); HTTPUpgrade works because it uses HTTP/1.1 upgrade handshake compatible with cloudflared's HTTP transport.
 - **Hysteria2** unchanged in both modes.
 - Mode auto-detected at install: if outbound 443 reachable & no existing service binds it, default to `direct` + Reality; else `cloudflare` + XHTTP.
 - All node-specific Reality params + xhttp_path persisted to `/etc/cfvpn/cfvpn.env`, exposed via agent `/admin/v1/sync` + `/status`, mirrored to D1 `nodes` table, consumed by panel subscription URI builder.
@@ -1340,3 +1340,7 @@ Expected: install completes with XHTTP, cloudflared ingress path = `/api/v1/sync
 
 <!-- PROGRESS LOG (append below as work happens) -->
 <!-- 2026-05-02: plan written. Phase 0 spike not yet run. JPY-02 manually at Reality. -->
+<!-- 2026-05-02 (session 2): Phase 0 XHTTP spike completed — XHTTP FAILED through cloudflared (stream-up: 404, stream-one: 403). Decision: use HTTPUpgrade instead for cloudflare mode. -->
+<!-- 2026-05-02 (session 2): Phases 1-10 CODE COMPLETE. All Go templates, URI builders, state keys, keygen, netcheck, install, upgrade, rotate, agent sync, D1 migration, panel TS done. Build passes. Tests pass (3 pre-existing failures: binary/install_test.go x2, commands/users_test.go restart count). -->
+<!-- 2026-05-02 (session 2): Phase 11 binaries built: cfvpn-agent (10MB), cfvpnctl (12MB) for linux/amd64. -->
+<!-- REMAINING: D1 prod migration (needs user approval), Phase 11 acceptance tests on real nodes (JPY-02 idempotent sync, CF-node HTTPUpgrade e2e, greenfield install). -->
