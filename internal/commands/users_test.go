@@ -23,12 +23,18 @@ func withTempPaths(t *testing.T) (cfgPath, subDir string) {
 	dir := t.TempDir()
 	cfgPath = filepath.Join(dir, "config.json")
 	subDir = filepath.Join(dir, "subs")
-	oldC, oldS := xrayConfigPath, subscriptionDir
+	oldC, oldS, oldH := xrayConfigPath, subscriptionDir, hy2ConfigPath
 	xrayConfigPath = cfgPath
 	subscriptionDir = subDir
+	hy2ConfigPath = filepath.Join(dir, "hy-cfg.yaml")
+	// Write a minimal hysteria config with alice so ListUsers/SetUsers work.
+	if err := os.WriteFile(hy2ConfigPath, []byte("listen: :20515\ntls:\n  cert: cert.pem\n  key: key.pem\nobfs:\n  type: salamander\n  salamander:\n    password: pw\nbandwidth:\n  up: 100mbps\n  down: 100mbps\nauth:\n  type: userpass\n  userpass:\n    alice: alice-hy2pw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() {
 		xrayConfigPath = oldC
 		subscriptionDir = oldS
+		hy2ConfigPath = oldH
 	})
 	return
 }
@@ -128,8 +134,8 @@ func TestRunRemoveUserDeletesSubscription(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(subDir, "alice.txt")); !os.IsNotExist(err) {
 		t.Fatalf("subscription file should be deleted")
 	}
-	if r.calls != 1 {
-		t.Fatalf("expected 1 restart, got %d", r.calls)
+	if r.calls != 2 {
+		t.Fatalf("expected 2 restarts (xray + hysteria), got %d", r.calls)
 	}
 }
 
