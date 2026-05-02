@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"time"
 
 	"github.com/kulinh/cf-vpn/internal/state"
@@ -60,18 +59,13 @@ func RunStatus(ctx context.Context, runner systemd.Runner, stdout io.Writer) err
 			fmt.Fprintln(stdout, "probe: reality tcp=open")
 		}
 	} else {
-		req, rerr := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
-		if rerr != nil {
-			fmt.Fprintf(stdout, "probe: error: build request: %v\n", rerr)
+		// Cloudflare-mode probe: HTTPUpgrade handshake through cloudflared. xray
+		// 26.x closes plain GETs, so a real upgrade request is the only signal.
+		code, perr := probeHTTPSUpgrade(ctx, domain, templates.VLESSPath)
+		if perr != nil {
+			fmt.Fprintf(stdout, "probe: error: %v\n", perr)
 		} else {
-			client := &http.Client{Timeout: 10 * time.Second}
-			resp, perr := client.Do(req)
-			if perr != nil {
-				fmt.Fprintf(stdout, "probe: error: %v\n", perr)
-			} else {
-				resp.Body.Close()
-				fmt.Fprintf(stdout, "probe: code=%d\n", resp.StatusCode)
-			}
+			fmt.Fprintf(stdout, "probe: code=%d\n", code)
 		}
 	}
 

@@ -13,11 +13,13 @@ func TestIsHealthyCode(t *testing.T) {
 	if !IsHealthyCode(101) {
 		t.Fatalf("101 (WebSocket Upgrade accepted) must be healthy")
 	}
-	if !IsHealthyCode(400) || !IsHealthyCode(426) {
-		t.Fatalf("400 and 426 must be healthy")
-	}
-	if IsHealthyCode(502) || IsHealthyCode(0) || IsHealthyCode(200) {
-		t.Fatalf("502/0/200 must be unhealthy")
+	// xray 26.x's HTTPUpgrade transport closes plain GETs without writing a
+	// status line, so 400/426 are no longer reachable from the new probe and
+	// shouldn't be treated as healthy. Anything other than 101 is unhealthy.
+	for _, code := range []int{0, 200, 400, 426, 502} {
+		if IsHealthyCode(code) {
+			t.Fatalf("code %d must be unhealthy", code)
+		}
 	}
 }
 
