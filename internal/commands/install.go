@@ -999,11 +999,11 @@ func generatePasswordFrom(rng io.Reader, nBytes int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// probeInstall attempts an HTTPS GET to https://<domain>/vless. The tunnel
+// probeInstall attempts an HTTPS GET to https://<domain>/api/v1/sync. The tunnel
 // may take minutes to register, so any transport error or non-healthy code
 // is logged but does not fail the install.
 func probeInstall(ctx context.Context, domain string, stdout io.Writer) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+"/vless", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
 	if err != nil {
 		fmt.Fprintf(stdout, "probe: skipped (%v)\n", err)
 		return

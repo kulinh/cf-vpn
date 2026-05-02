@@ -525,7 +525,7 @@ func TestRunInstallCloudflareModeRendersTunnelIngressAndLoopbackXray(t *testing.
 		t.Fatal(err)
 	}
 	cfS := string(cfCfg)
-	for _, want := range []string{"hostname: vpn.example.com", "path: ^/vless$", "service: http://127.0.0.1:10001", "hostname: jpy-04.rwl247.dev", "service: http://127.0.0.1:6788"} {
+	for _, want := range []string{"hostname: vpn.example.com", "path: ^/api/v1/sync$", "service: http://127.0.0.1:10001", "hostname: jpy-04.rwl247.dev", "service: http://127.0.0.1:6788"} {
 		if !strings.Contains(cfS, want) {
 			t.Fatalf("cloudflared config missing %q:\n%s", want, cfS)
 		}
@@ -772,11 +772,11 @@ auth:
 		t.Fatalf("ufw rules = %#v, want [443/tcp 24430/udp]", ufw.rules)
 	}
 	cfCfg, _ := os.ReadFile(cloudflaredConfig)
-	if strings.Contains(string(cfCfg), "/vless") || strings.Contains(string(cfCfg), "/trojan") || !strings.Contains(string(cfCfg), "127.0.0.1:6788") {
+	if strings.Contains(string(cfCfg), "/api/v1/sync") || strings.Contains(string(cfCfg), "/trojan") || !strings.Contains(string(cfCfg), "127.0.0.1:6788") {
 		t.Fatalf("bad cloudflared config: %s", cfCfg)
 	}
 	xrayCfg, _ := os.ReadFile(xrayConfigPath)
-	for _, want := range []string{"\"listen\": \"0.0.0.0\"", "\"port\": 443", "\"network\": \"ws\"", "\"security\": \"tls\"", "\"path\": \"/vless\"", "/etc/cfvpn/xray/cert.pem", "/etc/cfvpn/xray/key.pem", "alice@vpn"} {
+	for _, want := range []string{"\"listen\": \"0.0.0.0\"", "\"port\": 443", "\"network\": \"ws\"", "\"security\": \"tls\"", "\"path\": \"/api/v1/sync\"", "/etc/cfvpn/xray/cert.pem", "/etc/cfvpn/xray/key.pem", "alice@vpn"} {
 		if !strings.Contains(string(xrayCfg), want) {
 			t.Fatalf("xray config missing %q: %s", want, xrayCfg)
 		}

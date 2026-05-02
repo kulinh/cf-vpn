@@ -9,6 +9,7 @@ import (
 
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
+	"github.com/kulinh/cf-vpn/internal/templates"
 	"github.com/kulinh/cf-vpn/internal/xray"
 )
 
@@ -44,7 +45,7 @@ func RunStatus(ctx context.Context, runner systemd.Runner, stdout io.Writer) err
 	if env != nil {
 		domain = env["DOMAIN"]
 	}
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+"/vless", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, perr := client.Do(req)
 	if perr != nil {

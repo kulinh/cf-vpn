@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kulinh/cf-vpn/internal/systemd"
+	"github.com/kulinh/cf-vpn/internal/templates"
 )
 
 // systemdUnitDir is where cfvpn's systemd unit files are written. Tests
@@ -21,10 +22,10 @@ var systemdUnitDir = "/etc/systemd/system"
 // unhealthy.
 func IsHealthyCode(code int) bool { return code == 400 || code == 426 }
 
-// RunHealthcheckRun probes https://<domain>/vless and prints OK / FAIL.
+// RunHealthcheckRun probes https://<domain>/api/v1/sync and prints OK / FAIL.
 // Returns a non-nil error on transport failure or an unhealthy response code.
 func RunHealthcheckRun(ctx context.Context, domain string, stdout io.Writer) error {
-	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+"/vless", nil)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

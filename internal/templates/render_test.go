@@ -32,7 +32,7 @@ func TestRenderCloudflaredAdmin(t *testing.T) {
 	if !strings.Contains(out, "http://127.0.0.1:6788") {
 		t.Fatalf("expected agent at 127.0.0.1:6788: %s", out)
 	}
-	if strings.Contains(out, "/vless") || strings.Contains(out, "/trojan") {
+	if strings.Contains(out, "/api/v1/sync") || strings.Contains(out, "/trojan") {
 		t.Fatalf("data plane ingress must not appear: %s", out)
 	}
 }
@@ -63,7 +63,7 @@ func TestRenderXrayDirectIncludesTLSAndCerts(t *testing.T) {
 		t.Fatalf("bad vless inbound address: %v", vless)
 	}
 	vlessStream := vless["streamSettings"].(map[string]any)
-	if vlessStream["network"] != "ws" || vlessStream["security"] != "tls" || vlessStream["wsSettings"].(map[string]any)["path"] != "/vless" {
+	if vlessStream["network"] != "ws" || vlessStream["security"] != "tls" || vlessStream["wsSettings"].(map[string]any)["path"] != "/api/v1/sync" {
 		t.Fatalf("bad vless stream settings: %v", vlessStream)
 	}
 	vlessSettings := vless["settings"].(map[string]any)

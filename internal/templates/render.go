@@ -58,7 +58,7 @@ const cloudflaredWithAdminTemplate = `tunnel: {{.TunnelUUID}}
 credentials-file: /etc/cfvpn/cloudflared/{{.TunnelUUID}}.json
 ingress:
   - hostname: {{.Domain}}
-    path: ^/vless$
+    path: ^/api/v1/sync$
     service: http://127.0.0.1:10001
   - hostname: {{.AdminHost}}
     service: http://127.0.0.1:6788
@@ -74,7 +74,7 @@ const xrayTemplate = `{
       "port": 10001,
       "protocol": "vless",
       "settings": {"clients": [{"id": "{{.UUID}}", "email": "{{.User}}@vpn"}], "decryption": "none"},
-      "streamSettings": {"network": "ws", "wsSettings": {"path": "/vless"}}
+      "streamSettings": {"network": "ws", "wsSettings": {"path": "/api/v1/sync"}}
     }
   ],
   "outbounds": [{"tag": "direct", "protocol": "freedom"}, {"tag": "block", "protocol": "blackhole"}],
@@ -126,7 +126,7 @@ func RenderXrayCloudflare(users []XrayUser) (string, error) {
 				"streamSettings": map[string]any{
 					"network": "ws",
 					"wsSettings": map[string]any{
-						"path": "/vless",
+						"path": "/api/v1/sync",
 					},
 				},
 			},
@@ -195,7 +195,7 @@ func RenderXrayDirect(in XrayDirectInputs) (string, error) {
 					"network":  "ws",
 					"security": "tls",
 					"wsSettings": map[string]any{
-						"path": "/vless",
+						"path": "/api/v1/sync",
 					},
 					"tlsSettings": map[string]any{
 						"certificates": certs,
