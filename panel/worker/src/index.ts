@@ -148,5 +148,10 @@ export default {
     }
 
     return notFound(pathname);
+  },
+
+  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+    await env.DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run();
   }
 };

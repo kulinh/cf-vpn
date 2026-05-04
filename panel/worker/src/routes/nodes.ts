@@ -413,10 +413,13 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
     const latencyMs = Math.max(1, Date.now() - startedAt);
     const now = nowTs();
     const measured = { ...out, latency_ms: latencyMs };
-    await env.DB.prepare("UPDATE nodes SET last_seen_at=?, latency_ms=? WHERE id=?")
+    const wasUnreachable = row.status === "unreachable";
+    await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
       .bind(now, latencyMs, id)
       .run();
-    await logEvent(env, actor, "node.healthcheck", "ok", measured, id);
+    if (wasUnreachable) {
+      await logEvent(env, actor, "node.healthcheck.recover", "ok", measured, id);
+    }
     return json(measured);
   } catch (e) {
     await logEvent(env, actor, "node.healthcheck", "error", { message: String(e) }, id);
