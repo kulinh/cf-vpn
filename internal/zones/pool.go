@@ -22,4 +22,6 @@ var DefaultPool = []Zone{
 	{Name: "rwl265.com", CFZoneID: "78c5bc6cef91f5749cb4c1e489fcd1f1"},
 	{Name: "rwl265.org", CFZoneID: "95ac57c37138eaa8bfa862b88fcdd784"},
 	{Name: "rwl.one", CFZoneID: "73de3bba83ad186e0d287553f5ae3e21"},
+	{Name: "rwl247.cc", CFZoneID: "96a3929c790e792217de111b0020490d"},
+	{Name: "rwl247.cn", CFZoneID: "e920d9605e5b7d8c642d4302d5e421f5"},
 }

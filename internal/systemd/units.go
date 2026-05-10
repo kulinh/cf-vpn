@@ -10,6 +10,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
 ExecStart=/usr/local/bin/xray run -c %s
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
@@ -69,6 +70,7 @@ After=network-online.target
 
 [Service]
 Type=simple
+EnvironmentFile=/etc/cfvpn/cfvpn.env
 ExecStart=/usr/local/bin/cfvpn-agent
 Restart=on-failure
 RestartSec=3

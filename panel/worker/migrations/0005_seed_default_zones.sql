@@ -1,4 +1,4 @@
--- Seed the canonical 9-zone pool. INSERT OR IGNORE preserves any zone an
+-- Seed the canonical 11-zone pool. INSERT OR IGNORE preserves any zone an
 -- admin added manually with the same name. Keep this list in sync with
 -- internal/zones/pool.go::DefaultPool.
 INSERT OR IGNORE INTO zones (name, cf_zone_id, enabled, created_at) VALUES
@@ -10,4 +10,6 @@ INSERT OR IGNORE INTO zones (name, cf_zone_id, enabled, created_at) VALUES
   ('rwl247.dev',     '2158ccce56880a4f3be1f4a0be66109a', 1, strftime('%s','now')),
   ('rwl265.com',     '78c5bc6cef91f5749cb4c1e489fcd1f1', 1, strftime('%s','now')),
   ('rwl265.org',     '95ac57c37138eaa8bfa862b88fcdd784', 1, strftime('%s','now')),
-  ('rwl.one',        '73de3bba83ad186e0d287553f5ae3e21', 1, strftime('%s','now'));
+  ('rwl.one',        '73de3bba83ad186e0d287553f5ae3e21', 1, strftime('%s','now')),
+  ('rwl247.cc',      '96a3929c790e792217de111b0020490d', 1, strftime('%s','now')),
+  ('rwl247.cn',      'e920d9605e5b7d8c642d4302d5e421f5', 1, strftime('%s','now'));

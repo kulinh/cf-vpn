@@ -99,6 +99,11 @@ func RegenerateSubscriptions(domain string) error {
 	return nil
 }
 
+// WriteAtomicFile is exported for use by packages outside commands (e.g. cfvpn-agent).
+func WriteAtomicFile(path string, content []byte, mode os.FileMode) error {
+	return writeAtomicFile(path, content, mode)
+}
+
 func writeAtomicFile(path string, content []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err

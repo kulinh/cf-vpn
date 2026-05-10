@@ -4,6 +4,10 @@ import { error } from "./http";
 const WINDOW_MS = 1000;
 const MAX_RPS = 10;
 const MAX_BUCKETS = 500;
+// Best-effort rate limiting: this Map is scoped to a single Worker isolate and
+// resets when the isolate is evicted. It won't stop a distributed burst across
+// multiple isolates. For hard enforcement, configure Cloudflare Zone-level rate
+// limiting rules in the dashboard (Workers > Rate Limiting).
 const buckets = new Map<string, { count: number; windowStart: number }>();
 
 export function requireActorEmail(request: Request): string | Response {

@@ -150,9 +150,11 @@ export async function deleteUser(env: Env, id: string, actor: string): Promise<R
   const failed = summary.some((x) => !x.ok);
   const succeeded = summary.some((x) => x.ok);
   const outcome = failed ? (succeeded ? "partial" : "error") : "ok";
-  if (!failed) {
-    await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
-  }
+  // Always delete from users (and cascade-delete remaining user_nodes rows).
+  // Credentials on unreachable nodes become orphaned until those nodes are
+  // re-synced, but keeping the user record alive causes a permanent zombie state
+  // that cannot self-heal without a manual retry.
+  await env.DB.prepare("DELETE FROM users WHERE id = ?").bind(id).run();
 
   await logEvent(env, actor, "user.remove", outcome, { user_id: id, results: summary }, undefined, id);
   return json({ ok: !failed, results: summary }, failed ? 207 : 200);

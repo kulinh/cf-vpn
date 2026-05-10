@@ -201,11 +201,11 @@ SECRET_OK=$(echo "$SECRET_RESP" | jq -r '.success // false' 2>/dev/null || echo 
 SECRET_CHANGES=$(echo "$SECRET_RESP" | jq -r '.result[0].meta.changes // 0' 2>/dev/null || echo 0)
 if [ "$SECRET_OK" != "true" ]; then
   warn "D1 mirror failed (non-fatal): $(echo "$SECRET_RESP" | jq -r '.errors[0].message // "unknown"' 2>/dev/null)"
-  warn "Mirror manually: UPDATE nodes SET agent_secret='$AGENT_SHARED_SECRET' WHERE id='$NODE_ID';"
+  warn "Mirror manually: UPDATE nodes SET agent_secret='<see /etc/cfvpn/cfvpn.env>' WHERE id='$NODE_ID';"
 elif [ "$SECRET_CHANGES" -lt 1 ]; then
   warn "D1 mirror updated 0 rows — node $NODE_ID is not in D1 yet."
   warn "Add the node via the panel (Quick Add), then re-run this UPDATE:"
-  warn "  UPDATE nodes SET agent_secret='$AGENT_SHARED_SECRET' WHERE id='$NODE_ID';"
+  warn "  UPDATE nodes SET agent_secret='<see /etc/cfvpn/cfvpn.env>' WHERE id='$NODE_ID';"
 else
   log "D1 nodes.agent_secret mirrored for $NODE_ID"
 fi

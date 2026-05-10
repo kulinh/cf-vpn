@@ -79,7 +79,8 @@ func (c Client) GetZoneID(ctx context.Context, domain string) (string, error) {
 	parts := strings.Split(domain, ".")
 	for i := 0; i < len(parts)-1; i++ {
 		candidate := strings.Join(parts[i:], ".")
-		resp, err := c.do(ctx, http.MethodGet, "/zones?name="+candidate, nil)
+		q := url.Values{"name": {candidate}}.Encode()
+		resp, err := c.do(ctx, http.MethodGet, "/zones?"+q, nil)
 		if err != nil {
 			return "", err
 		}
@@ -122,7 +123,8 @@ func (c Client) CreateTunnel(ctx context.Context, name string) (string, []byte, 
 }
 
 func (c Client) UpsertCNAME(ctx context.Context, zoneID, name, target string) error {
-	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?type=CNAME&name="+name, nil)
+	q := url.Values{"type": {"CNAME"}, "name": {name}}.Encode()
+	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
 	if err != nil {
 		return err
 	}

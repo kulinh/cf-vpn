@@ -167,10 +167,8 @@ func handleHealthcheck(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "env_load_failed", err.Error())
 		return
 	}
-	if serviceState("cfvpn-hysteria.service") != "active" {
-		writeJSON(w, http.StatusOK, healthcheckResponse{OK: false, Code: 0, LatencyMS: 0})
-		return
-	}
+	// HY2 state is intentionally not gated here — if xray is healthy the node
+	// should stay active even when HY2 is temporarily down (e.g. cert renewal).
 	start := time.Now()
 	code, err := probeHealth(r.Context(), env)
 	latency := time.Since(start).Milliseconds()
@@ -301,6 +299,7 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 		"vpn_host":       result.VpnHost,
 		"public_ip":      result.PublicIP,
 		"hy2_host":       env["HY2_HOST"],
+		"hy2_port":       result.Hy2Port,
 		"users":          len(req.Users),
 		"mode":           env[state.KeyMode],
 		"reality_pubkey": env[state.KeyRealityPub],
@@ -463,7 +462,7 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	if err != nil {
 		return nil, commands.RotateDirectResult{}, err
 	}
-	if err := os.WriteFile(paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
+	if err := commands.WriteAtomicFile(paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
 	}
 	if err := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); err != nil {
