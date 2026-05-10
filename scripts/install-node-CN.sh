@@ -6,32 +6,39 @@
 # to the target, then the installation is driven over SSH — the China VPS never
 # needs to reach github.com or any other blocked domain.
 #
+# GFW expectations (cfvpnctl install on target needs these reachable):
+#   - api.cloudflare.com:443         (DNS records, tunnel CRUD)
+#   - acme-v02.api.letsencrypt.org   (lego TLS cert issuance)
+#   - System clock within 5min of UTC (ACME signs nonces with timestamps)
+#
 # Flow:
-#   0. preflight — check local tools (curl, go, gcc, make, …) + SSH reachability
-#   1. resolve MODE — probe target /proc/net to pick direct/cloudflare
-#   2. OS deps — minimal apt on target: ca-certificates + ufw (Aliyun mirrors)
-#   3. download — fetch all GFW-blocked binaries/packages to local STAGE_DIR:
+#   0. preflight LOCAL — tool checks + local CF API reachability
+#   1. SSH/MODE — verify SSH + probe target /proc/net to pick direct/cloudflare
+#   2. OS deps on target — minimal apt: ca-certificates + ufw
+#   3. preflight TARGET — DNS / TCP443 / HTTPS / clock-skew (FAIL-FAST before
+#                         any heavy download or resource creation)
+#   4. download — fetch GFW-blocked binaries/packages to local STAGE_DIR:
 #        [1/6] xray binary          github.com/XTLS/Xray-core
 #        [2/6] xray geo data        github.com/v2fly
-#        [3/6] cloudflared .deb     pkg.cloudflare.com (official apt repo)
+#        [3/6] cloudflared .deb     pkg.cloudflare.com (apt repo)
 #        [4/6] hysteria2            github.com/apernet/hysteria
 #        [5/6] jq                   github.com/jqlang/jq
 #        [6/6] curl (static glibc)  github.com/stunnel/static-curl
-#   4. build locally (linux/amd64):
-#        cfvpnctl + cfvpn-agent  (Go)
-#        lego                    (go install github.com/go-acme/lego/v4)
-#        openssl CLI             (C, from github.com/openssl/openssl source)
-#   5. D1 zone check — informational, against CF API from local
-#   6. rsync — push repo + STAGE_DIR to target
-#   7. stage install — place binaries on target; cloudflared via dpkg
-#   8. env — write /etc/cfvpn/cfvpn.env on target
-#   9. firewall — ensure SSH stays open if ufw is active
-#  10. cfvpnctl install — runs on target (all binaries pre-staged, no GFW hits)
-#  11. verify — check systemd units + run healthcheck
-#  12. D1 sync — upsert node + user + user_nodes, call agent sync
-#  13. cleanup — rm STAGE_DIR local (EXIT trap) + remote stage dir
+#   5. build locally (linux/amd64):
+#        cfvpnctl + cfvpn-agent  (Go, CGO_ENABLED=0)
+#        lego                    (go install, CGO_ENABLED=0)
+#        openssl CLI             (C, from openssl source)
+#   6. D1 zone check — informational
+#   7. rsync — push repo + STAGE_DIR to target
+#   8. stage install — install binaries on target; cloudflared via dpkg
+#   9. env — write /etc/cfvpn/cfvpn.env (with LEGO_DNS_RESOLVERS for fast DNS-01)
+#  10. firewall — ensure SSH stays open if ufw is active
+#  11. cfvpnctl install — runs on target (all binaries pre-staged)
+#  12. verify — check systemd units + run healthcheck
+#  13. D1 sync — upsert node + user + user_nodes, call agent sync
+#  14. cleanup — rm STAGE_DIR (always, via single EXIT trap chain)
 #
-# Usage (from VNM-01 or any machine outside GFW):
+# Usage (from machine OUTSIDE GFW):
 #   CF_API_TOKEN=... CF_ACCOUNT_ID=... NODE_ID=chn-02 \
 #     TARGET_HOST=root@121.41.196.104 [SSH_KEY=/tmp/rwl247] \
 #     [NODE_LABEL="CN-02 (Aliyun SZ)"] \
@@ -52,7 +59,7 @@ require_env() {
   [ -n "${!name:-}" ] || die "$name is required"
 }
 
-# ----- 0. preflight (LOCAL) ---------------------------------------------------
+# ----- 0. preflight LOCAL -----------------------------------------------------
 for cmd in curl python3 go gcc make unzip rsync ssh openssl jq xz; do
   command -v "$cmd" >/dev/null || die "$cmd is required on this local machine"
 done
@@ -62,12 +69,28 @@ require_env CF_ACCOUNT_ID
 require_env NODE_ID
 require_env TARGET_HOST   # e.g. root@121.41.196.104
 
+# Local network sanity — script is useless without these
+log "checking local network reachability"
+curl -fsS --max-time 10 -o /dev/null https://api.cloudflare.com/client/v4/ips \
+  || die "local cannot reach api.cloudflare.com — check internet on this machine"
+curl -fsS --max-time 10 -o /dev/null \
+  https://pkg.cloudflare.com/cloudflared/debian/dists/any/InRelease \
+  || die "local cannot reach pkg.cloudflare.com (needed for cloudflared .deb)"
+# proxy.golang.org is needed by `go install`; warn-only since GOPROXY can be reset
+if ! curl -fsS --max-time 10 -o /dev/null https://proxy.golang.org 2>/dev/null; then
+  warn "proxy.golang.org unreachable from local — go install may be slow"
+  warn "if local is in China, set: export GOPROXY=https://goproxy.cn,direct"
+fi
+log "local network OK"
+
 SSH_KEY="${SSH_KEY:-}"
 _ssh_opts=(-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes)
-_rsync_e="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes"
+# Quote SSH_KEY in case it contains spaces; rsync passes -e as a single string
 if [ -n "$SSH_KEY" ]; then
   _ssh_opts+=(-i "$SSH_KEY")
-  _rsync_e="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes"
+  _rsync_e="ssh -i \"$SSH_KEY\" -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes"
+else
+  _rsync_e="ssh -o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes"
 fi
 
 ssh_run() { ssh "${_ssh_opts[@]}" "$TARGET_HOST" "$@"; }
@@ -102,20 +125,66 @@ fi
 
 D1_DB_ID="${CFVPN_D1_DATABASE_ID:-0649f07f-e2c0-47f3-b84a-273f7f67332e}"
 
-# Local D1 query helper (runs from this machine, token stays out of argv)
+# Local D1 query helper — token stays out of argv via --config
 d1_query() {
   local payload="$1"
   local tmpf; tmpf="$(mktemp)"; chmod 600 "$tmpf"
   printf '%s' "$payload" >"$tmpf"
   local resp
-  resp=$(curl -sS --max-time 30 \
-    -H "Authorization: Bearer ${CF_API_TOKEN}" \
-    -H "Content-Type: application/json" \
-    --data-binary "@$tmpf" \
-    "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/d1/database/${D1_DB_ID}/query")
+  resp=$(curl -sS --max-time 30 --config - <<EOF
+header = "Authorization: Bearer ${CF_API_TOKEN}"
+header = "Content-Type: application/json"
+url = "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/d1/database/${D1_DB_ID}/query"
+data-binary = "@${tmpf}"
+EOF
+)
   rm -f "$tmpf"
   echo "$resp"
 }
+
+# Single EXIT trap — chains stage cleanup with orphan-tunnel detection.
+# Replaces the multi-trap-replacement pattern that was leaking STAGE_DIR
+# whenever cfvpnctl install or any later step failed.
+INSTALL_PHASE_STARTED=0
+INSTALL_PHASE_DONE=0
+STAGE_DIR=""
+TUNNELS_BEFORE=""
+
+cleanup_local_stage() {
+  [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ] || return 0
+  log "removing local stage dir: $STAGE_DIR"
+  rm -rf "$STAGE_DIR"
+}
+
+list_admin_tunnels_local() {
+  curl -sS --max-time 10 --config - <<EOF | jq -r '.result // [] | .[] | select(.name | startswith("cfvpn-admin-")) | "\(.id) \(.name)"' 2>/dev/null || true
+header = "Authorization: Bearer ${CF_API_TOKEN}"
+url = "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?is_deleted=false&per_page=100"
+EOF
+}
+
+exit_handler() {
+  local rc=$?
+  cleanup_local_stage
+  if [ "$rc" -ne 0 ] && [ "$INSTALL_PHASE_STARTED" -eq 1 ] && [ "$INSTALL_PHASE_DONE" -eq 0 ]; then
+    warn "cfvpnctl install was interrupted (exit $rc) — checking for orphan admin tunnels"
+    local after new tid tname
+    after="$(list_admin_tunnels_local | sort)"
+    new="$(comm -13 <(printf '%s\n' "$TUNNELS_BEFORE") <(printf '%s\n' "$after"))"
+    if [ -n "$new" ]; then
+      warn "orphan admin tunnels detected:"
+      while IFS= read -r line; do
+        [ -z "$line" ] && continue
+        tid=$(echo "$line" | cut -d' ' -f1)
+        tname=$(echo "$line" | cut -d' ' -f2-)
+        warn "  $tid ($tname)"
+        warn "  clean up: ssh${SSH_KEY:+ -i $SSH_KEY} $TARGET_HOST cfvpnctl rotate-domain --cleanup $tid --yes"
+      done <<< "$new"
+    fi
+  fi
+  exit $rc
+}
+trap exit_handler EXIT
 
 log "verifying SSH access to $TARGET_HOST"
 ssh_run true || die "SSH to $TARGET_HOST failed — check TARGET_HOST / SSH_KEY"
@@ -159,27 +228,114 @@ else
 fi
 REMOTE
 
-# ----- 3. download GFW-blocked binaries to local STAGE_DIR --------------------
+# ----- 3. preflight TARGET (GFW connectivity) --------------------------------
+# Fail FAST before downloading 100MB of binaries or creating any CF resources.
+# All checks below run on the China VPS; ca-certificates is now in place so
+# system curl can do TLS handshakes.
+log "running GFW preflight on $TARGET_HOST"
+
+# 3a. Clock skew local↔target — ACME requires <5min drift
+local_ts=$(date -u +%s)
+remote_ts=$(ssh_run date -u +%s)
+skew=$((local_ts - remote_ts))
+abs_skew=${skew#-}
+if [ "$abs_skew" -gt 300 ]; then
+  die "clock skew local↔target = ${skew}s exceeds 5min — TLS/ACME will fail. Fix: ssh${SSH_KEY:+ -i $SSH_KEY} $TARGET_HOST timedatectl set-ntp true"
+elif [ "$abs_skew" -gt 60 ]; then
+  warn "clock skew local↔target = ${skew}s (acceptable but tight)"
+else
+  log "  clock skew local↔target = ${skew}s (OK)"
+fi
+
+# 3b. Network reachability checks on target
+preflight_rc=0
+ssh_run bash <<'REMOTE' || preflight_rc=$?
+# NOTE: deliberately NOT using set -e — we want to count ALL failures,
+# not exit on the first one, so the operator sees the full picture.
+PASS=0; FAIL=0; WARN=0
+ok()   { printf '  [OK]   %s\n' "$*"; PASS=$((PASS+1)); }
+fail_(){ printf '  [FAIL] %s\n' "$*" >&2; FAIL=$((FAIL+1)); }
+warn_(){ printf '  [WARN] %s\n' "$*" >&2; WARN=$((WARN+1)); }
+
+# DNS resolution — uses /etc/resolv.conf, no external tool needed
+for h in api.cloudflare.com acme-v02.api.letsencrypt.org pkg.cloudflare.com; do
+  if getent hosts "$h" >/dev/null 2>&1; then
+    ok "DNS resolves $h"
+  else
+    fail_ "DNS cannot resolve $h"
+  fi
+done
+
+# TCP 443 reachability — bash builtin, no nc needed
+tcp_check() {
+  local host="$1" port="$2"
+  timeout 5 bash -c "echo >/dev/tcp/$host/$port" >/dev/null 2>&1
+}
+for h in api.cloudflare.com acme-v02.api.letsencrypt.org; do
+  if tcp_check "$h" 443; then
+    ok "TCP $h:443 reachable"
+  else
+    fail_ "TCP $h:443 unreachable (likely GFW)"
+  fi
+done
+
+# HTTPS — verifies TLS handshake works (depends on ca-certificates + correct clock)
+api_code=$(curl -sS --max-time 10 -o /dev/null -w '%{http_code}' \
+  https://api.cloudflare.com/client/v4/ips 2>/dev/null || echo 000)
+if [ "$api_code" = "200" ]; then
+  ok "HTTPS api.cloudflare.com → 200"
+else
+  fail_ "HTTPS api.cloudflare.com → $api_code (TLS or GFW issue)"
+fi
+
+acme_code=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' \
+  https://acme-v02.api.letsencrypt.org/directory 2>/dev/null || echo 000)
+if [ "$acme_code" = "200" ]; then
+  ok "HTTPS acme-v02.api.letsencrypt.org → 200"
+else
+  fail_ "HTTPS Let's Encrypt → $acme_code (cert issuance will fail)"
+fi
+
+# Cloudflare authoritative DNS UDP/53 — used by lego DNS-01 propagation check
+# Falls back to recursive DNS via LEGO_DNS_RESOLVERS if blocked
+if timeout 3 bash -c 'echo >/dev/udp/173.245.59.111/53' >/dev/null 2>&1; then
+  ok "Cloudflare auth DNS 173.245.59.111:53 reachable"
+else
+  warn_ "Cloudflare auth DNS UDP blocked — using recursive DNS for lego (slower)"
+fi
+
+# NTP sync status (best-effort — informational)
+if command -v timedatectl >/dev/null 2>&1; then
+  if timedatectl status 2>/dev/null | grep -qi "synchronized: yes"; then
+    ok "system clock NTP-synchronized"
+  else
+    warn_ "system clock not NTP-synchronized — fix: timedatectl set-ntp true"
+  fi
+fi
+
+echo
+echo "[install-node-CN] preflight summary: pass=$PASS warn=$WARN fail=$FAIL"
+exit $FAIL
+REMOTE
+if [ "$preflight_rc" -ne 0 ]; then
+  die "target preflight: $preflight_rc critical failure(s) — fix GFW connectivity before proceeding"
+fi
+log "target preflight passed"
+
+# ----- 4. download GFW-blocked binaries to local STAGE_DIR --------------------
 STAGE_DIR="$(mktemp -d /tmp/cfvpn-cn-stage.XXXXXX)"
 STAGE_BIN="$STAGE_DIR/bin"
 STAGE_SHARE="$STAGE_DIR/share/xray"
 mkdir -p "$STAGE_BIN" "$STAGE_SHARE" "$STAGE_DIR/tmp"
 
-cleanup_local_stage() {
-  log "removing local stage dir: $STAGE_DIR"
-  rm -rf "$STAGE_DIR"
-}
-trap cleanup_local_stage EXIT
-
 log "downloading binaries locally → $STAGE_DIR"
 
-# Helper: fetch latest tag from GitHub API
-gh_latest_tag() { # $1=owner/repo
+gh_latest_tag() {
   curl -fsSL --max-time 15 "https://api.github.com/repos/$1/releases/latest" \
     | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])"
 }
 
-# ---- [1/6] xray binary (linux/amd64) ----------------------------------------
+# ---- [1/6] xray binary -------------------------------------------------------
 log "  [1/6] xray   (github.com/XTLS/Xray-core)"
 xray_ver=$(gh_latest_tag XTLS/Xray-core)
 curl -fsSL --retry 3 --max-time 180 \
@@ -199,9 +355,7 @@ curl -fsSL --retry 3 --max-time 120 \
   -o "$STAGE_SHARE/geosite.dat"
 log "    geoip $(du -sh "$STAGE_SHARE/geoip.dat" | cut -f1), geosite $(du -sh "$STAGE_SHARE/geosite.dat" | cut -f1)"
 
-# ---- [3/6] cloudflared .deb from Cloudflare official apt repo ---------------
-# Download from pkg.cloudflare.com instead of GitHub — no API calls needed.
-# The .deb is rsynced to the target and installed via dpkg (no internet on target).
+# ---- [3/6] cloudflared .deb (from Cloudflare official apt repo) -------------
 log "  [3/6] cloudflared   (pkg.cloudflare.com apt repo)"
 CF_APT_BASE="https://pkg.cloudflare.com/cloudflared/debian"
 CF_PACKAGES=$(curl -fsSL --retry 3 --max-time 30 \
@@ -214,7 +368,7 @@ curl -fsSL --retry 3 --max-time 180 \
   -o "$STAGE_DIR/tmp/cloudflared.deb"
 log "    cloudflared ${CF_VER} deb ($(du -sh "$STAGE_DIR/tmp/cloudflared.deb" | cut -f1))"
 
-# ---- [4/6] hysteria2 (linux/amd64) ------------------------------------------
+# ---- [4/6] hysteria2 ---------------------------------------------------------
 log "  [4/6] hysteria2   (github.com/apernet/hysteria)"
 hy_url=$(curl -fsSL --max-time 15 \
   https://api.github.com/repos/apernet/hysteria/releases/latest \
@@ -229,7 +383,7 @@ curl -fsSL --retry 3 --max-time 180 "$hy_url" -o "$STAGE_BIN/hysteria"
 chmod 755 "$STAGE_BIN/hysteria"
 log "    hysteria2 ($(du -sh "$STAGE_BIN/hysteria" | cut -f1))"
 
-# ---- [5/6] jq static binary -------------------------------------------------
+# ---- [5/6] jq static binary --------------------------------------------------
 log "  [5/6] jq   (github.com/jqlang/jq)"
 jq_ver=$(gh_latest_tag jqlang/jq)
 curl -fsSL --retry 3 --max-time 60 \
@@ -251,26 +405,24 @@ curl_bin=$(find "$STAGE_DIR/tmp/curl-extract" -type f -name 'curl' -perm /111 | 
 install -m 755 "$curl_bin" "$STAGE_BIN/curl"
 log "    curl ${curl_ver} ($(du -sh "$STAGE_BIN/curl" | cut -f1))"
 
-# ----- 4. build locally (linux/amd64) ----------------------------------------
+# ----- 5. build locally (linux/amd64, CGO_ENABLED=0) -------------------------
+# CGO_ENABLED=0 forces static binaries — avoids glibc-version mismatch on
+# Aliyun/Tencent Cloud images that may run older glibc than the local builder.
 
-# ---- 4a. cfvpnctl + cfvpn-agent (Go) ----------------------------------------
-log "building cfvpnctl + cfvpn-agent  (GOOS=linux GOARCH=amd64)"
+log "building cfvpnctl + cfvpn-agent  (GOOS=linux GOARCH=amd64 CGO_ENABLED=0)"
 (
   cd "$PROJECT_ROOT"
-  GOOS=linux GOARCH=amd64 go build -o bin/cfvpnctl    ./cmd/cfvpnctl
-  GOOS=linux GOARCH=amd64 go build -o bin/cfvpn-agent ./cmd/cfvpn-agent
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/cfvpnctl    ./cmd/cfvpnctl
+  GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o bin/cfvpn-agent ./cmd/cfvpn-agent
 )
 install -m 755 "$PROJECT_ROOT/bin/cfvpnctl"    "$STAGE_BIN/cfvpnctl"
 install -m 755 "$PROJECT_ROOT/bin/cfvpn-agent" "$STAGE_BIN/cfvpn-agent"
 
-# ---- 4b. lego (go install, cross-compiled — no GitHub API, no tarball) ------
-# GOBIN places the binary directly in STAGE_BIN; GOOS/GOARCH cross-compiles
-# for the linux/amd64 target. go install always fetches the latest release.
-log "building lego via go install  (GOOS=linux GOARCH=amd64)"
-GOOS=linux GOARCH=amd64 GOBIN="$STAGE_BIN" go install github.com/go-acme/lego/v4/cmd/lego@latest
+log "building lego via go install  (CGO_ENABLED=0)"
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 GOBIN="$STAGE_BIN" \
+  go install github.com/go-acme/lego/v4/cmd/lego@latest
 log "    lego ($(du -sh "$STAGE_BIN/lego" | cut -f1))"
 
-# ---- 4c. openssl CLI (C source) ---------------------------------------------
 log "building openssl CLI from source  (github.com/openssl/openssl)"
 ossl_tag=$(gh_latest_tag openssl/openssl)
 ossl_ver="${ossl_tag#openssl-}"
@@ -289,7 +441,7 @@ log "  openssl ${ossl_ver} built ($(du -sh "$STAGE_BIN/openssl" | cut -f1))"
 
 log "local stage ready: $(ls "$STAGE_BIN/" | tr '\n' ' ')"
 
-# ----- 5. D1 zone check (informational, local) --------------------------------
+# ----- 6. D1 zone check (informational, local) -------------------------------
 D1_RESP=$(d1_query "$(jq -n '{sql:"SELECT id,label,zone,vpn_host FROM nodes WHERE zone != ?", params:[""]}')" 2>/dev/null || echo '{}')
 D1_OK=$(echo "$D1_RESP" | jq -r '.success // false' 2>/dev/null || echo false)
 if [ "$D1_OK" = "true" ]; then
@@ -304,7 +456,7 @@ else
   warn "D1 zone check failed (non-fatal)"
 fi
 
-# ----- 6. rsync repo + stage to target ----------------------------------------
+# ----- 7. rsync repo + stage to target ---------------------------------------
 REMOTE_PROJ="/opt/cf-vpn"
 REMOTE_STAGE="/tmp/cfvpn-stage"
 
@@ -319,19 +471,21 @@ rsync -az \
   -e "$_rsync_e" \
   "$STAGE_DIR/" "$TARGET_HOST:$REMOTE_STAGE/"
 
-# ----- 7. install staged binaries on target -----------------------------------
+# ----- 8. install staged binaries on target ----------------------------------
 log "installing staged binaries on $TARGET_HOST"
 ssh_run bash <<'REMOTE'
 set -euo pipefail
 S="/tmp/cfvpn-stage"
-# cloudflared via dpkg — handles any lib dependencies cleanly
 echo "[install-node-CN] installing cloudflared from .deb"
-dpkg -i "$S/tmp/cloudflared.deb"
-# All other binaries
+# dpkg -i can fail if cloudflared declares deps not yet installed; apt -f
+# resolves them from the local apt cache (Aliyun/Tencent mirror).
+if ! dpkg -i "$S/tmp/cloudflared.deb"; then
+  echo "[install-node-CN] resolving missing deps with apt-get install -f"
+  apt-get install -y -f
+fi
 for b in xray hysteria lego cfvpnctl cfvpn-agent jq curl openssl; do
   install -m 755 "$S/bin/$b" "/usr/local/bin/$b"
 done
-# xray geo data
 install -d /usr/local/share/xray /usr/local/etc/xray /var/log/xray
 install -m 644 "$S/share/xray/geoip.dat"   /usr/local/share/xray/geoip.dat
 install -m 644 "$S/share/xray/geosite.dat" /usr/local/share/xray/geosite.dat
@@ -344,9 +498,9 @@ for b in xray cloudflared lego hysteria cfvpnctl cfvpn-agent jq curl openssl; do
 done
 REMOTE
 
-# ----- 8. write /etc/cfvpn/cfvpn.env on target --------------------------------
-# cfvpnctl reads NODE_ID (lowercase) from env for DNS label use.
-# DB_NODE_ID (uppercase) is used only by this script for D1 writes.
+# ----- 9. write /etc/cfvpn/cfvpn.env on target -------------------------------
+# Includes LEGO_DNS_RESOLVERS + LEGO_PROPAGATION_WAIT to make DNS-01 fast
+# behind GFW (Cloudflare auth DNS may be UDP-blocked → fall back to recursive).
 log "writing /etc/cfvpn/cfvpn.env on $TARGET_HOST"
 ssh_run bash -s <<REMOTE
 set -euo pipefail
@@ -359,6 +513,8 @@ tmp_env="\$(mktemp)"
   printf 'USER1_NAME=%s\n'           "${USER1_NAME}"
   printf 'MODE=%s\n'                 "${MODE}"
   printf 'AGENT_SHARED_SECRET=%s\n'  "${AGENT_SHARED_SECRET}"
+  printf 'LEGO_DNS_RESOLVERS=%s\n'   "1.1.1.1:53,8.8.8.8:53"
+  printf 'LEGO_DISABLE_CP=%s\n'      "1"
   [ -n "${DOMAIN}" ] && printf 'DOMAIN=%s\n' "${DOMAIN}" || true
 } >"\$tmp_env"
 install -m 600 "\$tmp_env" /etc/cfvpn/cfvpn.env
@@ -366,7 +522,7 @@ rm -f "\$tmp_env"
 echo "[install-node-CN] /etc/cfvpn/cfvpn.env written"
 REMOTE
 
-# ----- 9. firewall hygiene on target ------------------------------------------
+# ----- 10. firewall hygiene on target ----------------------------------------
 ssh_run bash <<'REMOTE'
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
   echo "[install-node-CN] ufw active — ensuring SSH stays open"
@@ -375,48 +531,17 @@ if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: a
 fi
 REMOTE
 
-# ----- 10. run cfvpnctl install on target ------------------------------------
-# All binaries pre-staged → cfvpnctl install skips every download.
+# ----- 11. run cfvpnctl install on target ------------------------------------
 log "running cfvpnctl install on $TARGET_HOST (mode=$MODE)"
-
-list_admin_tunnels_local() {
-  curl -sS --max-time 10 \
-    -H "Authorization: Bearer ${CF_API_TOKEN}" \
-    "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?is_deleted=false&per_page=100" \
-    | jq -r '.result // [] | .[] | select(.name | startswith("cfvpn-admin-")) | "\(.id) \(.name)"' \
-    2>/dev/null || true
-}
 TUNNELS_BEFORE="$(list_admin_tunnels_local | sort)"
-
-install_exit_handler() {
-  local rc=$?
-  [ $rc -eq 0 ] && return 0
-  warn "cfvpnctl install exited $rc — checking for orphan admin tunnels"
-  local after new
-  after="$(list_admin_tunnels_local | sort)"
-  new="$(comm -13 <(printf '%s\n' "$TUNNELS_BEFORE") <(printf '%s\n' "$after"))"
-  if [ -n "$new" ]; then
-    warn "orphan admin tunnels created during failed install:"
-    while IFS= read -r line; do
-      local tid tname
-      tid=$(echo "$line" | cut -d' ' -f1)
-      tname=$(echo "$line" | cut -d' ' -f2-)
-      [ -z "$tid" ] && continue
-      warn "  $tid ($tname)"
-      warn "  clean up: ssh${SSH_KEY:+ -i $SSH_KEY} $TARGET_HOST cfvpnctl rotate-domain --cleanup $tid --yes"
-    done <<< "$new"
-  fi
-  exit $rc
-}
-trap install_exit_handler EXIT
-
+INSTALL_PHASE_STARTED=1
 ssh_run cfvpnctl install
-trap - EXIT
+INSTALL_PHASE_DONE=1
 
 log "installing healthcheck timer"
 ssh_run cfvpnctl healthcheck install
 
-# ----- 11. verify systemd units -----------------------------------------------
+# ----- 12. verify systemd units ----------------------------------------------
 log "verifying systemd units on $TARGET_HOST"
 ssh_run bash <<'REMOTE'
 sleep 2
@@ -431,12 +556,12 @@ done
 REMOTE
 
 ssh_run cfvpnctl healthcheck run \
-  || warn "healthcheck reported failure (tunnel may still be registering — re-run in 60 s)"
+  || warn "healthcheck reported failure (tunnel may still be registering — re-run in 60s)"
 
-# ----- 12. D1 sync: upsert node + user + user_nodes --------------------------
+# ----- 13. D1 sync: upsert node + user + user_nodes --------------------------
 log "syncing $DB_NODE_ID + user $USER1_NAME to D1"
 
-# Read runtime values written by cfvpnctl install from the remote env file
+# Read runtime values written by cfvpnctl install
 REMOTE_ENV=$(ssh_run bash -c '. /etc/cfvpn/cfvpn.env
 printf "DOMAIN=%s\n"              "$DOMAIN"
 printf "HY2_HOST=%s\n"            "$HY2_HOST"
@@ -451,8 +576,8 @@ printf "REALITY_SHORT_ID=%s\n"    "$REALITY_SHORT_ID"
 printf "REALITY_SNI=%s\n"         "$REALITY_SNI"
 printf "REALITY_DEST=%s\n"        "$REALITY_DEST"
 ')
-# shellcheck disable=SC2163
 while IFS='=' read -r key val; do
+  [ -z "$key" ] && continue
   case "$key" in
     DOMAIN|HY2_HOST|HY2_PORT|HY2_OBFS_PW|HY2_PASS_USER1|UUID_USER1| \
     PUBLIC_IP|ADMIN_HOST|REALITY_PUBLIC_KEY|REALITY_SHORT_ID|REALITY_SNI|REALITY_DEST)
@@ -460,10 +585,14 @@ while IFS='=' read -r key val; do
   esac
 done <<< "$REMOTE_ENV"
 
+# Validate required values populated (would crash jq --argjson if empty)
+[ -n "${HY2_PORT:-}" ] || die "HY2_PORT not populated by cfvpnctl install"
+[ -n "${UUID_USER1:-}" ] || die "UUID_USER1 not populated by cfvpnctl install"
+
 NOW_MS=$(date +%s%3N)
 ZONE="$(echo "$DOMAIN" | rev | cut -d'.' -f1,2 | rev)"
 
-# 12a. Upsert node with full config
+# 13a. Upsert node
 NODE_RESP=$(d1_query "$(jq -n \
   --arg id    "$DB_NODE_ID" \
   --arg label "$NODE_LABEL" \
@@ -493,7 +622,7 @@ else
   warn "node D1 upsert failed: $(echo "$NODE_RESP" | jq -r '.errors[0].message // "unknown"')"
 fi
 
-# 12b. Ensure user exists in D1; create with random sub_token if missing
+# 13b. Ensure user exists
 USER_RESP=$(d1_query "$(jq -n --arg uid "$USER1_NAME" \
   '{sql:"SELECT id FROM users WHERE id=?", params:[$uid]}')")
 USER_EXISTS=$(echo "$USER_RESP" | jq -r '.result[0].results | length')
@@ -514,7 +643,7 @@ else
   log "user $USER1_NAME already in D1"
 fi
 
-# 12c. Upsert user_nodes
+# 13c. Upsert user_nodes
 UN_RESP=$(d1_query "$(jq -n \
   --arg uid   "$USER1_NAME" \
   --arg nid   "$DB_NODE_ID" \
@@ -529,7 +658,7 @@ else
   warn "user_nodes upsert failed: $(echo "$UN_RESP" | jq -r '.errors[0].message // "unknown"')"
 fi
 
-# 12d. Call agent sync to confirm config is live
+# 13d. Agent sync via admin tunnel
 log "calling agent sync via $ADMIN_HOST"
 SYNC_RESP=$(curl -sS --max-time 30 \
   -X POST "https://$ADMIN_HOST/admin/v1/sync" \
@@ -543,12 +672,11 @@ else
   warn "agent sync non-OK: $SYNC_RESP"
 fi
 
-# ----- 13. cleanup remote stage dir -------------------------------------------
+# ----- 14. cleanup remote stage dir -------------------------------------------
 log "removing remote stage dir on $TARGET_HOST"
 ssh_run rm -rf "$REMOTE_STAGE"
-# Local STAGE_DIR removed by EXIT trap (cleanup_local_stage)
+# Local STAGE_DIR removed by single EXIT trap (exit_handler → cleanup_local_stage)
 
-# ----- report -----------------------------------------------------------------
 log "node ready: $DB_NODE_ID ($NODE_LABEL)"
 log "next: ssh${SSH_KEY:+ -i $SSH_KEY} $TARGET_HOST cfvpnctl status"
 log "next: ssh${SSH_KEY:+ -i $SSH_KEY} $TARGET_HOST cfvpnctl gen-sub $USER1_NAME"
