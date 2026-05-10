@@ -317,7 +317,7 @@ if [ "$USER_EXISTS" -lt 1 ]; then
     --arg uid "$USER1_NAME" \
     --arg tok "$SUB_TOKEN" \
     --argjson ts "$NOW_MS" \
-    '{sql:"INSERT OR IGNORE INTO users (id,sub_token,created_at) VALUES (?,?,?)", params:[$uid,$tok,$ts]}')")
+    '{sql:"INSERT OR IGNORE INTO users (id,name,sub_token,created_at) VALUES (?,?,?,?)", params:[$uid,$uid,$tok,$ts]}')")
   CRE_OK=$(echo "$CRE_RESP" | jq -r '.success // false')
   if [ "$CRE_OK" = "true" ]; then
     log "user $USER1_NAME created in D1 (sub_token=$SUB_TOKEN)"
@@ -334,7 +334,8 @@ UN_RESP=$(d1_query "$(jq -n \
   --arg nid   "$DB_NODE_ID" \
   --arg uuid  "$UUID_USER1" \
   --arg hy2pw "$HY2_PASS_USER1" \
-  '{sql:"INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw) VALUES (?,?,?,?)", params:[$uid,$nid,$uuid,$hy2pw]}')")
+  --argjson ts "$NOW_MS" \
+  '{sql:"INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?,?,?,?,?)", params:[$uid,$nid,$uuid,$hy2pw,$ts]}')")
 UN_OK=$(echo "$UN_RESP" | jq -r '.success // false')
 if [ "$UN_OK" = "true" ]; then
   log "user_nodes $USER1_NAME → $DB_NODE_ID upserted (uuid=$UUID_USER1)"
