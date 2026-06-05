@@ -154,3 +154,208 @@ const actorLabel = { current: "tg:unknown" };
 export function setActor(actor: string): void {
   actorLabel.current = actor;
 }
+
+interface SyncUserRow {
+  name: string;
+  vless_uuid: string;
+  hy2_pw: string;
+}
+
+async function buildNodeSyncUsers(env: Env, nodeId: string): Promise<SyncUserRow[]> {
+  return all<SyncUserRow>(
+    env.DB.prepare(
+      "SELECT u.id AS name, un.vless_uuid, un.hy2_pw FROM user_nodes un JOIN users u ON u.id=un.user_id WHERE un.node_id=? ORDER BY u.id"
+    ).bind(nodeId)
+  );
+}
+
+function summarize(results: Array<{ node_id?: string; ok: boolean; error?: string }> | undefined): string {
+  if (!results || results.length === 0) return "(không có node active)";
+  return results
+    .map((r) => (r.ok ? `✅ ${escapeHtml(r.node_id ?? "?")}` : `⚠️ ${escapeHtml(r.node_id ?? "?")}: ${escapeHtml(r.error ?? "lỗi")}`))
+    .join("\n");
+}
+
+async function formatAddUser(env: Env, name: string): Promise<string> {
+  const { status, body } = await readHandler(createUserByName(env, name, actorLabel.current));
+  if (status === 409) return `⚠️ User <b>${escapeHtml(body?.detail || name)}</b> đã tồn tại.`;
+  if (status >= 400 && status !== 207) return `❌ ${escapeHtml(body?.detail || body?.error || "lỗi")}`;
+  return `👤 Thêm <b>${escapeHtml(body.id)}</b>:\n${summarize(body.results)}`;
+}
+
+async function formatDelUser(env: Env, id: string): Promise<string> {
+  const { status, body } = await readHandler(deleteUser(env, id, actorLabel.current));
+  if (status === 404) return `❌ Không tìm thấy user <b>${escapeHtml(id)}</b>.`;
+  if (status >= 400 && status !== 207) return `❌ ${escapeHtml(body?.detail || body?.error || "lỗi")}`;
+  return `🗑 Xóa <b>${escapeHtml(id)}</b>:\n${summarize(body.results)}`;
+}
+
+async function formatUpgrade(env: Env, id: string): Promise<string> {
+  const { status, body } = await readHandler(userUpgradeNodes(env, id, actorLabel.current));
+  if (status === 404) return `❌ Không tìm thấy user <b>${escapeHtml(id)}</b>.`;
+  if (status >= 400 && status !== 207) return `❌ ${escapeHtml(body?.detail || body?.error || "lỗi")}`;
+  if ((body.addedCount ?? 0) === 0) return `ℹ️ <b>${escapeHtml(id)}</b> đã có trên mọi node.`;
+  return `⬆️ <b>${escapeHtml(id)}</b> thêm vào: ${body.addedNodes.map((n: string) => escapeHtml(n)).join(", ")}`;
+}
+
+async function formatRotate(env: Env, nodeId: string): Promise<string> {
+  const { status, body } = await readHandler(nodeRotateCore(env, nodeId, {}, actorLabel.current));
+  if (status === 404) return `❌ Không tìm thấy node <b>${escapeHtml(nodeId)}</b>.`;
+  if (status >= 400) return `❌ <b>${escapeHtml(nodeId)}</b>: ${escapeHtml(body?.detail || body?.error || "lỗi")}`;
+  return `🔁 <b>${escapeHtml(nodeId)}</b> → <code>${escapeHtml(body.vpn_host)}</code> (${escapeHtml(body.public_ip)})`;
+}
+
+async function formatSync(env: Env, nodeId: string): Promise<string> {
+  const users = await buildNodeSyncUsers(env, nodeId);
+  const { status, body } = await readHandler(nodeSyncCore(env, nodeId, users, actorLabel.current));
+  if (status === 404) return `❌ Không tìm thấy node <b>${escapeHtml(nodeId)}</b>.`;
+  if (status >= 400) return `❌ <b>${escapeHtml(nodeId)}</b>: ${escapeHtml(body?.detail || body?.error || "lỗi")}`;
+  return `🔃 <b>${escapeHtml(nodeId)}</b> đồng bộ ${users.length} user.`;
+}
+
+// Run a slow action in the background: send "processing", do the work, edit the
+// placeholder with the result. Errors become a ❌ reply instead of a webhook 5xx.
+function runBackground(
+  env: Env,
+  ctx: ExecutionContext,
+  chatId: number,
+  work: () => Promise<string>
+): void {
+  ctx.waitUntil(
+    (async () => {
+      const token = env.TELEGRAM_BOT_TOKEN!;
+      const placeholder = await sendMessage(token, chatId, "⏳ Đang xử lý…");
+      try {
+        const text = await work();
+        await editMessageText(token, chatId, placeholder.message_id, text);
+      } catch (e) {
+        await editMessageText(token, chatId, placeholder.message_id, `❌ ${escapeHtml(String(e))}`);
+      }
+    })()
+  );
+}
+
+export async function dispatch(env: Env, ctx: ExecutionContext, update: TgUpdate, baseUrl: string): Promise<void> {
+  const token = env.TELEGRAM_BOT_TOKEN!;
+
+  if (update.callback_query) {
+    const cq = update.callback_query;
+    setActor(`tg:${cq.from.id}`);
+    await answerCallbackQuery(token, cq.id);
+    const chatId = cq.message?.chat.id;
+    if (chatId == null || !cq.data) return;
+    const parsed = parseCallback(cq.data);
+    if (!parsed) return;
+
+    // Destructive callbacks require a confirm step.
+    if (parsed.entity === "u" && parsed.action === "del" && !parsed.confirmed) {
+      await sendMessage(token, chatId, `⚠️ Xóa user <b>${escapeHtml(parsed.id)}</b>?`, {
+        keyboard: [[
+          { text: "✅ Có", callback_data: `u:del:${parsed.id}:yes` },
+          { text: "❌ Không", callback_data: `x:noop:0` }
+        ]]
+      });
+      return;
+    }
+    if (parsed.entity === "n" && parsed.action === "rotate" && !parsed.confirmed) {
+      await sendMessage(token, chatId, `⚠️ Rotate domain node <b>${escapeHtml(parsed.id)}</b>?`, {
+        keyboard: [[
+          { text: "✅ Có", callback_data: `n:rotate:${parsed.id}:yes` },
+          { text: "❌ Không", callback_data: `x:noop:0` }
+        ]]
+      });
+      return;
+    }
+
+    if (parsed.entity === "x") return; // noop / cancel
+    if (parsed.entity === "n" && parsed.action === "health") {
+      runBackground(env, ctx, chatId, () => formatHealth(env, parsed.id));
+    } else if (parsed.entity === "n" && parsed.action === "status") {
+      runBackground(env, ctx, chatId, () => formatStatus(env, parsed.id));
+    } else if (parsed.entity === "n" && parsed.action === "rotate" && parsed.confirmed) {
+      runBackground(env, ctx, chatId, () => formatRotate(env, parsed.id));
+    } else if (parsed.entity === "u" && parsed.action === "del" && parsed.confirmed) {
+      runBackground(env, ctx, chatId, () => formatDelUser(env, parsed.id));
+    } else if (parsed.entity === "u" && parsed.action === "sub") {
+      runBackground(env, ctx, chatId, () => formatSub(env, parsed.id, baseUrl));
+    } else if (parsed.entity === "u" && parsed.action === "upg") {
+      runBackground(env, ctx, chatId, () => formatUpgrade(env, parsed.id));
+    }
+    return;
+  }
+
+  const msg = update.message;
+  if (!msg?.text) return;
+  setActor(`tg:${msg.from?.id ?? "unknown"}`);
+  const chatId = msg.chat.id;
+  const parsed = parseCommand(msg.text);
+  if (!parsed) return;
+
+  switch (parsed.cmd) {
+    case "start":
+    case "help":
+      await sendMessage(token, chatId, HELP_TEXT);
+      return;
+    case "nodes": {
+      const { text, keyboard } = await formatNodes(env);
+      await sendMessage(token, chatId, text, { keyboard });
+      return;
+    }
+    case "users": {
+      const { text, keyboard } = await formatUsers(env);
+      await sendMessage(token, chatId, text, { keyboard });
+      return;
+    }
+    case "sub":
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /sub &lt;tên&gt;"); return; }
+      runBackground(env, ctx, chatId, () => formatSub(env, parsed.arg, baseUrl));
+      return;
+    case "status":
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /status &lt;node&gt;"); return; }
+      runBackground(env, ctx, chatId, () => formatStatus(env, parsed.arg));
+      return;
+    case "health":
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /health &lt;node&gt;"); return; }
+      runBackground(env, ctx, chatId, () => formatHealth(env, parsed.arg));
+      return;
+    case "sync":
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /sync &lt;node&gt;"); return; }
+      runBackground(env, ctx, chatId, () => formatSync(env, parsed.arg));
+      return;
+    case "adduser":
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /adduser &lt;tên&gt;"); return; }
+      runBackground(env, ctx, chatId, () => formatAddUser(env, parsed.arg));
+      return;
+    case "upgrade": {
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /upgrade &lt;tên&gt;"); return; }
+      const upId = userIDFromName(parsed.arg);
+      if (!upId) { await sendMessage(token, chatId, "❌ Tên user không hợp lệ."); return; }
+      runBackground(env, ctx, chatId, () => formatUpgrade(env, upId));
+      return;
+    }
+    case "deluser": {
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /deluser &lt;tên&gt;"); return; }
+      const delId = userIDFromName(parsed.arg);
+      if (!delId) { await sendMessage(token, chatId, "❌ Tên user không hợp lệ."); return; }
+      await sendMessage(token, chatId, `⚠️ Xóa user <b>${escapeHtml(delId)}</b>?`, {
+        keyboard: [[
+          { text: "✅ Có", callback_data: `u:del:${delId}:yes` },
+          { text: "❌ Không", callback_data: `x:noop:0` }
+        ]]
+      });
+      return;
+    }
+    case "rotate": {
+      if (!parsed.arg) { await sendMessage(token, chatId, "Cú pháp: /rotate &lt;node&gt;"); return; }
+      await sendMessage(token, chatId, `⚠️ Rotate domain node <b>${escapeHtml(parsed.arg)}</b>?`, {
+        keyboard: [[
+          { text: "✅ Có", callback_data: `n:rotate:${parsed.arg}:yes` },
+          { text: "❌ Không", callback_data: `x:noop:0` }
+        ]]
+      });
+      return;
+    }
+    default:
+      await sendMessage(token, chatId, "Lệnh không rõ. Gõ /help.");
+  }
+}

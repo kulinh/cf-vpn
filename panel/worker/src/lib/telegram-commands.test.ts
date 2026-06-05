@@ -33,3 +33,52 @@ describe("parseCallback", () => {
     expect(parseCallback("garbage")).toBeNull();
   });
 });
+
+import { vi } from "vitest";
+
+vi.mock("./telegram", async (orig) => {
+  const actual = await orig<typeof import("./telegram")>();
+  return {
+    ...actual,
+    sendMessage: vi.fn().mockResolvedValue({ message_id: 1, chat: { id: -1, type: "group" } }),
+    editMessageText: vi.fn().mockResolvedValue(true),
+    answerCallbackQuery: vi.fn().mockResolvedValue(true)
+  };
+});
+
+vi.mock("../routes/users", () => ({
+  createUserByName: vi.fn(),
+  deleteUser: vi.fn(),
+  listUsers: vi.fn(),
+  userSubscription: vi.fn(),
+  userUpgradeNodes: vi.fn()
+}));
+vi.mock("../routes/nodes", () => ({
+  listNodes: vi.fn(),
+  nodeHealthcheck: vi.fn(),
+  nodeRotateCore: vi.fn(),
+  nodeStatus: vi.fn(),
+  nodeSyncCore: vi.fn()
+}));
+
+import { dispatch } from "./telegram-commands";
+import { sendMessage } from "./telegram";
+import { deleteUser } from "../routes/users";
+import type { Env } from "../types";
+
+function fakeCtx(): ExecutionContext {
+  return { waitUntil: (_p: Promise<unknown>) => {}, passThroughOnException: () => {} } as ExecutionContext;
+}
+
+describe("dispatch confirm gating", () => {
+  it("/deluser only prompts, does not delete", async () => {
+    const env = { TELEGRAM_BOT_TOKEN: "T" } as Env;
+    await dispatch(env, fakeCtx(), {
+      update_id: 1,
+      message: { message_id: 2, chat: { id: -100, type: "group" }, from: { id: 9, is_bot: false }, text: "/deluser alice" }
+    }, "https://panel.example");
+    expect(deleteUser).not.toHaveBeenCalled();
+    const lastCall = (sendMessage as any).mock.calls.at(-1);
+    expect(lastCall[2]).toContain("Xóa user");
+  });
+});
