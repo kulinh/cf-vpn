@@ -4,8 +4,11 @@ import { type TgUpdate } from "../lib/telegram";
 
 // Telegram always receives 200 — even on rejection or internal error — so it
 // does not retry. Rejections are silent (no body) to avoid leaking which check
-// failed.
-const OK = new Response("ok", { status: 200 });
+// failed. Built per-call: constructing a Response at module/global scope is
+// disallowed by the Workers runtime.
+function ok(): Response {
+  return new Response("ok", { status: 200 });
+}
 
 function chatIdOf(update: TgUpdate): number | null {
   if (update.message) return update.message.chat.id;
@@ -19,23 +22,23 @@ export async function handleTelegramWebhook(
   ctx: ExecutionContext
 ): Promise<Response> {
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_GROUP_ID) {
-    return OK; // bot not configured — ignore
+    return ok(); // bot not configured — ignore
   }
   const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
   if (secret !== env.TELEGRAM_WEBHOOK_SECRET) {
-    return OK;
+    return ok();
   }
 
   let update: TgUpdate;
   try {
     update = (await request.json()) as TgUpdate;
   } catch {
-    return OK;
+    return ok();
   }
 
   const allowedChat = Number(env.TELEGRAM_GROUP_ID);
   if (chatIdOf(update) !== allowedChat) {
-    return OK;
+    return ok();
   }
 
   const baseUrl = new URL(request.url).origin;
@@ -44,5 +47,5 @@ export async function handleTelegramWebhook(
   } catch {
     // Swallow — never return non-200 to Telegram.
   }
-  return OK;
+  return ok();
 }
