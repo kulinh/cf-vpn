@@ -157,7 +157,7 @@ npm --prefix panel/worker run check
 npm --prefix panel/worker test
 ```
 
-Public subscription URL per user is `https://<panel-host>/sub/<32-hex-token>`. Cloudflare Access **must** allow `/sub/*` unauthenticated; `/api/*` should remain protected.
+Public subscription URL per user is `https://<panel-host>/sub/<32-hex-token>`. Cloudflare Access **must** allow `/sub/*` and `/telegram/webhook` unauthenticated (Telegram cannot send Access headers; the webhook is protected by its own secret-token + group-id check); `/api/*` should remain protected.
 
 ## Telegram bot
 
