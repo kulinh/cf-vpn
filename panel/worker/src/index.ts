@@ -17,6 +17,7 @@ import { createUser, deleteUser, listUsers, userSubscription, userUpgradeNodes }
 import { createZone, deleteZone, listZones, patchZone } from "./routes/zones";
 import { listEvents } from "./routes/events";
 import { publicSubscription } from "./routes/sub";
+import { handleTelegramWebhook } from "./routes/telegram";
 
 function parseNodeID(pathname: string): string {
   const m = pathname.match(/^\/api\/nodes\/([^/]+)$/);
@@ -54,13 +55,17 @@ function parseSubToken(pathname: string): string {
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
 
     const subToken = parseSubToken(pathname);
     if (subToken && request.method === "GET") {
       return publicSubscription(env, subToken);
+    }
+
+    if (pathname === "/telegram/webhook" && request.method === "POST") {
+      return handleTelegramWebhook(env, request, ctx);
     }
 
     if (!pathname.startsWith("/api/")) {

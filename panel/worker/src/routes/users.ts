@@ -50,7 +50,11 @@ export async function createUser(env: Env, request: Request, actor: string): Pro
   if (!isRecord(body)) {
     return error(400, { error: "invalid_user", detail: "request body must be a JSON object" });
   }
-  const name = body.name?.trim();
+  return createUserByName(env, body.name, actor);
+}
+
+export async function createUserByName(env: Env, rawName: string | undefined, actor: string): Promise<Response> {
+  const name = rawName?.trim();
   if (!name) {
     return error(400, { error: "invalid_user", detail: "name is required" });
   }

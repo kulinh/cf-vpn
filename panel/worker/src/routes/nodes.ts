@@ -428,11 +428,6 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
 }
 
 export async function nodeRotate(env: Env, id: string, request: Request, actor: string): Promise<Response> {
-  const row = await getNodeOr404(env, id);
-  if (row instanceof Response) {
-    return row;
-  }
-
   // Optional override body — empty body is fine (auto path).
   let override: { host?: string; zone?: string } = {};
   const raw = await request.text();
@@ -445,6 +440,19 @@ export async function nodeRotate(env: Env, id: string, request: Request, actor: 
     } catch {
       override = {};
     }
+  }
+  return nodeRotateCore(env, id, override, actor);
+}
+
+export async function nodeRotateCore(
+  env: Env,
+  id: string,
+  override: { host?: string; zone?: string },
+  actor: string
+): Promise<Response> {
+  const row = await getNodeOr404(env, id);
+  if (row instanceof Response) {
+    return row;
   }
   const hasHost = typeof override.host === "string" && override.host.length > 0;
   const hasZone = typeof override.zone === "string" && override.zone.length > 0;
@@ -518,10 +526,6 @@ export async function nodeRotate(env: Env, id: string, request: Request, actor: 
 }
 
 export async function nodeSync(env: Env, id: string, request: Request, actor: string): Promise<Response> {
-  const row = await getNodeOr404(env, id);
-  if (row instanceof Response) {
-    return row;
-  }
   let body: { users: Array<{ name: string; vless_uuid: string; hy2_pw: string }> };
   try {
     body = await readJSON<{ users: Array<{ name: string; vless_uuid: string; hy2_pw: string }> }>(request);
@@ -540,13 +544,25 @@ export async function nodeSync(env: Env, id: string, request: Request, actor: st
   if (invalid) {
     return error(400, { error: "invalid_sync_payload", detail: "each user must include name, vless_uuid, hy2_pw" });
   }
+  return nodeSyncCore(env, id, body.users, actor);
+}
 
+export async function nodeSyncCore(
+  env: Env,
+  id: string,
+  users: Array<{ name: string; vless_uuid: string; hy2_pw: string }>,
+  actor: string
+): Promise<Response> {
+  const row = await getNodeOr404(env, id);
+  if (row instanceof Response) {
+    return row;
+  }
   try {
     const out = await agentCall<AgentSyncResponse>(
       env,
       { adminHost: row.admin_host, agentSecret: row.agent_secret },
       "/admin/v1/sync",
-      { method: "POST", body: JSON.stringify({ users: body.users }) },
+      { method: "POST", body: JSON.stringify({ users }) },
       120000
     );
     const syncRuntimeFields = row.mode === "direct";

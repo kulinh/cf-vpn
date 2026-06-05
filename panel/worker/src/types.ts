@@ -8,6 +8,9 @@ export interface Env {
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
   AGENT_SHARED_SECRET?: string;
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_GROUP_ID?: string;
 }
 
 export interface ApiError {
