@@ -107,6 +107,7 @@ export interface NodeRow {
   reality_dest: string | null;
   xhttp_path: string | null;
   agent_secret: string | null;
+  tunnel_uuid: string | null;
 }
 
 export interface UserRow {

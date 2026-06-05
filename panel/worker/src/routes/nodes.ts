@@ -122,11 +122,20 @@ export async function createNode(env: Env, request: Request): Promise<Response> 
   const hy2HostOverride = typeof body.hy2_host === "string" ? body.hy2_host.trim() : "";
   const hy2Host = hy2HostOverride.length > 0 ? hy2HostOverride : generateHy2Host(rng, zoneName);
 
-  await env.DB.prepare(
-    "INSERT INTO nodes (id,label,admin_host,vpn_host,hy2_host,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret) VALUES (?, ?, ?, ?, ?, ?, 'direct', 'active', NULL, NULL, ?, ?)"
-  )
-    .bind(body.id, body.label, adminHost, vpnHost, hy2Host, zoneName, nowTs(), agentSecret)
-    .run();
+  try {
+    await env.DB.prepare(
+      "INSERT INTO nodes (id,label,admin_host,vpn_host,hy2_host,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret) VALUES (?, ?, ?, ?, ?, ?, 'direct', 'active', NULL, NULL, ?, ?)"
+    )
+      .bind(body.id, body.label, adminHost, vpnHost, hy2Host, zoneName, nowTs(), agentSecret)
+      .run();
+  } catch (e) {
+    // The id / admin_host / vpn_host unique indexes can still fire on a race
+    // between the pre-checks above and this INSERT — return 409, not a raw 500.
+    if (/UNIQUE/i.test(String(e))) {
+      return error(409, { error: "node_conflict", detail: "id, admin_host, or vpn_host already in use" });
+    }
+    throw e;
+  }
   return json({ ok: true, id: body.id, label: body.label, admin_host: adminHost, vpn_host: vpnHost, hy2_host: hy2Host, zone: zoneName }, 201);
 }
 
@@ -162,6 +171,9 @@ export async function patchNode(env: Env, id: string, request: Request): Promise
       return error(400, { error: "invalid_admin_host", detail: hostError });
     }
   }
+  if (body.vpn_host !== undefined && (typeof body.vpn_host !== "string" || body.vpn_host.trim() === "")) {
+    return error(400, { error: "invalid_node", detail: "vpn_host must be a non-empty string" });
+  }
   const updated = {
     label: body.label ?? existing.label,
     admin_host: body.admin_host ?? existing.admin_host,
@@ -169,9 +181,18 @@ export async function patchNode(env: Env, id: string, request: Request): Promise
     zone: body.zone ?? existing.zone,
     status: body.status ?? existing.status
   };
-  await env.DB.prepare("UPDATE nodes SET label=?, admin_host=?, vpn_host=?, zone=?, status=? WHERE id=?")
-    .bind(updated.label, updated.admin_host, updated.vpn_host, updated.zone, updated.status, id)
-    .run();
+  try {
+    await env.DB.prepare("UPDATE nodes SET label=?, admin_host=?, vpn_host=?, zone=?, status=? WHERE id=?")
+      .bind(updated.label, updated.admin_host, updated.vpn_host, updated.zone, updated.status, id)
+      .run();
+  } catch (e) {
+    // idx_nodes_vpn_host is UNIQUE — surface a clean 409 instead of a raw 500
+    // when an operator edits vpn_host to one already used by another node.
+    if (/UNIQUE/i.test(String(e))) {
+      return error(409, { error: "vpn_host_exists", detail: updated.vpn_host });
+    }
+    throw e;
+  }
   return json({ ok: true });
 }
 
@@ -192,7 +213,7 @@ async function resolveZoneIdForHost(env: Env, host: string): Promise<string | nu
 export async function deleteNode(env: Env, id: string): Promise<Response> {
   const row = await one<NodeRow>(
     env.DB.prepare(
-      "SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes WHERE id = ?"
+      "SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid FROM nodes WHERE id = ?"
     ).bind(id)
   );
   if (!row) {
@@ -204,7 +225,9 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
   if (!hasCfCredentials(env)) {
     warnings.push("CF cleanup skipped: CF_API_TOKEN/CF_ACCOUNT_ID not configured");
   } else {
-    let tunnelUuid: string | null = null;
+    // Fall back to the persisted tunnel_uuid (captured on the last status sync)
+    // so we can still delete the tunnel when the agent is unreachable now.
+    let tunnelUuid: string | null = row.tunnel_uuid && row.tunnel_uuid.length > 0 ? row.tunnel_uuid : null;
     let agentReachable = false;
     try {
       const status = await agentCall<AgentStatusResponse>(
@@ -217,11 +240,15 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
       agentReachable = true;
       if (typeof status.tunnel_uuid === "string" && status.tunnel_uuid.length > 0) {
         tunnelUuid = status.tunnel_uuid;
-      } else {
+      } else if (!tunnelUuid) {
         warnings.push("Agent did not report tunnel_uuid; tunnel not deleted");
       }
     } catch (e) {
-      warnings.push(`Agent unreachable, tunnel_uuid unknown: ${String(e)}`);
+      if (tunnelUuid) {
+        warnings.push(`Agent unreachable; using persisted tunnel_uuid for cleanup: ${String(e)}`);
+      } else {
+        warnings.push(`Agent unreachable, tunnel_uuid unknown: ${String(e)}`);
+      }
     }
 
     if (agentReachable) {
@@ -291,7 +318,7 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
 
 async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -335,10 +362,11 @@ async function persistNodeRuntime(
     reality_sni: string | null;
     reality_dest: string | null;
     xhttp_path: string | null;
+    tunnel_uuid: string | null;
   }
 ): Promise<void> {
   await env.DB.prepare(
-    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=? WHERE id=?"
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, tunnel_uuid=? WHERE id=?"
   )
     .bind(
       fields.vpn_host,
@@ -355,6 +383,7 @@ async function persistNodeRuntime(
       fields.reality_sni,
       fields.reality_dest,
       fields.xhttp_path,
+      fields.tunnel_uuid,
       id
     )
     .run();
@@ -385,6 +414,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       reality_sni: syncRuntimeFields ? status.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp_path: syncCloudflareFields ? status.xhttp_path ?? row.xhttp_path : row.xhttp_path,
+      tunnel_uuid: status.tunnel_uuid || row.tunnel_uuid,
     });
     return json(status);
   } catch (e) {
@@ -581,8 +611,19 @@ export async function nodeSyncCore(
       reality_sni: syncRuntimeFields ? out.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? out.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp_path: syncCloudflareFields ? out.xhttp_path ?? row.xhttp_path : row.xhttp_path,
+      tunnel_uuid: row.tunnel_uuid, // sync response carries no tunnel_uuid; preserve persisted value
     });
-    await logEvent(env, actor, "node.sync", "ok", out, id);
+    // Log a safe projection — never the full AgentSyncResponse, which carries
+    // hy2_obfs_pw (a data-plane secret) into the events audit log readable by
+    // every panel actor (matches the redacted node.rotate event).
+    await logEvent(
+      env,
+      actor,
+      "node.sync",
+      "ok",
+      { vpn_host: out.vpn_host, public_ip: out.public_ip, hy2_host: out.hy2_host, hy2_port: out.hy2_port, users: out.users, mode: out.mode },
+      id
+    );
     return json(out);
   } catch (e) {
     await logEvent(env, actor, "node.sync", "error", { message: String(e) }, id);
