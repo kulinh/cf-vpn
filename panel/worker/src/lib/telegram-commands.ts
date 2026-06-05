@@ -145,7 +145,7 @@ async function formatHealth(env: Env, nodeId: string): Promise<string> {
   const { status, body } = await readHandler(nodeHealthcheck(env, nodeId, actorLabel.current));
   if (status === 404) return `❌ Không tìm thấy node <b>${escapeHtml(nodeId)}</b>.`;
   if (status >= 400) return `🔴 <b>${escapeHtml(nodeId)}</b>: ${escapeHtml(body?.detail || body?.error || "lỗi")}`;
-  return `🟢 <b>${escapeHtml(nodeId)}</b> ok · ${body.latency_ms}ms (HTTP ${body.code})`;
+  return `🟢 <b>${escapeHtml(nodeId)}</b> ok · ${escapeHtml(String(body.latency_ms ?? "?"))}ms (HTTP ${escapeHtml(String(body.code ?? "?"))})`;
 }
 
 // The core handlers log to the events table keyed on an actor string. The bot
