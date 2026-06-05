@@ -17,7 +17,7 @@ vi.mock("../lib/cf-api", () => ({
 import { callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
-import { deleteNode, nodeHealthcheck, nodeRotate } from "./nodes";
+import { deleteNode, nodeHealthcheck, nodeRotate, nodeSyncCore } from "./nodes";
 import type { Env, NodeRow } from "../types";
 
 type ZoneRow = { name: string; cf_zone_id: string; enabled?: number };
@@ -130,7 +130,8 @@ describe("nodeRotate", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
-        agent_secret: null
+        agent_secret: null,
+        tunnel_uuid: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "old-zone", enabled: 1 },
@@ -194,7 +195,8 @@ describe("nodeHealthcheck", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
-        agent_secret: null
+        agent_secret: null,
+        tunnel_uuid: null
       },
       zones: []
     });
@@ -260,7 +262,8 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
-        agent_secret: null
+        agent_secret: null,
+        tunnel_uuid: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
@@ -306,7 +309,8 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
-        agent_secret: null
+        agent_secret: null,
+        tunnel_uuid: null
       },
       zones: [
         { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
@@ -323,6 +327,47 @@ describe("deleteNode", () => {
     expect(vi.mocked(deleteTunnel)).not.toHaveBeenCalled();
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-com", "edge.example.com", "A");
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-admin", "del-02.rwl247.dev", "CNAME");
+  });
+
+  it("falls back to the persisted tunnel_uuid to delete the tunnel when the agent is unreachable", async () => {
+    vi.mocked(callAgent).mockRejectedValue(new Error("agent down"));
+
+    const env = makeEnv({
+      node: {
+        id: "del-04",
+        label: "Del 04",
+        admin_host: "del-04.rwl247.dev",
+        vpn_host: "edge.example.com",
+        zone: "example.com",
+        status: "down",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "direct",
+        hy2_host: null,
+        hy2_port: null,
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null,
+        agent_secret: null,
+        tunnel_uuid: "persisted-tunnel-xyz"
+      },
+      zones: [
+        { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
+        { name: "rwl247.dev", cf_zone_id: "zone-admin", enabled: 1 }
+      ]
+    });
+
+    const res = await deleteNode(env, "del-04");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; warnings: string[] };
+    expect(vi.mocked(deleteTunnel)).toHaveBeenCalledWith(env, "persisted-tunnel-xyz");
+    expect(body.warnings.some((w) => /persisted tunnel_uuid/i.test(w))).toBe(true);
   });
 
   it("skips CF cleanup with a warning when credentials are missing", async () => {
@@ -349,7 +394,8 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
-        agent_secret: null
+        agent_secret: null,
+        tunnel_uuid: null
       },
       zones: []
     });
@@ -386,12 +432,71 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
-        agent_secret: null
+        agent_secret: null,
+        tunnel_uuid: null
       },
       zones: []
     });
 
     const res = await deleteNode(env, "missing");
     expect(res.status).toBe(404);
+  });
+});
+
+describe("nodeSyncCore", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("does not log the hy2_obfs_pw secret into the node.sync ok event", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      ok: true,
+      vpn_host: "edge.example.com",
+      public_ip: "203.0.113.5",
+      hy2_host: "hy.example.net",
+      hy2_port: 23456,
+      hy2_obfs_pw: "SUPER_SECRET_OBFS",
+      users: 1,
+      mode: "direct"
+    } as never);
+
+    const env = makeEnv({
+      node: {
+        id: "sync-01",
+        label: "Sync 01",
+        admin_host: "sync-01.rwl247.dev",
+        vpn_host: "edge.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "direct",
+        hy2_host: null,
+        hy2_port: null,
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null,
+        agent_secret: null,
+        tunnel_uuid: null
+      },
+      zones: [{ name: "example.com", cf_zone_id: "zone-com", enabled: 1 }]
+    });
+
+    const res = await nodeSyncCore(env, "sync-01", [{ name: "alice", vless_uuid: "uuid", hy2_pw: "pw" }], "tg:1");
+    expect(res.status).toBe(200);
+
+    const okCall = vi.mocked(logEvent).mock.calls.find((c) => c[2] === "node.sync" && c[3] === "ok");
+    expect(okCall).toBeDefined();
+    const detail = JSON.stringify(okCall?.[4]);
+    expect(detail).not.toContain("SUPER_SECRET_OBFS");
+    expect(detail).not.toContain("hy2_obfs_pw");
+    expect(detail).toContain("edge.example.com");
   });
 });

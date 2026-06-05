@@ -123,7 +123,10 @@ func (c Client) CreateTunnel(ctx context.Context, name string) (string, []byte, 
 }
 
 func (c Client) UpsertCNAME(ctx context.Context, zoneID, name, target string) error {
-	q := url.Values{"type": {"CNAME"}, "name": {name}}.Encode()
+	// name.exact + match=all so a partial-name match can't return a different
+	// record and cause the PUT below to overwrite the wrong CNAME (consistent
+	// with UpsertARecord / deleteRecordsByName).
+	q := url.Values{"type": {"CNAME"}, "name.exact": {name}, "match": {"all"}}.Encode()
 	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
 	if err != nil {
 		return err

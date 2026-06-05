@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -211,6 +212,9 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 	}
 	cfClient := cloudflare.DefaultClient(env["CF_API_TOKEN"], env["CF_ACCOUNT_ID"])
 	var result commands.RotateDirectResult
+	// Capture rotate diagnostics (incl. DNS rollback warnings) instead of
+	// discarding them — these are the only trace when a rotate fails partway.
+	var rotateLog bytes.Buffer
 	switch mode {
 	case "direct":
 		result, err = commands.RunRotateDirect(
@@ -236,7 +240,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 				Runner: systemd.ExecRunner{},
 			},
 			io.Discard,
-			io.Discard,
+			&rotateLog,
 		)
 	case "cloudflare":
 		result, err = commands.RunRotateCloudflare(
@@ -259,14 +263,21 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 				Runner: systemd.ExecRunner{},
 			},
 			io.Discard,
-			io.Discard,
+			&rotateLog,
 		)
 	default:
 		writeError(w, http.StatusBadRequest, "rotate_unsupported", fmt.Sprintf("rotate-domain is not supported for mode=%q", mode))
 		return
 	}
+	if diag := strings.TrimSpace(rotateLog.String()); diag != "" {
+		log.Printf("rotate-domain diagnostics (mode=%s): %s", mode, diag)
+	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "rotate_failed", err.Error())
+		detail := err.Error()
+		if diag := strings.TrimSpace(rotateLog.String()); diag != "" {
+			detail = fmt.Sprintf("%s; diagnostics: %s", detail, diag)
+		}
+		writeError(w, http.StatusInternalServerError, "rotate_failed", detail)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -419,11 +430,20 @@ func currentSyncUsers() ([]syncUser, error) {
 		}
 		hy2PW := hy2ByName[name]
 		if hy2PW == "" {
+			// User exists in xray but is missing from the hysteria config — the
+			// two configs have drifted (e.g. a prior applyUsers wrote xray then
+			// failed before SetUsers). We can't recover the real password
+			// locally, so we mint a new one to keep the node functional; this
+			// DIVERGES from the password the panel/D1 holds for this user, so
+			// their Hy2 client will break until a panel re-sync
+			// (POST /admin/v1/sync) pushes the authoritative password. Log it
+			// loudly so the drift isn't silent.
 			var err error
 			hy2PW, err = commands.GeneratePassword(24)
 			if err != nil {
 				return nil, fmt.Errorf("generate hy2 password for %s: %w", name, err)
 			}
+			log.Printf("warning: user %q present in xray but missing from hysteria config; minted a new Hy2 password — it will not match the panel until a re-sync (POST /admin/v1/sync)", name)
 		}
 		byName[name] = syncUser{Name: name, VlessUUID: uuid, Hy2PW: hy2PW}
 	}

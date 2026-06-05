@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -299,11 +300,7 @@ func marshalStableObject(m map[string]json.RawMessage, preferred []string) ([]by
 }
 
 func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j-1] > s[j]; j-- {
-			s[j-1], s[j] = s[j], s[j-1]
-		}
-	}
+	sort.Strings(s)
 }
 
 func findInbound(cfg *Config, protocol string) *Inbound {
