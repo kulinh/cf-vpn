@@ -5,9 +5,11 @@ import (
 	"testing"
 )
 
-func TestDefaultPool_HasNineZonesWithUniqueNames(t *testing.T) {
-	if len(DefaultPool) != 9 {
-		t.Fatalf("DefaultPool size = %d, want 9", len(DefaultPool))
+func TestDefaultPool_HasUniqueNames(t *testing.T) {
+	// Don't hardcode the pool size — it grows over time. Assert the real
+	// invariant: non-empty with no duplicate zone names.
+	if len(DefaultPool) == 0 {
+		t.Fatal("DefaultPool is empty")
 	}
 	seen := map[string]bool{}
 	for _, z := range DefaultPool {
