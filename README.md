@@ -159,6 +159,37 @@ npm --prefix panel/worker test
 
 Public subscription URL per user is `https://<panel-host>/sub/<32-hex-token>`. Cloudflare Access **must** allow `/sub/*` unauthenticated; `/api/*` should remain protected.
 
+## Telegram bot
+
+A Telegram bot provides a second control surface (manage users/nodes, view
+status) from one private group. It runs inside the `cfvpn-panel-api` Worker as
+`POST /telegram/webhook`.
+
+Setup:
+
+```bash
+# 1. Secrets (never commit these)
+wrangler --config panel/worker/wrangler.toml secret put TELEGRAM_BOT_TOKEN
+wrangler --config panel/worker/wrangler.toml secret put TELEGRAM_WEBHOOK_SECRET   # any random string
+
+# 2. TELEGRAM_GROUP_ID is already set in wrangler.toml [vars] (-1003806233980)
+
+# 3. Deploy, then register the webhook + command menu
+npm --prefix panel/worker run deploy
+TELEGRAM_BOT_TOKEN=...  TELEGRAM_WEBHOOK_SECRET=...  PANEL_HOST=panel.rwl247.dev \
+  bash scripts/telegram-setup.sh
+```
+
+Security: the Worker rejects any webhook whose `X-Telegram-Bot-Api-Secret-Token`
+header does not equal `TELEGRAM_WEBHOOK_SECRET`, and ignores any update whose
+`chat.id` is not `TELEGRAM_GROUP_ID`. Mutations are logged to the `events` table
+with actor `tg:<telegram_user_id>`.
+
+Commands: `/help`, `/nodes`, `/status <node>`, `/health <node>`, `/sync <node>`,
+`/rotate <node>`, `/users`, `/adduser <name>`, `/deluser <name>`, `/sub <name>`,
+`/upgrade <name>`. Destructive actions (`/deluser`, `/rotate`) ask for
+confirmation via inline buttons.
+
 ## D1 schema migrations
 
 ```bash
