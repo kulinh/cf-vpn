@@ -41,11 +41,14 @@ func IsRealityMode(env map[string]string) bool {
 }
 
 // RunHealthcheckRun probes the VPN endpoint and prints OK / FAIL.
-//   - Reality direct nodes: TCP connect to <DOMAIN>:443 (HTTPS is camouflaged).
-//   - cloudflare-mode nodes: TLS handshake to <DOMAIN>:443, then a real
-//     WebSocket-style upgrade request to the VLESS path; expect HTTP 101.
+//   - Reality direct nodes: TCP connect to <DOMAIN>:443 (Reality camouflages TLS).
+//   - cloudflare-mode nodes: probe the CDN endpoint to verify the tunnel, then
+//     verify xray is listening locally. xray 26.x rejects unauthenticated probes
+//     (returns EOF → cloudflared returns 502), so code=502 is treated as "tunnel
+//     connected + xray reachable" when localhost:10001 is also accepting TCP.
+//     Codes 523/530 mean cloudflared is not connected to the CF edge → FAIL.
 //
-// Returns a non-nil error on transport failure or an unhealthy response.
+// Returns a non-nil error on transport failure or an unhealthy state.
 func RunHealthcheckRun(ctx context.Context, env map[string]string, stdout io.Writer) error {
 	domain := env["DOMAIN"]
 	if domain == "" {
@@ -61,15 +64,25 @@ func RunHealthcheckRun(ctx context.Context, env map[string]string, stdout io.Wri
 		fmt.Fprintln(stdout, "OK reality tcp=open")
 		return nil
 	}
+	// Cloudflare mode: any HTTP response (not a dial error) means CF CDN →
+	// cloudflared tunnel is alive. Codes 523/530 = CF can't reach cloudflared.
 	code, err := probeHTTPSUpgrade(ctx, domain, templates.VLESSPath)
 	if err != nil {
 		return err
 	}
-	if IsHealthyCode(code) {
-		fmt.Fprintf(stdout, "OK code=%d\n", code)
-		return nil
+	if code == 523 || code == 530 {
+		return fmt.Errorf("FAIL cloudflare tunnel not connected (code=%d)", code)
 	}
-	return fmt.Errorf("FAIL code=%d", code)
+	// Verify xray is listening on its local port (distinguishes xray-down from
+	// xray-running-but-rejecting-probe, both of which give cloudflare code=502).
+	xrayAddr := "127.0.0.1:10001"
+	lconn, dialErr := net.DialTimeout("tcp", xrayAddr, 5*time.Second)
+	if dialErr != nil {
+		return fmt.Errorf("FAIL xray not listening at %s (cloudflare code=%d)", xrayAddr, code)
+	}
+	lconn.Close()
+	fmt.Fprintf(stdout, "OK cloudflare code=%d xray=listening\n", code)
+	return nil
 }
 
 // probeHTTPSUpgrade dials TLS to host:443, sends a minimal WebSocket-style
