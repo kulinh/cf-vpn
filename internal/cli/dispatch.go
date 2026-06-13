@@ -309,6 +309,12 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck {run|install}")
 			return 2
 		}
+	case "reconcile-units":
+		if err := commands.RunReconcileUnits(context.Background(), systemd.ExecRunner{}, stdout); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
 		return 2

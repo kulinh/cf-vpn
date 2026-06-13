@@ -600,6 +600,19 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 			fmt.Fprintln(stdout, "in-place re-render: configs already up to date")
 		}
 	}
+
+	// Self-heal drifted systemd units. The installer only writes unit files at
+	// first install and never regenerates them on binary upgrade, so an
+	// in-place re-deploy is the natural point to bring stale units (e.g. an old
+	// cert-renew ExecStart) back in line with the templates.
+	reconcileOut := stdout
+	if reconcileOut == nil {
+		reconcileOut = io.Discard
+	}
+	if err := RunReconcileUnits(ctx, runner, reconcileOut); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: reconcile systemd units failed: %v\n", err)
+	}
+
 	return UpgradeResult{
 		OldHost:  domain,
 		NewHost:  domain,
