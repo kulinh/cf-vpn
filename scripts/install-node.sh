@@ -343,13 +343,20 @@ else
   warn "user_nodes upsert failed: $(echo "$UN_RESP" | jq -r '.errors[0].message // "unknown"')"
 fi
 
-# 9d. Confirm agent is live via admin tunnel sync
+# 9d. Confirm agent is live via admin tunnel sync.
+# The agent expects syncUser objects ({name,vless_uuid,hy2_pw}), not bare name
+# strings — sending strings fails with "cannot unmarshal string into syncUser".
 log "calling agent sync via $ADMIN_HOST"
+SYNC_BODY=$(jq -n \
+  --arg n "$USER1_NAME" \
+  --arg u "$UUID_USER1" \
+  --arg p "$HY2_PASS_USER1" \
+  '{users:[{name:$n, vless_uuid:$u, hy2_pw:$p}]}')
 SYNC_RESP=$(curl -sS --max-time 30 \
   -X POST "https://$ADMIN_HOST/admin/v1/sync" \
   -H "Authorization: Bearer $AGENT_SHARED_SECRET" \
   -H "Content-Type: application/json" \
-  -d "{\"users\":[\"$USER1_NAME\"]}" 2>&1) || SYNC_RESP=""
+  -d "$SYNC_BODY" 2>&1) || SYNC_RESP=""
 SYNC_OK=$(echo "$SYNC_RESP" | jq -r '.ok // false' 2>/dev/null || echo false)
 if [ "$SYNC_OK" = "true" ]; then
   log "agent sync OK — $(echo "$SYNC_RESP" | jq -r '.users') user(s) active on node"
