@@ -877,11 +877,11 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 
 	fmt.Fprintln(stdout, "creating admin tunnel...")
-	suffix, err := GeneratePassword(4)
-	if err != nil {
-		return fmt.Errorf("generate tunnel suffix: %w", err)
+	tunnelName := tunnelNameForNode(in.NodeID)
+	if tunnelName == "" {
+		return fmt.Errorf("derive tunnel name: NODE_ID %q is not a valid DNS label", in.NodeID)
 	}
-	tunnelID, creds, err := deps.CF.CreateTunnel(ctx, "cfvpn-admin-"+strings.ToLower(suffix[:4]))
+	tunnelID, creds, err := deps.CF.CreateTunnel(ctx, tunnelName)
 	if err != nil {
 		return fmt.Errorf("create tunnel: %w", err)
 	}
@@ -1084,6 +1084,18 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	sub := base64.StdEncoding.EncodeToString([]byte(vlessURI))
 	fmt.Fprintln(stdout, sub)
 	return nil
+}
+
+// tunnelNameForNode derives the Cloudflare tunnel name from a node's NODE_ID,
+// e.g. "hkg-01" -> "cfvpn-HKG-01". This mirrors the admin_host label
+// (hkg-01.rwl247.dev) so the tunnel is trivially identifiable in the Cloudflare
+// dashboard. Returns "" if NODE_ID is not a valid DNS label.
+func tunnelNameForNode(nodeID string) string {
+	label := normalizeNodeIDForHost(nodeID)
+	if label == "" {
+		return ""
+	}
+	return "cfvpn-" + strings.ToUpper(label)
 }
 
 func generateAdminHost(nodeID string) (string, error) {

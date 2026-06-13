@@ -644,8 +644,8 @@ func TestRunInstallDirectModeWiresAllSteps(t *testing.T) {
 	if cf.createCalls != 1 {
 		t.Fatalf("expected 1 CreateTunnel call, got %d", cf.createCalls)
 	}
-	if !strings.HasPrefix(cf.lastTunnelName, "cfvpn-admin-") {
-		t.Fatalf("tunnel name = %q, want cfvpn-admin-*", cf.lastTunnelName)
+	if cf.lastTunnelName != "cfvpn-JPY-04" {
+		t.Fatalf("tunnel name = %q, want cfvpn-JPY-04", cf.lastTunnelName)
 	}
 	if cf.getZoneCalls != 2 || len(cf.getZoneNames) != 2 || cf.getZoneNames[0] != "example.com" || cf.getZoneNames[1] != adminHostZone {
 		t.Fatalf("GetZoneID calls = %d names=%#v", cf.getZoneCalls, cf.getZoneNames)
@@ -1399,5 +1399,23 @@ func TestRunUpgradeWithExistingHY2IsIdempotent(t *testing.T) {
 	// node has no Reality params, so reRenderInPlace can't safely re-render).
 	if !strings.Contains(out.String(), "in-place re-render skipped") {
 		t.Fatalf("stdout missing in-place re-render skip message: %s", out.String())
+	}
+}
+
+func TestTunnelNameForNode(t *testing.T) {
+	cases := map[string]string{
+		"hkg-01": "cfvpn-HKG-01",
+		"HKG-01": "cfvpn-HKG-01",
+		"usa-01": "cfvpn-USA-01",
+		"chn-01": "cfvpn-CHN-01",
+		"":       "",
+		"-bad":   "",
+		"bad-":   "",
+		"a_b":    "",
+	}
+	for in, want := range cases {
+		if got := tunnelNameForNode(in); got != want {
+			t.Errorf("tunnelNameForNode(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
