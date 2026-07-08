@@ -23,10 +23,10 @@ func TestGenerateRealityParamsShape(t *testing.T) {
 	if !isHex(p.ShortID) {
 		t.Errorf("shortid not hex: %q", p.ShortID)
 	}
-	if p.Dest != "www.microsoft.com:443" {
+	if p.Dest != "www.apple.com:443" {
 		t.Errorf("dest: got %q", p.Dest)
 	}
-	if p.SNI != "www.microsoft.com" {
+	if p.SNI != "www.apple.com" {
 		t.Errorf("sni: got %q", p.SNI)
 	}
 }

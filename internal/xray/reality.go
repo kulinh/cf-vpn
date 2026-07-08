@@ -16,8 +16,8 @@ type RealityParams struct {
 
 type GenerateRealityOptions struct {
 	XrayBin     string   // path to xray binary; default "xray"
-	Dest        string   // default "www.microsoft.com:443"
-	SNI         string   // default "www.microsoft.com"
+	Dest        string   // default "www.apple.com:443"
+	SNI         string   // default "www.apple.com"
 	StubKeypair *Keypair // tests only; if non-nil bypass `xray x25519`
 }
 
@@ -25,11 +25,16 @@ func GenerateRealityParams(opts GenerateRealityOptions) (RealityParams, error) {
 	if opts.XrayBin == "" {
 		opts.XrayBin = "xray"
 	}
+	// www.apple.com: TLS 1.3, globally reachable, and a clean Reality "steal"
+	// target. (www.microsoft.com was the old default but stopped working as a
+	// REALITY dest on recent xray — its handshake no longer completes, which
+	// silently timed out every Reality client. CN nodes override this to a
+	// China-local dest like connect.rom.miui.com via REALITY_DEST/REALITY_SNI.)
 	if opts.Dest == "" {
-		opts.Dest = "www.microsoft.com:443"
+		opts.Dest = "www.apple.com:443"
 	}
 	if opts.SNI == "" {
-		opts.SNI = "www.microsoft.com"
+		opts.SNI = "www.apple.com"
 	}
 
 	var kp Keypair
