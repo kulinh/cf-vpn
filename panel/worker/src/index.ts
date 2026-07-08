@@ -59,6 +59,15 @@ export default {
     const url = new URL(request.url);
     const { pathname } = url;
 
+    // The *.workers.dev hostname does NOT sit behind Cloudflare Access, so the
+    // Cf-Access-* headers on it are forgeable. It must stay reachable only for
+    // the Telegram webhook (registered against workers.dev because the Access
+    // custom domain doesn't route that path). Reject everything else here so an
+    // attacker can't reach /api/* or /sub/* with spoofed Access headers.
+    if (url.hostname.endsWith(".workers.dev") && pathname !== "/telegram/webhook") {
+      return notFound(pathname);
+    }
+
     const subToken = parseSubToken(pathname);
     if (subToken && request.method === "GET") {
       // Unauthenticated (public) endpoint — rate-limit by source IP so a leaked

@@ -2,10 +2,11 @@ name = "cfvpn-panel-api"
 main = "src/index.ts"
 compatibility_date = "2026-04-21"
 
-# Disable the *.workers.dev route. The panel is only reachable through its
-# custom domain, which sits behind Cloudflare Access; the workers.dev endpoint
-# bypasses Access entirely and must not exist.
-workers_dev = false
+# workers.dev stays ENABLED because the Telegram webhook is registered against
+# it (the custom domain cp.rwl265.com only routes /api/* and /sub/*, so
+# /telegram/webhook is unreachable there). To stop workers.dev from bypassing
+# Cloudflare Access on the admin surface, src/index.ts rejects every path except
+# /telegram/webhook when the request arrives on a *.workers.dev hostname.
 
 [observability]
 enabled = true
