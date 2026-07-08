@@ -233,7 +233,10 @@ func RenderXrayDirectReality(in XrayDirectRealityInputs) (string, error) {
 						"shortIds":    in.ShortIDs,
 					},
 				},
-				"sniffing": sniffingBlock(),
+				// NB: no sniffing on the Reality inbound. Sniffing with
+				// destOverride rewrites the connection destination, which breaks
+				// the xtls-rprx-vision splice and hangs the connection. DNS is
+				// still forced via dns-out (port-53 hijack) + freedom UseIP.
 			},
 		},
 		"outbounds": standardOutbounds(),

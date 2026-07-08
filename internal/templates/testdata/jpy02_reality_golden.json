@@ -33,10 +33,6 @@
           "privateKey": "QPTgOMQeFazVzKeLaHafW89CpJN6mQoPZl9Lsi66I34",
           "shortIds": ["d3cbbc0b4c5bc5f9"]
         }
-      },
-      "sniffing": {
-        "enabled": true,
-        "destOverride": ["http", "tls", "quic"]
       }
     }
   ],
