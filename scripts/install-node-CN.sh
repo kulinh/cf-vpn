@@ -147,6 +147,7 @@ INSTALL_PHASE_STARTED=0
 INSTALL_PHASE_DONE=0
 STAGE_DIR=""
 TUNNELS_BEFORE=""
+TUNNELS_SNAPSHOT_OK=0
 
 cleanup_local_stage() {
   [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ] || return 0
@@ -155,10 +156,17 @@ cleanup_local_stage() {
 }
 
 list_admin_tunnels_local() {
-  curl -sS --max-time 10 --config - <<EOF | jq -r '.result // [] | .[] | select(.name | startswith("cfvpn-admin-")) | "\(.id) \(.name)"' 2>/dev/null || true
+  local resp
+  resp=$(curl -sS --max-time 10 --config - <<EOF
 header = "Authorization: Bearer ${CF_API_TOKEN}"
 url = "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?is_deleted=false&per_page=100"
 EOF
+)
+  # Return non-zero (no output) on transport/API error so callers can tell "no
+  # tunnels" apart from "couldn't list" — otherwise a failed pre-install snapshot
+  # would make every existing tunnel look like a new orphan.
+  [ -n "$resp" ] && [ "$(printf '%s' "$resp" | jq -r '.success // false' 2>/dev/null)" = "true" ] || return 1
+  printf '%s' "$resp" | jq -r '.result // [] | .[] | select(.name | startswith("cfvpn-admin-")) | "\(.id) \(.name)"'
 }
 
 exit_handler() {
@@ -167,7 +175,15 @@ exit_handler() {
   if [ "$rc" -ne 0 ] && [ "$INSTALL_PHASE_STARTED" -eq 1 ] && [ "$INSTALL_PHASE_DONE" -eq 0 ]; then
     warn "cfvpnctl install was interrupted (exit $rc) — checking for orphan admin tunnels"
     local after new tid tname
-    after="$(list_admin_tunnels_local | sort)"
+    if [ "${TUNNELS_SNAPSHOT_OK:-0}" -ne 1 ]; then
+      warn "  pre-install tunnel snapshot unavailable — skipping orphan diff (check CF dashboard)"
+      exit $rc
+    fi
+    if ! after="$(list_admin_tunnels_local)"; then
+      warn "  could not list admin tunnels after interruption — check CF dashboard manually"
+      exit $rc
+    fi
+    after="$(printf '%s\n' "$after" | sort)"
     new="$(comm -13 <(printf '%s\n' "$TUNNELS_BEFORE") <(printf '%s\n' "$after"))"
     if [ -n "$new" ]; then
       warn "orphan admin tunnels detected:"
@@ -531,7 +547,12 @@ REMOTE
 
 # ----- 11. run cfvpnctl install on target ------------------------------------
 log "running cfvpnctl install on $TARGET_HOST (mode=$MODE)"
-TUNNELS_BEFORE="$(list_admin_tunnels_local | sort)"
+if TUNNELS_BEFORE="$(list_admin_tunnels_local)"; then
+  TUNNELS_BEFORE="$(printf '%s\n' "$TUNNELS_BEFORE" | sort)"
+  TUNNELS_SNAPSHOT_OK=1
+else
+  warn "could not list admin tunnels before install (CF API) — orphan detection disabled"
+fi
 INSTALL_PHASE_STARTED=1
 ssh_run cfvpnctl install
 INSTALL_PHASE_DONE=1
@@ -589,6 +610,11 @@ done <<< "$REMOTE_ENV"
 
 NOW_MS=$(date +%s%3N)
 ZONE="$(echo "$DOMAIN" | rev | cut -d'.' -f1,2 | rev)"
+# A blank DOMAIN yields a blank ZONE, which would write the node to D1 with
+# zone='' and silently defeat the zone-collision check. Fail loudly instead.
+if [ -z "$DOMAIN" ] || [ -z "$ZONE" ]; then
+  die "DOMAIN is empty after cfvpnctl install — cannot derive zone; refusing to upsert node with zone=''"
+fi
 
 # 13a. Upsert node
 NODE_RESP=$(d1_query "$(jq -n \

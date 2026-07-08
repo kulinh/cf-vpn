@@ -238,13 +238,24 @@ export async function patchNode(env: Env, id: string, request: Request, actor = 
 
 async function resolveZoneIdForHost(env: Env, host: string): Promise<string | null> {
   const labels = host.split(".");
+  // Candidate zone names, longest suffix first so the most specific match wins.
+  const candidates: string[] = [];
   for (let i = 0; i < labels.length - 1; i += 1) {
-    const candidate = labels.slice(i).join(".");
-    const row = await one<ZoneRow>(
-      env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE name = ?").bind(candidate)
-    );
-    if (row) {
-      return row.cf_zone_id;
+    candidates.push(labels.slice(i).join("."));
+  }
+  if (candidates.length === 0) {
+    return null;
+  }
+  // One round-trip instead of one query per label (deleteNode calls this 3×).
+  const placeholders = candidates.map(() => "?").join(",");
+  const rows = await all<ZoneRow>(
+    env.DB.prepare(`SELECT name, cf_zone_id FROM zones WHERE name IN (${placeholders})`).bind(...candidates)
+  );
+  const byName = new Map(rows.map((r) => [r.name, r.cf_zone_id]));
+  for (const candidate of candidates) {
+    const id = byName.get(candidate);
+    if (id) {
+      return id;
     }
   }
   return null;

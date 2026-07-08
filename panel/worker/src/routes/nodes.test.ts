@@ -45,6 +45,10 @@ function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
         return null as never;
       },
       async all() {
+        if (/FROM zones WHERE name IN \(/.test(sql)) {
+          const names = state.args as string[];
+          return { results: zones.filter((z) => names.includes(z.name)) } as never;
+        }
         if (/FROM zones WHERE enabled = 1 AND name != \?/.test(sql)) {
           const excluded = state.args[0] as string;
           return { results: zones.filter((z) => z.enabled !== 0 && z.name !== excluded) } as never;

@@ -217,19 +217,40 @@ fi
 
 # ----- 7. run installer -------------------------------------------------------
 list_admin_tunnels() {
-  curl -sS --max-time 10 --config - <<EOF | jq -r '.result // [] | .[] | select(.name | startswith("cfvpn-admin-")) | "\(.id) \(.name)"' 2>/dev/null || true
+  local resp
+  resp=$(curl -sS --max-time 10 --config - <<EOF
 header = "Authorization: Bearer ${CF_API_TOKEN}"
 url = "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/cfd_tunnel?is_deleted=false&per_page=100"
 EOF
+)
+  # Return non-zero (and no output) on transport/API error so callers can tell
+  # "no tunnels" apart from "couldn't list". Silently treating a failed query as
+  # an empty list would flag every existing tunnel as a new orphan.
+  [ -n "$resp" ] && [ "$(printf '%s' "$resp" | jq -r '.success // false' 2>/dev/null)" = "true" ] || return 1
+  printf '%s' "$resp" | jq -r '.result // [] | .[] | select(.name | startswith("cfvpn-admin-")) | "\(.id) \(.name)"'
 }
-TUNNELS_BEFORE="$(list_admin_tunnels | sort)"
+TUNNELS_SNAPSHOT_OK=0
+if TUNNELS_BEFORE="$(list_admin_tunnels)"; then
+  TUNNELS_BEFORE="$(printf '%s\n' "$TUNNELS_BEFORE" | sort)"
+  TUNNELS_SNAPSHOT_OK=1
+else
+  warn "could not list admin tunnels before install (CF API) — orphan detection disabled"
+fi
 
 cleanup_orphan_tunnels() {
   local rc=$?
   [ $rc -eq 0 ] && return 0
   warn "cfvpnctl install exited with status $rc — checking for orphan admin tunnels"
+  if [ "${TUNNELS_SNAPSHOT_OK:-0}" -ne 1 ]; then
+    warn "  pre-install tunnel snapshot unavailable — skipping orphan diff (check CF dashboard)"
+    exit $rc
+  fi
   local tunnels_after new
-  tunnels_after="$(list_admin_tunnels | sort)"
+  if ! tunnels_after="$(list_admin_tunnels)"; then
+    warn "  could not list admin tunnels after failure — check CF dashboard manually"
+    exit $rc
+  fi
+  tunnels_after="$(printf '%s\n' "$tunnels_after" | sort)"
   new="$(comm -13 <(printf '%s\n' "$TUNNELS_BEFORE") <(printf '%s\n' "$tunnels_after"))"
   if [ -n "$new" ]; then
     warn "orphan admin tunnels created during failed install:"
@@ -274,6 +295,11 @@ set -a; . /etc/cfvpn/cfvpn.env; set +a
 
 NOW_MS=$(date +%s%3N)
 ZONE="$(echo "$DOMAIN" | rev | cut -d'.' -f1,2 | rev)"
+# A blank DOMAIN yields a blank ZONE, which would write the node to D1 with
+# zone='' and silently defeat the zone-collision check. Fail loudly instead.
+if [ -z "$DOMAIN" ] || [ -z "$ZONE" ]; then
+  die "DOMAIN is empty after cfvpnctl install — cannot derive zone; refusing to upsert node with zone=''"
+fi
 
 # 9a. Upsert node with full config (INSERT OR REPLACE handles re-installs)
 NODE_RESP=$(d1_query "$(jq -n \
