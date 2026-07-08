@@ -10,7 +10,6 @@ import (
 	"io/fs"
 	"math/big"
 	"net"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -1213,29 +1212,6 @@ func generatePasswordFrom(rng io.Reader, nBytes int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// probeInstall attempts an HTTPS GET to https://<domain>/api/v1/sync. The tunnel
-// may take minutes to register, so any transport error or non-healthy code
-// is logged but does not fail the install.
-func probeInstall(ctx context.Context, domain string, stdout io.Writer) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+domain+templates.VLESSPath, nil)
-	if err != nil {
-		fmt.Fprintf(stdout, "probe: skipped (%v)\n", err)
-		return
-	}
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		fmt.Fprintf(stdout, "probe: transport error: %v (non-fatal — tunnel may still be connecting)\n", err)
-		return
-	}
-	defer resp.Body.Close()
-	if IsHealthyCode(resp.StatusCode) {
-		fmt.Fprintf(stdout, "probe: OK code=%d\n", resp.StatusCode)
-		return
-	}
-	fmt.Fprintf(stdout, "probe: code=%d (non-fatal — tunnel may still be connecting)\n", resp.StatusCode)
 }
 
 func printRotateHint(stdout io.Writer, resumeCmd, tunnelID string) {

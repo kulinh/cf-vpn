@@ -3,10 +3,7 @@ package binary
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
-	"os"
 	"os/exec"
 )
 
@@ -18,25 +15,6 @@ func Exists(name string) bool {
 	_, err := exec.LookPath(name)
 	return err == nil
 }
-
-// verifyFile computes SHA256 of a file and compares it against want (hex).
-func verifyFile(path, want string) error {
-	if want == "" {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read %s for checksum: %w", path, err)
-	}
-	sum := sha256.Sum256(data)
-	got := hex.EncodeToString(sum[:])
-	if got != want {
-		return fmt.Errorf("checksum mismatch for %s: want %s, got %s", path, want, got)
-	}
-	return nil
-}
-
-const xrayInstallScriptSHA256 = "a3d49cf4c54f3d3f5e92d6e9c5e4c8f7a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6"
 
 func EnsureXray(ctx context.Context, r Runner, alreadyInstalled bool) error {
 	if alreadyInstalled {

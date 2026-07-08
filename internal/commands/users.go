@@ -28,7 +28,6 @@ const xrayServiceUnit = "cfvpn-xray.service"
 // Tests override these to redirect to a temp directory.
 var (
 	xrayConfigPath  = paths.XrayConfigFile
-	hy2ConfigPath   = "/etc/cfvpn/hysteria/config.yaml"
 	subscriptionDir = paths.SubscriptionDir
 )
 
@@ -220,7 +219,7 @@ func RunRemoveUser(ctx context.Context, in UserInputs, runner systemd.Runner, st
 	}
 
 	// Mirror the agent's applyUsers: remove from Hysteria2 config too.
-	hy2Users, err := hysteria.ListUsers(hy2ConfigPath)
+	hy2Users, err := hysteria.ListUsers(hysteriaConfigPath)
 	if err != nil {
 		return fmt.Errorf("load hysteria config: %w", err)
 	}
@@ -232,7 +231,7 @@ func RunRemoveUser(ctx context.Context, in UserInputs, runner systemd.Runner, st
 		filtered = append(filtered, u)
 	}
 	if len(filtered) < len(hy2Users) {
-		if err := hysteria.SetUsers(hy2ConfigPath, filtered); err != nil {
+		if err := hysteria.SetUsers(hysteriaConfigPath, filtered); err != nil {
 			return fmt.Errorf("remove hysteria user: %w", err)
 		}
 		if err := hysteria.ReloadService(ctx, resolveRunner(runner)); err != nil {
