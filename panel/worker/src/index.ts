@@ -61,10 +61,17 @@ export default {
 
     const subToken = parseSubToken(pathname);
     if (subToken && request.method === "GET") {
+      // Unauthenticated (public) endpoint — rate-limit by source IP so a leaked
+      // token can't be brute-forced / scraped at high volume.
+      const ipLimited = enforceRateLimit(`sub:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`);
+      if (ipLimited) return ipLimited;
       return publicSubscription(env, subToken);
     }
 
     if (pathname === "/telegram/webhook" && request.method === "POST") {
+      // Unauthenticated (Access-bypassing) endpoint — rate-limit by source IP.
+      const ipLimited = enforceRateLimit(`tg:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`);
+      if (ipLimited) return ipLimited;
       return handleTelegramWebhook(env, request, ctx);
     }
 
@@ -87,14 +94,14 @@ export default {
 
     if (pathname === "/api/nodes") {
       if (request.method === "GET") return listNodes(env);
-      if (request.method === "POST") return createNode(env, request);
+      if (request.method === "POST") return createNode(env, request, actor);
     }
 
     const nodeID = parseNodeID(pathname);
     if (nodeID) {
       if (request.method === "GET") return getNode(env, nodeID);
-      if (request.method === "PATCH") return patchNode(env, nodeID, request);
-      if (request.method === "DELETE") return deleteNode(env, nodeID);
+      if (request.method === "PATCH") return patchNode(env, nodeID, request, actor);
+      if (request.method === "DELETE") return deleteNode(env, nodeID, actor);
     }
 
     const nodeStatusID = parseNodeAction(pathname, "status");
@@ -139,13 +146,13 @@ export default {
 
     if (pathname === "/api/zones") {
       if (request.method === "GET") return listZones(env);
-      if (request.method === "POST") return createZone(env, request);
+      if (request.method === "POST") return createZone(env, request, actor);
     }
 
     const zoneName = parseZoneName(pathname);
     if (zoneName) {
-      if (request.method === "PATCH") return patchZone(env, zoneName, request);
-      if (request.method === "DELETE") return deleteZone(env, zoneName);
+      if (request.method === "PATCH") return patchZone(env, zoneName, request, actor);
+      if (request.method === "DELETE") return deleteZone(env, zoneName, actor);
     }
 
     if (pathname === "/api/events" && request.method === "GET") {

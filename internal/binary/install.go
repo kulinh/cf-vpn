@@ -68,11 +68,13 @@ curl -fsSL --retry 3 --max-time 120 \
 # Fetch checksum file from the release for verification.
 check_url=$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
   | grep '"browser_download_url"' | grep 'cloudflared-linux-amd64.sha256"' | head -n1 | cut -d '"' -f4)
-if [ -n "$check_url" ]; then
-  curl -fsSL --max-time 30 "$check_url" -o cloudflared.sha256
-  cat cloudflared.sha256
-  sha256sum -c cloudflared.sha256 --ignore-missing
+if [ -z "$check_url" ]; then
+  echo "cloudflared checksum URL not found; refusing to install unverified binary" >&2
+  exit 1
 fi
+curl -fsSL --max-time 30 "$check_url" -o cloudflared.sha256
+cat cloudflared.sha256
+sha256sum -c cloudflared.sha256 --ignore-missing
 install -m 755 cloudflared /usr/local/bin/cloudflared`
 	return r.Run(ctx, "bash", "-lc", cmd)
 }
@@ -112,16 +114,18 @@ if [ -z "$asset_url" ]; then
   echo "lego linux_amd64.tar.gz asset not found" >&2
   exit 1
 fi
-curl -fsSL "$asset_url" -o "$workdir/lego.tar.gz"
-if [ -n "$checksum_url" ]; then
-  curl -fsSL "$checksum_url" -o "$workdir/checksums.txt"
-  cd "$workdir"
-  grep linux_amd64.tar.gz checksums.txt | sha256sum -c --ignore-missing || {
-    echo "lego checksum verification failed" >&2
-    exit 1
-  }
-  cd - >/dev/null
+if [ -z "$checksum_url" ]; then
+  echo "lego checksums.txt not found; refusing to install unverified binary" >&2
+  exit 1
 fi
+curl -fsSL "$asset_url" -o "$workdir/lego.tar.gz"
+curl -fsSL "$checksum_url" -o "$workdir/checksums.txt"
+cd "$workdir"
+grep linux_amd64.tar.gz checksums.txt | sha256sum -c --ignore-missing || {
+  echo "lego checksum verification failed" >&2
+  exit 1
+}
+cd - >/dev/null
 tar -xzf "$workdir/lego.tar.gz" -C "$workdir" lego
 install -m 755 "$workdir/lego" /usr/local/bin/lego`
 	return r.Run(ctx, "bash", "-lc", cmd)

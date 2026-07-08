@@ -42,9 +42,13 @@ export async function callAgent<T>(
     ...(init.headers ?? {})
   };
   const bearer = perNodeSecret || env.AGENT_SHARED_SECRET || "";
-  if (bearer) {
-    (headers as Record<string, string>)["Authorization"] = `Bearer ${bearer}`;
+  if (!bearer) {
+    // Fail fast instead of silently issuing an unauthenticated request the agent
+    // will reject anyway — an empty bearer means neither nodes.agent_secret nor
+    // env.AGENT_SHARED_SECRET is configured, which is a misconfiguration.
+    throw new Error(`agent_auth_missing: no agent_secret for ${adminHost} and AGENT_SHARED_SECRET unset`);
   }
+  (headers as Record<string, string>)["Authorization"] = `Bearer ${bearer}`;
   const response = await withTimeout(`https://${adminHost}${path}`, { ...init, headers }, timeoutMs);
   const payload = (await response.json().catch(() => null)) as { error?: string; detail?: string } | null;
   if (!response.ok) {

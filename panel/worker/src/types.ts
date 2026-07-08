@@ -11,6 +11,12 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_GROUP_ID?: string;
+  // Optional Cloudflare Access JWKS verification gate (see lib/auth.ts NOTE).
+  // When both are set (and a JWKS-capable JWT library is available), the Worker
+  // should verify the CF-Access-Jwt-Assertion signature instead of only
+  // checking header presence.
+  ACCESS_TEAM_DOMAIN?: string;
+  ACCESS_AUD?: string;
 }
 
 export interface ApiError {

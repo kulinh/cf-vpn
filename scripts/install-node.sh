@@ -310,7 +310,13 @@ fi
 # 9b. Ensure user exists in D1; create with random sub_token if missing
 USER_RESP=$(d1_query "$(jq -n --arg uid "$USER1_NAME" \
   '{sql:"SELECT id FROM users WHERE id=?", params:[$uid]}')")
-USER_EXISTS=$(echo "$USER_RESP" | jq -r '.result[0].results | length')
+USER_OK=$(echo "$USER_RESP" | jq -r '.success // false')
+if [ "$USER_OK" != "true" ]; then
+  warn "user existence check failed (non-fatal): $(echo "$USER_RESP" | jq -r '.errors[0].message // "unknown"')"
+  USER_EXISTS=1  # treat as existing so INSERT OR IGNORE is skipped
+else
+  USER_EXISTS=$(echo "$USER_RESP" | jq -r '.result[0].results | length')
+fi
 if [ "$USER_EXISTS" -lt 1 ]; then
   SUB_TOKEN="$(openssl rand -hex 16)"
   CRE_RESP=$(d1_query "$(jq -n \
@@ -320,7 +326,7 @@ if [ "$USER_EXISTS" -lt 1 ]; then
     '{sql:"INSERT OR IGNORE INTO users (id,name,sub_token,created_at) VALUES (?,?,?,?)", params:[$uid,$uid,$tok,$ts]}')")
   CRE_OK=$(echo "$CRE_RESP" | jq -r '.success // false')
   if [ "$CRE_OK" = "true" ]; then
-    log "user $USER1_NAME created in D1 (sub_token=$SUB_TOKEN)"
+    log "user $USER1_NAME created in D1 (sub_token=${SUB_TOKEN:0:6}… stored in D1)"
   else
     warn "user create failed: $(echo "$CRE_RESP" | jq -r '.errors[0].message // "unknown"')"
   fi
@@ -352,11 +358,18 @@ SYNC_BODY=$(jq -n \
   --arg u "$UUID_USER1" \
   --arg p "$HY2_PASS_USER1" \
   '{users:[{name:$n, vless_uuid:$u, hy2_pw:$p}]}')
-SYNC_RESP=$(curl -sS --max-time 30 \
-  -X POST "https://$ADMIN_HOST/admin/v1/sync" \
-  -H "Authorization: Bearer $AGENT_SHARED_SECRET" \
-  -H "Content-Type: application/json" \
-  -d "$SYNC_BODY" 2>&1) || SYNC_RESP=""
+# Keep the shared secret out of argv (visible in ps) via curl --config on stdin.
+sync_tmpf="$(mktemp)"; chmod 600 "$sync_tmpf"
+printf '%s' "$SYNC_BODY" >"$sync_tmpf"
+SYNC_RESP=$( { curl -sS --max-time 30 --config - <<EOF
+request = "POST"
+url = "https://$ADMIN_HOST/admin/v1/sync"
+header = "Authorization: Bearer $AGENT_SHARED_SECRET"
+header = "Content-Type: application/json"
+data-binary = "@$sync_tmpf"
+EOF
+} 2>&1 ) || SYNC_RESP=""
+rm -f "$sync_tmpf"
 SYNC_OK=$(echo "$SYNC_RESP" | jq -r '.ok // false' 2>/dev/null || echo false)
 if [ "$SYNC_OK" = "true" ]; then
   log "agent sync OK — $(echo "$SYNC_RESP" | jq -r '.users') user(s) active on node"

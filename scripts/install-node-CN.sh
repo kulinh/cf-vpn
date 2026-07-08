@@ -659,12 +659,17 @@ else
 fi
 
 # 13d. Agent sync via admin tunnel
+# Agent /admin/v1/sync expects objects {name,vless_uuid,hy2_pw}, not bare name
+# strings — the old string-array form fails with "cannot unmarshal string into
+# syncUser" and silently leaves the user inactive. Mirror install-node.sh.
 log "calling agent sync via $ADMIN_HOST"
+SYNC_BODY=$(jq -n --arg n "$USER1_NAME" --arg u "$UUID_USER1" --arg p "$HY2_PASS_USER1" \
+  '{users:[{name:$n,vless_uuid:$u,hy2_pw:$p}]}')
 SYNC_RESP=$(curl -sS --max-time 30 \
   -X POST "https://$ADMIN_HOST/admin/v1/sync" \
   -H "Authorization: Bearer $AGENT_SHARED_SECRET" \
   -H "Content-Type: application/json" \
-  -d "{\"users\":[\"$USER1_NAME\"]}" 2>&1) || SYNC_RESP=""
+  --data "$SYNC_BODY" 2>&1) || SYNC_RESP=""
 SYNC_OK=$(echo "$SYNC_RESP" | jq -r '.ok // false' 2>/dev/null || echo false)
 if [ "$SYNC_OK" = "true" ]; then
   log "agent sync OK — $(echo "$SYNC_RESP" | jq -r '.users') user(s) active on node"

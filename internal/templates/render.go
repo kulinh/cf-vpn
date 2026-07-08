@@ -21,6 +21,10 @@ type XrayDirectRealityInputs struct {
 	ShortIDs    []string
 	Dest        string
 	ServerNames []string
+	// DNSServers overrides the DoH resolvers forced on node traffic. Empty
+	// means the international DoH default (dohServers) — CHN nodes pass domestic
+	// resolvers here instead.
+	DNSServers []string
 }
 
 type HysteriaUser struct{ Name, Password string }
@@ -74,13 +78,67 @@ func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, e
 	return b.String(), err
 }
 
-func RenderXrayCloudflareHTTPUpgrade(users []XrayUser, vpnHost string) (string, error) {
+// dohServers is the DoH resolver list forced on all node traffic. IP-form URLs
+// carry the resolver's address in the URL, so xray needs no plaintext :53
+// bootstrap to reach them — the point behind the GFW, where plaintext :53
+// lookups (to any provider, Google included) are poisoned.
+var dohServers = []string{
+	"https://1.1.1.1/dns-query",
+	"https://9.9.9.9/dns-query",
+}
+
+// dnsBlock is the top-level xray `dns` object: every name xray resolves goes
+// through the given servers, or the international DoH default when none are
+// supplied.
+func dnsBlock(servers []string) map[string]any {
+	if len(servers) == 0 {
+		servers = dohServers
+	}
+	return map[string]any{"servers": servers}
+}
+
+// sniffingBlock recovers the real domain from TLS/HTTP/QUIC even when the
+// client dialed a pre-resolved IP, so those connections are re-resolved via
+// our DNS instead of bypassing it.
+func sniffingBlock() map[string]any {
+	return map[string]any{
+		"enabled":      true,
+		"destOverride": []string{"http", "tls", "quic"},
+	}
+}
+
+// standardOutbounds forces name resolution through the DoH `dns` block:
+//   - freedom uses domainStrategy UseIP so it resolves via that block, not the
+//     node's /etc/resolv.conf;
+//   - dns-out answers hijacked client DNS queries (see standardRouting) from the
+//     same block.
+func standardOutbounds() []map[string]any {
+	return []map[string]any{
+		{"tag": "direct", "protocol": "freedom", "settings": map[string]any{"domainStrategy": "UseIP"}},
+		{"tag": "dns-out", "protocol": "dns"},
+		{"tag": "block", "protocol": "blackhole"},
+	}
+}
+
+// standardRouting hijacks all client DNS traffic (port 53) to dns-out so it is
+// answered via DoH, then blocks connections to private IP ranges.
+func standardRouting() map[string]any {
+	return map[string]any{
+		"rules": []any{
+			map[string]any{"type": "field", "port": 53, "outboundTag": "dns-out"},
+			map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
+		},
+	}
+}
+
+func RenderXrayCloudflareHTTPUpgrade(users []XrayUser, vpnHost string, dnsServers []string) (string, error) {
 	clients := make([]map[string]string, 0, len(users))
 	for _, u := range users {
 		clients = append(clients, map[string]string{"id": u.UUID, "email": u.Name + "@vpn"})
 	}
 	cfg := map[string]any{
 		"log": map[string]string{"loglevel": "warning"},
+		"dns": dnsBlock(dnsServers),
 		"inbounds": []any{
 			map[string]any{
 				"tag":      "vless-httpupgrade",
@@ -98,17 +156,11 @@ func RenderXrayCloudflareHTTPUpgrade(users []XrayUser, vpnHost string) (string, 
 						"host": vpnHost,
 					},
 				},
+				"sniffing": sniffingBlock(),
 			},
 		},
-		"outbounds": []map[string]any{
-			{"tag": "direct", "protocol": "freedom"},
-			{"tag": "block", "protocol": "blackhole"},
-		},
-		"routing": map[string]any{
-			"rules": []any{
-				map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
-			},
-		},
+		"outbounds": standardOutbounds(),
+		"routing":   standardRouting(),
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -158,6 +210,7 @@ func RenderXrayDirectReality(in XrayDirectRealityInputs) (string, error) {
 
 	cfg := map[string]any{
 		"log": map[string]string{"loglevel": "warning"},
+		"dns": dnsBlock(in.DNSServers),
 		"inbounds": []any{
 			map[string]any{
 				"tag":      "vless-reality",
@@ -180,17 +233,11 @@ func RenderXrayDirectReality(in XrayDirectRealityInputs) (string, error) {
 						"shortIds":    in.ShortIDs,
 					},
 				},
+				"sniffing": sniffingBlock(),
 			},
 		},
-		"outbounds": []map[string]any{
-			{"tag": "direct", "protocol": "freedom"},
-			{"tag": "block", "protocol": "blackhole"},
-		},
-		"routing": map[string]any{
-			"rules": []any{
-				map[string]any{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "block"},
-			},
-		},
+		"outbounds": standardOutbounds(),
+		"routing":   standardRouting(),
 	}
 
 	data, err := json.MarshalIndent(cfg, "", "  ")

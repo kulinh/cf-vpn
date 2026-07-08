@@ -15,8 +15,18 @@ export function requireActorEmail(request: Request): string | Response {
   // when Cloudflare Access fronts the Worker. Access also sets
   // `CF-Access-Jwt-Assertion`; if that header is absent the request bypassed
   // Access (e.g. a *.workers.dev URL), so we must reject — the email header
-  // would otherwise be forgeable. (Full JWT signature verification against
-  // the team's JWKS is out of scope here; presence is the cheap guard.)
+  // would otherwise be forgeable. (Presence is the cheap guard.)
+  //
+  // The primary defence against the workers.dev bypass is `workers_dev = false`
+  // in wrangler.toml, which removes that endpoint entirely so only the
+  // Access-fronted custom domain can reach this Worker.
+  //
+  // NOTE: Full JWT signature verification against the team's JWKS
+  // (gated on optional env.ACCESS_TEAM_DOMAIN + env.ACCESS_AUD) is intentionally
+  // NOT implemented here: it requires the `jose` library, which is not present
+  // in node_modules, and the task forbids adding a new dependency. When `jose`
+  // is added, verify the JWT here whenever both env vars are set, and keep this
+  // presence-check as the fallback when they are not (so the panel never locks).
   const jwt = request.headers.get("CF-Access-Jwt-Assertion")?.trim();
   if (!jwt) {
     return error(401, { error: "unauthorized", detail: "missing access jwt" });

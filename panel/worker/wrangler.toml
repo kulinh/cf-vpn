@@ -2,6 +2,11 @@ name = "cfvpn-panel-api"
 main = "src/index.ts"
 compatibility_date = "2026-04-21"
 
+# Disable the *.workers.dev route. The panel is only reachable through its
+# custom domain, which sits behind Cloudflare Access; the workers.dev endpoint
+# bypasses Access entirely and must not exist.
+workers_dev = false
+
 [observability]
 enabled = true
 

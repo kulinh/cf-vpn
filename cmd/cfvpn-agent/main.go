@@ -300,6 +300,12 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	unlock, err := commands.AcquireConfigLock()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "lock_failed", err.Error())
+		return
+	}
+	defer unlock()
 	env, result, err := applyUsers(r.Context(), req.Users)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "sync_failed", err.Error())
@@ -336,6 +342,12 @@ func handleUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_user", err.Error())
 		return
 	}
+	unlock, err := commands.AcquireConfigLock()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "lock_failed", err.Error())
+		return
+	}
+	defer unlock()
 	records, err := currentSyncUsers()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "load_users_failed", err.Error())
@@ -380,6 +392,12 @@ func handleUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_user", err.Error())
 		return
 	}
+	unlock, err := commands.AcquireConfigLock()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "lock_failed", err.Error())
+		return
+	}
+	defer unlock()
 	records, err := currentSyncUsers()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "load_users_failed", err.Error())
@@ -511,7 +529,7 @@ func renderXrayForMode(env map[string]string, users []commands.ExistingUser) (st
 	tplUsers := toTemplateUsers(users)
 	mode := strings.TrimSpace(env["MODE"])
 	if mode == "cloudflare" {
-		out, err := templates.RenderXrayCloudflareHTTPUpgrade(tplUsers, env["DOMAIN"])
+		out, err := templates.RenderXrayCloudflareHTTPUpgrade(tplUsers, env["DOMAIN"], commands.XrayDNSServersFromEnv(env))
 		if err != nil {
 			return "", fmt.Errorf("render cloudflare xray: %w", err)
 		}
@@ -524,6 +542,7 @@ func renderXrayForMode(env map[string]string, users []commands.ExistingUser) (st
 			ShortIDs:    []string{env[state.KeyRealityShortID]},
 			Dest:        env[state.KeyRealityDest],
 			ServerNames: []string{env[state.KeyRealitySNI]},
+			DNSServers:  commands.XrayDNSServersFromEnv(env),
 		})
 		if err != nil {
 			return "", fmt.Errorf("render reality xray: %w", err)
@@ -668,7 +687,6 @@ func zoneForHost(host string) string {
 	}
 	return ""
 }
-
 
 func parseInt(s string) int {
 	var out int

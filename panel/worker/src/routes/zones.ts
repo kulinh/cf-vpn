@@ -1,6 +1,7 @@
 import type { Env } from "../types";
 import { all, nowTs, one } from "../lib/db";
 import { error, isRecord, json, readJSON } from "../lib/http";
+import { logEvent } from "../lib/events";
 
 export async function listZones(env: Env): Promise<Response> {
   const rows = await all<{ name: string; cf_zone_id: string; enabled: number }>(
@@ -9,7 +10,7 @@ export async function listZones(env: Env): Promise<Response> {
   return json(rows);
 }
 
-export async function createZone(env: Env, request: Request): Promise<Response> {
+export async function createZone(env: Env, request: Request, actor = "system"): Promise<Response> {
   let body: { name: string; cf_zone_id: string; enabled?: number };
   try {
     body = await readJSON<{ name: string; cf_zone_id: string; enabled?: number }>(request);
@@ -30,10 +31,11 @@ export async function createZone(env: Env, request: Request): Promise<Response> 
   await env.DB.prepare("INSERT INTO zones (name,cf_zone_id,enabled,created_at) VALUES (?, ?, ?, ?)")
     .bind(body.name, body.cf_zone_id, body.enabled ?? 1, nowTs())
     .run();
+  await logEvent(env, actor, "zone.create", "ok", { name: body.name, cf_zone_id: body.cf_zone_id, enabled: body.enabled ?? 1 });
   return json({ ok: true }, 201);
 }
 
-export async function patchZone(env: Env, name: string, request: Request): Promise<Response> {
+export async function patchZone(env: Env, name: string, request: Request, actor = "system"): Promise<Response> {
   const existing = await one<{ name: string }>(env.DB.prepare("SELECT name FROM zones WHERE name = ?").bind(name));
   if (!existing) {
     return error(404, { error: "zone_not_found", detail: name });
@@ -52,10 +54,20 @@ export async function patchZone(env: Env, name: string, request: Request): Promi
   await env.DB.prepare("UPDATE zones SET cf_zone_id=?, enabled=? WHERE name=?")
     .bind(nextZoneID, nextEnabled, name)
     .run();
+  await logEvent(env, actor, "zone.update", "ok", { name, cf_zone_id: nextZoneID, enabled: nextEnabled });
   return json({ ok: true });
 }
 
-export async function deleteZone(env: Env, name: string): Promise<Response> {
+export async function deleteZone(env: Env, name: string, actor = "system"): Promise<Response> {
+  // Refuse to delete a zone still referenced by nodes — orphaning nodes on a
+  // missing zone breaks rotate and DNS cleanup.
+  const inUse = await one<{ n: number }>(
+    env.DB.prepare("SELECT COUNT(*) AS n FROM nodes WHERE zone = ?").bind(name)
+  );
+  if (inUse && inUse.n > 0) {
+    return error(409, { error: "zone_in_use", detail: `${inUse.n} node(s) still reference zone ${name}` });
+  }
   await env.DB.prepare("DELETE FROM zones WHERE name=?").bind(name).run();
+  await logEvent(env, actor, "zone.delete", "ok", { name });
   return json({ ok: true });
 }

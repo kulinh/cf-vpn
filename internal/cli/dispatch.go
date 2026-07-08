@@ -34,16 +34,17 @@ func installFromEnv(env map[string]string) (commands.InstallInputs, error) {
 		return commands.InstallInputs{}, fmt.Errorf("mode_required")
 	}
 	return commands.InstallInputs{
-		CFAPIToken:   env["CF_API_TOKEN"],
-		CFAccountID:  env["CF_ACCOUNT_ID"],
-		Domain:       env["DOMAIN"],
-		NodeID:       env["NODE_ID"],
-		User1Name:    env["USER1_NAME"],
-		Mode:         mode,
-		Hy2Host:      env["HY2_HOST"],
-		Hy2Port:      env["HY2_PORT"],
-		Hy2ObfsPW:    env["HY2_OBFS_PW"],
-		Hy2PassUser1: env["HY2_PASS_USER1"],
+		CFAPIToken:     env["CF_API_TOKEN"],
+		CFAccountID:    env["CF_ACCOUNT_ID"],
+		Domain:         env["DOMAIN"],
+		NodeID:         env["NODE_ID"],
+		User1Name:      env["USER1_NAME"],
+		Mode:           mode,
+		Hy2Host:        env["HY2_HOST"],
+		Hy2Port:        env["HY2_PORT"],
+		Hy2ObfsPW:      env["HY2_OBFS_PW"],
+		Hy2PassUser1:   env["HY2_PASS_USER1"],
+		XrayDNSServers: env["XRAY_DNS_SERVERS"],
 	}, nil
 }
 
@@ -76,6 +77,11 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
+	// Bound every command so a hung external step (lego DNS propagation, curl,
+	// systemctl) can't wedge a node forever when driven from cron.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
 	switch args[0] {
 	case "help":
 		fmt.Fprintln(stdout, "usage: cfvpnctl <command>")
@@ -103,13 +109,13 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			}
 			deps := buildInstallDeps(env)
 			if check {
-				if err := runUpgradeCheck(context.Background(), upgradeIn, deps, stdout, stderr); err != nil {
+				if err := runUpgradeCheck(ctx, upgradeIn, deps, stdout, stderr); err != nil {
 					fmt.Fprintln(stderr, err)
 					return 1
 				}
 				return 0
 			}
-			if _, err := runUpgrade(context.Background(), upgradeIn, deps, stdout, stderr); err != nil {
+			if _, err := runUpgrade(ctx, upgradeIn, deps, stdout, stderr); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
@@ -126,7 +132,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		deps := buildInstallDeps(env)
-		if err := runInstall(context.Background(), in, deps, stdout, stderr); err != nil {
+		if err := runInstall(ctx, in, deps, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -143,7 +149,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		deps := buildInstallDeps(env)
-		if _, err := runUpgrade(context.Background(), upgradeIn, deps, stdout, stderr); err != nil {
+		if _, err := runUpgrade(ctx, upgradeIn, deps, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -159,7 +165,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		in := commands.UserInputs{Name: args[1], Domain: env["DOMAIN"]}
-		if err := commands.RunAddUser(context.Background(), in, nil, stdout, stderr); err != nil {
+		if err := commands.RunAddUser(ctx, in, nil, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -191,7 +197,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 2
 		}
 		in := commands.UserInputs{Name: name}
-		if err := commands.RunRemoveUser(context.Background(), in, nil, stdout, stderr); err != nil {
+		if err := commands.RunRemoveUser(ctx, in, nil, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -207,7 +213,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			name = args[1]
 		}
 		in := commands.UserInputs{Name: name, Domain: env["DOMAIN"]}
-		if err := commands.RunGenSub(context.Background(), in, stdout, stderr); err != nil {
+		if err := commands.RunGenSub(ctx, in, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -252,7 +258,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 				CF:     cloudflare.DefaultClient(env["CF_API_TOKEN"], env["CF_ACCOUNT_ID"]),
 				Runner: systemd.ExecRunner{},
 			}
-			if err := commands.RunRotateCleanup(context.Background(), tunnelID, deps, stdout, stderr); err != nil {
+			if err := commands.RunRotateCleanup(ctx, tunnelID, deps, stdout, stderr); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
@@ -262,7 +268,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: cfvpnctl rotate-domain --cleanup <uuid> --yes")
 		return 2
 	case "status":
-		if err := commands.RunStatus(context.Background(), systemd.ExecRunner{}, stdout); err != nil {
+		if err := commands.RunStatus(ctx, systemd.ExecRunner{}, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -273,7 +279,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
 			return 1
 		}
-		if err := commands.RunCertRenew(context.Background(), env, commands.CertRenewDeps{Cert: cert.NewDefault()}, stdout, stderr); err != nil {
+		if err := commands.RunCertRenew(ctx, env, commands.CertRenewDeps{Cert: cert.NewDefault()}, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -294,13 +300,13 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 				fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck run (DOMAIN must be set)")
 				return 2
 			}
-			if err := commands.RunHealthcheckRun(context.Background(), env, stdout); err != nil {
+			if err := commands.RunHealthcheckRun(ctx, env, stdout); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
 			return 0
 		case "install":
-			if err := commands.RunHealthcheckInstall(context.Background(), systemd.ExecRunner{}, stdout); err != nil {
+			if err := commands.RunHealthcheckInstall(ctx, systemd.ExecRunner{}, stdout); err != nil {
 				fmt.Fprintln(stderr, err)
 				return 1
 			}
@@ -310,7 +316,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 2
 		}
 	case "reconcile-units":
-		if err := commands.RunReconcileUnits(context.Background(), systemd.ExecRunner{}, stdout); err != nil {
+		if err := commands.RunReconcileUnits(ctx, systemd.ExecRunner{}, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

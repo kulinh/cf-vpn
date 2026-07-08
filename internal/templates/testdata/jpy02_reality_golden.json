@@ -1,5 +1,11 @@
 {
   "log": {"loglevel": "warning"},
+  "dns": {
+    "servers": [
+      "https://1.1.1.1/dns-query",
+      "https://9.9.9.9/dns-query"
+    ]
+  },
   "inbounds": [
     {
       "tag": "vless-reality",
@@ -27,15 +33,21 @@
           "privateKey": "QPTgOMQeFazVzKeLaHafW89CpJN6mQoPZl9Lsi66I34",
           "shortIds": ["d3cbbc0b4c5bc5f9"]
         }
+      },
+      "sniffing": {
+        "enabled": true,
+        "destOverride": ["http", "tls", "quic"]
       }
     }
   ],
   "outbounds": [
-    {"tag": "direct", "protocol": "freedom"},
+    {"tag": "direct", "protocol": "freedom", "settings": {"domainStrategy": "UseIP"}},
+    {"tag": "dns-out", "protocol": "dns"},
     {"tag": "block", "protocol": "blackhole"}
   ],
   "routing": {
     "rules": [
+      {"type": "field", "port": 53, "outboundTag": "dns-out"},
       {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"}
     ]
   }

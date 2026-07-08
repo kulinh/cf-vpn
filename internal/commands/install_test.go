@@ -733,9 +733,10 @@ auth:
 		t.Fatalf("env file must not contain TROJAN_PASS_USER1; full file:\n%s", envS)
 	}
 
-	// Systemd runner: daemon-reload + enable --now for 5 services.
-	if len(sysRunner.calls) != 6 {
-		t.Fatalf("expected 6 systemd calls, got %d: %#v", len(sysRunner.calls), sysRunner.calls)
+	// Systemd runner: daemon-reload + enable --now for 6 services (xray,
+	// cloudflared, agent, hysteria, cert-renew.timer, healthcheck.timer).
+	if len(sysRunner.calls) != 7 {
+		t.Fatalf("expected 7 systemd calls, got %d: %#v", len(sysRunner.calls), sysRunner.calls)
 	}
 	expect := [][]string{
 		{"systemctl", "daemon-reload"},
@@ -744,6 +745,7 @@ auth:
 		{"systemctl", "enable", "--now", "cfvpn-agent.service"},
 		{"systemctl", "enable", "--now", "cfvpn-hysteria.service"},
 		{"systemctl", "enable", "--now", "cfvpn-cert-renew.timer"},
+		{"systemctl", "enable", "--now", "cfvpn-healthcheck.timer"},
 	}
 	for i, want := range expect {
 		got := strings.Join(sysRunner.calls[i], " ")

@@ -607,6 +607,7 @@ func TestRegenerateSubscriptionsCloudflareTemplateStripsVpnSuffix(t *testing.T) 
 	xrayJSON, err := templates.RenderXrayCloudflareHTTPUpgrade(
 		[]templates.XrayUser{{Name: "alice", UUID: "uuid-a"}},
 		"vpn.example.com",
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("render cloudflare httpupgrade: %v", err)
@@ -833,9 +834,9 @@ func TestRunRotateCloudflareHappyPath(t *testing.T) {
 
 	// xray + cloudflared restarted (HY2 also restarted because rotateHy2Config kicks it).
 	wantRestart := map[string]bool{
-		"cfvpn-xray.service":         false,
-		"cfvpn-cloudflared.service":  false,
-		"cfvpn-hysteria.service":     false,
+		"cfvpn-xray.service":        false,
+		"cfvpn-cloudflared.service": false,
+		"cfvpn-hysteria.service":    false,
 	}
 	for _, c := range runner.calls {
 		joined := strings.Join(c, " ")

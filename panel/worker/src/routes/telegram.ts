@@ -10,6 +10,19 @@ function ok(): Response {
   return new Response("ok", { status: 200 });
 }
 
+// Constant-time string comparison. The Workers runtime does not expose
+// crypto.timingSafeEqual, so we fold every byte into an accumulator and only
+// branch on the final result — no early return that could leak, via timing,
+// how many leading characters matched the webhook secret.
+function timingSafeEqual(a: string, b: string): boolean {
+  const len = Math.max(a.length, b.length);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < len; i += 1) {
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  }
+  return diff === 0;
+}
+
 function chatIdOf(update: TgUpdate): number | null {
   if (update.message) return update.message.chat.id;
   if (update.callback_query?.message) return update.callback_query.message.chat.id;
@@ -24,8 +37,8 @@ export async function handleTelegramWebhook(
   if (!env.TELEGRAM_BOT_TOKEN || !env.TELEGRAM_WEBHOOK_SECRET || !env.TELEGRAM_GROUP_ID) {
     return ok(); // bot not configured — ignore
   }
-  const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
-  if (secret !== env.TELEGRAM_WEBHOOK_SECRET) {
+  const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+  if (!timingSafeEqual(secret, env.TELEGRAM_WEBHOOK_SECRET)) {
     return ok();
   }
 

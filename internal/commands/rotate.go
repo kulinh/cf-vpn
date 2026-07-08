@@ -104,6 +104,37 @@ func WriteAtomicFile(path string, content []byte, mode os.FileMode) error {
 	return writeAtomicFile(path, content, mode)
 }
 
+// xrayDNSServersFromEnv reads the optional XRAY_DNS_SERVERS override (a
+// comma-separated resolver list, e.g. DoH URLs) from cfvpn.env. Returns nil
+// when unset so renderers fall back to the international DoH default; CHN nodes
+// set this to domestic resolvers.
+func xrayDNSServersFromEnv(env map[string]string) []string {
+	return xrayDNSServersCSV(env["XRAY_DNS_SERVERS"])
+}
+
+// XrayDNSServersFromEnv is the exported form for out-of-package callers
+// (cfvpn-agent) that re-render xray config on user mutations.
+func XrayDNSServersFromEnv(env map[string]string) []string {
+	return xrayDNSServersFromEnv(env)
+}
+
+// xrayDNSServersCSV splits a comma-separated resolver list, trimming blanks.
+// Empty input returns nil so renderers fall back to the international DoH default.
+func xrayDNSServersCSV(raw string) []string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if s := strings.TrimSpace(p); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 func writeAtomicFile(path string, content []byte, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
@@ -241,6 +272,7 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		ShortIDs:    []string{realityParams.ShortID},
 		Dest:        realityParams.Dest,
 		ServerNames: []string{realityParams.SNI},
+		DNSServers:  xrayDNSServersFromEnv(env),
 	})
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("render xray reality config: %w", err)
@@ -287,6 +319,11 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		if oldConfigExists {
 			if rerr := writeAtomicFile(xrayConfigPath, oldConfig, 0o600); rerr != nil {
 				return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w; additionally failed to restore previous xray config: %v", err, rerr))
+			}
+			// Restore the file AND restart so xray comes back up on the
+			// known-good config instead of being left in a failed state.
+			if rerr := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); rerr != nil && stderr != nil {
+				fmt.Fprintf(stderr, "warning: restart cfvpn-xray.service with restored config failed: %v\n", rerr)
 			}
 		} else if rerr := os.Remove(xrayConfigPath); rerr != nil && !os.IsNotExist(rerr) {
 			return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w; additionally failed to remove new xray config: %v", err, rerr))
@@ -392,7 +429,10 @@ func rotateHy2Config(ctx context.Context, newHy2Host, certPath, keyPath string, 
 	}
 	if err := hysteria.ReloadService(ctx, runner); err != nil {
 		if oldHyConfigExists {
+			// Restore the file AND reload so hysteria comes back up on the
+			// known-good config instead of being left in a failed state.
 			_ = writeAtomicFile(hysteriaConfigPath, oldHyConfig, 0o600)
+			_ = hysteria.ReloadService(ctx, runner)
 		} else {
 			_ = os.Remove(hysteriaConfigPath)
 		}
@@ -480,7 +520,7 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		return RotateDirectResult{}, err
 	}
 
-	xrayRendered, err := templates.RenderXrayCloudflareHTTPUpgrade(users, in.NewHost)
+	xrayRendered, err := templates.RenderXrayCloudflareHTTPUpgrade(users, in.NewHost, xrayDNSServersFromEnv(env))
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 	}
@@ -551,6 +591,10 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {
 		restoreXray()
+		// Restart on the restored config so xray isn't left in a failed state.
+		if rerr := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); rerr != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: restart cfvpn-xray.service with restored config failed: %v\n", rerr)
+		}
 		return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w", err))
 	}
 
@@ -563,6 +607,11 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		restoreCfd()
 		restoreXray()
 		_ = systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service")
+		// Restart cloudflared on the restored config too — otherwise a failed
+		// rotate can leave the admin tunnel (remote management path) down.
+		if rerr := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-cloudflared.service"); rerr != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: restart cfvpn-cloudflared.service with restored config failed: %v\n", rerr)
+		}
 		return rollbackDNS(fmt.Errorf("restart cfvpn-cloudflared.service: %w", err))
 	}
 

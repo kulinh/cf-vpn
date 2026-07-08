@@ -27,9 +27,9 @@ const xrayServiceUnit = "cfvpn-xray.service"
 // Package-level path vars that mirror the constants in internal/paths.
 // Tests override these to redirect to a temp directory.
 var (
-	xrayConfigPath     = paths.XrayConfigFile
-	hy2ConfigPath      = "/etc/cfvpn/hysteria/config.yaml"
-	subscriptionDir    = paths.SubscriptionDir
+	xrayConfigPath  = paths.XrayConfigFile
+	hy2ConfigPath   = "/etc/cfvpn/hysteria/config.yaml"
+	subscriptionDir = paths.SubscriptionDir
 )
 
 // UserInputs holds inputs for user lifecycle commands.
@@ -131,6 +131,14 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 		return fmt.Errorf("DOMAIN is required to issue subscription")
 	}
 
+	// Serialize the whole load→mutate→save→restart against the agent and any
+	// concurrent CLI invocation so the user-count check and the write can't race.
+	unlock, err := AcquireConfigLock()
+	if err != nil {
+		return fmt.Errorf("acquire config lock: %w", err)
+	}
+	defer unlock()
+
 	cfg, err := xray.Load(xrayConfigPath)
 	if err != nil {
 		return fmt.Errorf("load xray config: %w", err)
@@ -184,6 +192,12 @@ func RunRemoveUser(ctx context.Context, in UserInputs, runner systemd.Runner, st
 	if err := ValidateAddUserInput(in.Name); err != nil {
 		return err
 	}
+
+	unlock, err := AcquireConfigLock()
+	if err != nil {
+		return fmt.Errorf("acquire config lock: %w", err)
+	}
+	defer unlock()
 
 	cfg, err := xray.Load(xrayConfigPath)
 	if err != nil {

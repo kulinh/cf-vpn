@@ -97,6 +97,7 @@ func TestTemplateRoundTripPreservesFields(t *testing.T) {
 	rendered, err := templates.RenderXrayCloudflareHTTPUpgrade(
 		[]templates.XrayUser{{Name: "user1", UUID: "uuid-1"}},
 		"vpn.example.com",
+		nil,
 	)
 	if err != nil {
 		t.Fatal(err)

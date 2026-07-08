@@ -44,14 +44,23 @@ interface ZoneRow {
   cf_zone_id: string;
 }
 
+// Strip data-plane / control-plane secrets before a node row leaves the Worker
+// on a read endpoint. agent_secret (per-node bearer) and hy2_obfs_pw (Hysteria2
+// obfuscation password) must never appear in listNodes/getNode responses — the
+// internal callers (getNodeOr404, deleteNode, nodeStatus, …) still SELECT them.
+function toPublicNode(row: NodeRow): Omit<NodeRow, "agent_secret" | "hy2_obfs_pw"> {
+  const { agent_secret: _agentSecret, hy2_obfs_pw: _hy2ObfsPw, ...rest } = row;
+  return rest;
+}
+
 export async function listNodes(env: Env): Promise<Response> {
   const rows = await all<NodeRow>(
     env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes ORDER BY id")
   );
-  return json(rows);
+  return json(rows.map(toPublicNode));
 }
 
-export async function createNode(env: Env, request: Request): Promise<Response> {
+export async function createNode(env: Env, request: Request, actor = "system"): Promise<Response> {
   let body: NodeInput;
   try {
     body = await readJSON<NodeInput>(request);
@@ -136,6 +145,14 @@ export async function createNode(env: Env, request: Request): Promise<Response> 
     }
     throw e;
   }
+  await logEvent(
+    env,
+    actor,
+    "node.create",
+    "ok",
+    { node_id: body.id, label: body.label, admin_host: adminHost, vpn_host: vpnHost, hy2_host: hy2Host, zone: zoneName },
+    body.id
+  );
   return json({ ok: true, id: body.id, label: body.label, admin_host: adminHost, vpn_host: vpnHost, hy2_host: hy2Host, zone: zoneName }, 201);
 }
 
@@ -146,10 +163,10 @@ export async function getNode(env: Env, id: string): Promise<Response> {
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
   }
-  return json(row);
+  return json(toPublicNode(row));
 }
 
-export async function patchNode(env: Env, id: string, request: Request): Promise<Response> {
+export async function patchNode(env: Env, id: string, request: Request, actor = "system"): Promise<Response> {
   const existing = await one<NodeRow>(
     env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret FROM nodes WHERE id = ?").bind(id)
   );
@@ -174,6 +191,19 @@ export async function patchNode(env: Env, id: string, request: Request): Promise
   if (body.vpn_host !== undefined && (typeof body.vpn_host !== "string" || body.vpn_host.trim() === "")) {
     return error(400, { error: "invalid_node", detail: "vpn_host must be a non-empty string" });
   }
+  // Validate zone against the zones table so a PATCH cannot point a node at a
+  // non-existent zone (which would break rotate / DNS cleanup later).
+  if (body.zone !== undefined) {
+    if (typeof body.zone !== "string" || body.zone.trim() === "") {
+      return error(400, { error: "invalid_node", detail: "zone must be a non-empty string" });
+    }
+    const zoneRow = await one<{ name: string }>(
+      env.DB.prepare("SELECT name FROM zones WHERE name = ?").bind(body.zone)
+    );
+    if (!zoneRow) {
+      return error(400, { error: "zone_not_found", detail: body.zone });
+    }
+  }
   const updated = {
     label: body.label ?? existing.label,
     admin_host: body.admin_host ?? existing.admin_host,
@@ -186,13 +216,23 @@ export async function patchNode(env: Env, id: string, request: Request): Promise
       .bind(updated.label, updated.admin_host, updated.vpn_host, updated.zone, updated.status, id)
       .run();
   } catch (e) {
-    // idx_nodes_vpn_host is UNIQUE — surface a clean 409 instead of a raw 500
-    // when an operator edits vpn_host to one already used by another node.
-    if (/UNIQUE/i.test(String(e))) {
-      return error(409, { error: "vpn_host_exists", detail: updated.vpn_host });
+    // Both admin_host and vpn_host carry UNIQUE indexes — identify the offending
+    // column from the D1 message ("UNIQUE constraint failed: nodes.<col>")
+    // instead of always blaming vpn_host.
+    const msg = String(e);
+    if (/UNIQUE/i.test(msg)) {
+      const col = msg.match(/UNIQUE constraint failed:\s*nodes\.(\w+)/i)?.[1];
+      if (col === "admin_host") {
+        return error(409, { error: "admin_host_exists", detail: updated.admin_host });
+      }
+      if (col === "vpn_host") {
+        return error(409, { error: "vpn_host_exists", detail: updated.vpn_host });
+      }
+      return error(409, { error: "node_conflict", detail: "admin_host or vpn_host already in use" });
     }
     throw e;
   }
+  await logEvent(env, actor, "node.update", "ok", { node_id: id, changes: updated }, id);
   return json({ ok: true });
 }
 
@@ -210,7 +250,7 @@ async function resolveZoneIdForHost(env: Env, host: string): Promise<string | nu
   return null;
 }
 
-export async function deleteNode(env: Env, id: string): Promise<Response> {
+export async function deleteNode(env: Env, id: string, actor = "system"): Promise<Response> {
   const row = await one<NodeRow>(
     env.DB.prepare(
       "SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid FROM nodes WHERE id = ?"
@@ -309,10 +349,15 @@ export async function deleteNode(env: Env, id: string): Promise<Response> {
     }
   }
 
+  // Remove membership rows first so we don't orphan user_nodes pointing at a
+  // node id that no longer exists (mirrors deleteUser's cleanup for users).
+  await env.DB.prepare("DELETE FROM user_nodes WHERE node_id = ?").bind(id).run();
+
   const result = await env.DB.prepare("DELETE FROM nodes WHERE id = ?").bind(id).run();
   if (!result.success) {
     return error(500, { error: "delete_failed", detail: id });
   }
+  await logEvent(env, actor, "node.delete", warnings.length > 0 ? "partial" : "ok", { node_id: id, warnings }, id);
   return json({ ok: true, warnings });
 }
 

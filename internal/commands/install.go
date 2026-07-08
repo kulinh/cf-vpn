@@ -45,6 +45,9 @@ type InstallInputs struct {
 	Hy2Port      string
 	Hy2ObfsPW    string
 	Hy2PassUser1 string
+	// XrayDNSServers is the optional comma-separated resolver override from
+	// XRAY_DNS_SERVERS. Empty means the international DoH default.
+	XrayDNSServers string
 }
 
 // InstallCFClient is the Cloudflare dependency required by RunInstall.
@@ -387,12 +390,13 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			ShortIDs:    []string{realityParams.ShortID},
 			Dest:        realityParams.Dest,
 			ServerNames: []string{realityParams.SNI},
+			DNSServers:  xrayDNSServersFromEnv(env),
 		})
 		if err != nil {
 			return fail(fmt.Errorf("render xray reality config: %w", err))
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, newHost)
+		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, newHost, xrayDNSServersFromEnv(env))
 		if err != nil {
 			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
 		}
@@ -546,12 +550,13 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 			ShortIDs:    []string{realityParams.ShortID},
 			Dest:        realityParams.Dest,
 			ServerNames: []string{realityParams.SNI},
+			DNSServers:  xrayDNSServersFromEnv(env),
 		})
 		if err != nil {
 			return UpgradeResult{}, fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain)
+		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain, xrayDNSServersFromEnv(env))
 		if err != nil {
 			return UpgradeResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 		}
@@ -979,12 +984,13 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 			ShortIDs:    []string{realityParams.ShortID},
 			Dest:        realityParams.Dest,
 			ServerNames: []string{realityParams.SNI},
+			DNSServers:  xrayDNSServersCSV(in.XrayDNSServers),
 		})
 		if err != nil {
 			return fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain)
+		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain, xrayDNSServersCSV(in.XrayDNSServers))
 		if err != nil {
 			return fmt.Errorf("render xray cloudflare config: %w", err)
 		}
@@ -1055,15 +1061,10 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 
 	fmt.Fprintln(stdout, "installing systemd units...")
-	units := map[string]string{
-		"cfvpn-xray.service":        systemd.XrayService(xrayConfigPath),
-		"cfvpn-cloudflared.service": systemd.CloudflaredService(cloudflaredConfig),
-		"cfvpn-agent.service":       systemd.AgentService(),
-		"cfvpn-hysteria.service":    systemd.HysteriaService(hysteriaConfigPath),
-		"cfvpn-cert-renew.service":  systemd.CertRenewService(),
-		"cfvpn-cert-renew.timer":    systemd.CertRenewTimer(),
-	}
-	for name, content := range units {
+	// Single source of truth for the unit set (shared with reconcile) so a fresh
+	// install can't drift from what reconcile expects — previously this map
+	// omitted the healthcheck service+timer, leaving new nodes without it.
+	for name, content := range canonicalUnits() {
 		if err := writeAtomicFile(filepath.Join(systemdUnitDir, name), []byte(content), 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", name, err)
 		}
@@ -1071,7 +1072,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if err := systemd.DaemonReload(ctx, sysRunner); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
 	}
-	for _, svc := range []string{"cfvpn-xray.service", "cfvpn-cloudflared.service", "cfvpn-agent.service", "cfvpn-hysteria.service", "cfvpn-cert-renew.timer"} {
+	for _, svc := range []string{"cfvpn-xray.service", "cfvpn-cloudflared.service", "cfvpn-agent.service", "cfvpn-hysteria.service", "cfvpn-cert-renew.timer", "cfvpn-healthcheck.timer"} {
 		if err := systemd.EnableNow(ctx, sysRunner, svc); err != nil {
 			return fmt.Errorf("enable %s: %w", svc, err)
 		}
