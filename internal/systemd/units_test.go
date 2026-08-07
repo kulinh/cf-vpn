@@ -24,13 +24,23 @@ func TestXrayUnitContainsExpectedExecStart(t *testing.T) {
 func TestXrayUnitHasDirectModeServiceSettings(t *testing.T) {
 	u := XrayService("/etc/cfvpn/xray/config.json")
 	for _, want := range []string{
-		"ExecReload=/bin/kill -HUP $MAINPID",
 		"User=root",
 		"AmbientCapabilities=CAP_NET_BIND_SERVICE",
 	} {
 		if !strings.Contains(u, want) {
 			t.Fatalf("missing %s in unit: %s", want, u)
 		}
+	}
+}
+
+// SIGHUP terminates xray and systemd counts it as a clean exit, so an
+// ExecReload that HUPs the process silently kills the service (fleet outage
+// 2026-07-26 via acme.sh's `systemctl reload` hook). The unit must not
+// advertise reload support.
+func TestXrayUnitHasNoExecReload(t *testing.T) {
+	u := XrayService("/etc/cfvpn/xray/config.json")
+	if strings.Contains(u, "ExecReload") {
+		t.Fatalf("unit must not define ExecReload (xray dies on SIGHUP): %s", u)
 	}
 }
 

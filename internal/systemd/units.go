@@ -3,6 +3,10 @@ package systemd
 
 import "fmt"
 
+// Xray has no config-reload signal: SIGHUP terminates the process, and systemd
+// treats that exit as clean, so Restart=on-failure never fires. No ExecReload —
+// callers must `systemctl restart` (a bare `systemctl reload` now fails loudly
+// instead of silently killing xray).
 func XrayService(configPath string) string {
 	return fmt.Sprintf(`[Unit]
 Description=cfvpn xray
@@ -12,7 +16,6 @@ After=network-online.target
 Type=simple
 Environment=XRAY_LOCATION_ASSET=/usr/local/share/xray
 ExecStart=/usr/local/bin/xray run -c %s
-ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
 User=root
