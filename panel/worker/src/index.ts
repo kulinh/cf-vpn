@@ -11,7 +11,8 @@ import {
   nodeRotate,
   nodeStatus,
   nodeSync,
-  patchNode
+  patchNode,
+  sweepNodesHealth
 } from "./routes/nodes";
 import { createUser, deleteUser, listUsers, userSubscription, userUpgradeNodes } from "./routes/users";
 import { createZone, deleteZone, listZones, patchZone } from "./routes/zones";
@@ -171,8 +172,12 @@ export default {
     return notFound(pathname);
   },
 
-  async scheduled(_event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
-    const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-    await env.DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run();
+  async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+    if (event.cron === "17 3 * * *") {
+      const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+      await env.DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run();
+      return;
+    }
+    await sweepNodesHealth(env);
   }
 };

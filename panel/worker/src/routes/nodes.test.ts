@@ -17,7 +17,7 @@ vi.mock("../lib/cf-api", () => ({
 import { callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
-import { deleteNode, nodeHealthcheck, nodeRotate, nodeSyncCore } from "./nodes";
+import { deleteNode, nodeHealthcheck, nodeRotate, nodeSyncCore, sweepNodesHealth } from "./nodes";
 import type { Env, NodeRow } from "../types";
 
 type ZoneRow = { name: string; cf_zone_id: string; enabled?: number };
@@ -502,5 +502,92 @@ describe("nodeSyncCore", () => {
     expect(detail).not.toContain("SUPER_SECRET_OBFS");
     expect(detail).not.toContain("hy2_obfs_pw");
     expect(detail).toContain("edge.example.com");
+  });
+});
+
+describe("sweepNodesHealth", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockClear();
+  });
+
+  type SweepNode = { id: string; admin_host: string; agent_secret: string; status: string };
+
+  function makeSweepEnv(nodes: SweepNode[]): { env: Env; updates: { sql: string; args: unknown[] }[] } {
+    const updates: { sql: string; args: unknown[] }[] = [];
+    const db = {
+      prepare(sql: string) {
+        const state: { args: unknown[] } = { args: [] };
+        const stmt = {
+          bind(...args: unknown[]) {
+            state.args = args;
+            return stmt;
+          },
+          async all() {
+            return { results: nodes };
+          },
+          async run() {
+            updates.push({ sql, args: state.args });
+            return { success: true };
+          }
+        };
+        return stmt;
+      }
+    };
+    return { env: { DB: db } as unknown as Env, updates };
+  }
+
+  it("refreshes last_seen and latency for reachable nodes without logging", async () => {
+    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
+    vi.mocked(callAgent).mockResolvedValue({ ok: true });
+
+    await sweepNodesHealth(env);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0].sql).toContain("status='active', last_seen_at=?, latency_ms=?");
+    expect(updates[0].args[2]).toBe("a");
+    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+  });
+
+  it("logs a recover event when a previously unreachable node answers", async () => {
+    const { env } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable" }]);
+    vi.mocked(callAgent).mockResolvedValue({ ok: true });
+
+    await sweepNodesHealth(env);
+
+    const recover = vi.mocked(logEvent).mock.calls.find((c) => c[2] === "node.healthcheck.recover");
+    expect(recover).toBeDefined();
+    expect(recover?.[1]).toBe("cron");
+  });
+
+  it("marks a node unreachable on transport error and logs once", async () => {
+    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
+    vi.mocked(callAgent).mockRejectedValue(new Error("fetch failed"));
+
+    await sweepNodesHealth(env);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0].sql).toContain("status='unreachable'");
+    expect(vi.mocked(logEvent)).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not re-mark or re-log an already-unreachable node", async () => {
+    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable" }]);
+    vi.mocked(callAgent).mockRejectedValue(new Error("fetch failed"));
+
+    await sweepNodesHealth(env);
+
+    expect(updates).toHaveLength(0);
+    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+  });
+
+  it("leaves status alone on agent_http_4xx config errors", async () => {
+    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
+    vi.mocked(callAgent).mockRejectedValue(new Error("agent_http_403"));
+
+    await sweepNodesHealth(env);
+
+    expect(updates).toHaveLength(0);
+    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
   });
 });

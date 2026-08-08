@@ -513,6 +513,40 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
   }
 }
 
+// Cron-driven fleet sweep: refreshes last_seen_at/latency_ms for every node so
+// the panel's freshness data stays live without anyone clicking healthcheck
+// (before this, last_seen_at only moved on manual panel actions). Mirrors the
+// manual routes' semantics: success → active, transport failure → unreachable
+// (agent_http_4xx signals a config problem, not an outage, and leaves status
+// alone). Events are logged only on status transitions so a dead node doesn't
+// emit a log line every sweep.
+export async function sweepNodesHealth(env: Env): Promise<void> {
+  const { results } = await env.DB.prepare("SELECT id, admin_host, agent_secret, status FROM nodes")
+    .all<Pick<NodeRow, "id" | "admin_host" | "agent_secret" | "status">>();
+  await Promise.allSettled(
+    (results ?? []).map(async (row) => {
+      try {
+        const startedAt = Date.now();
+        await agentCall<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+        const latencyMs = Math.max(1, Date.now() - startedAt);
+        await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
+          .bind(nowTs(), latencyMs, row.id)
+          .run();
+        if (row.status === "unreachable") {
+          await logEvent(env, "cron", "node.healthcheck.recover", "ok", { latency_ms: latencyMs }, row.id);
+        }
+      } catch (e) {
+        const msg = String(e);
+        const looksTransportError = !/agent_http_4\d\d/.test(msg);
+        if (looksTransportError && row.status !== "unreachable") {
+          await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(row.id).run();
+          await logEvent(env, "cron", "node.healthcheck", "error", { message: msg }, row.id);
+        }
+      }
+    })
+  );
+}
+
 export async function nodeRotate(env: Env, id: string, request: Request, actor: string): Promise<Response> {
   // Optional override body — empty body is fine (auto path).
   let override: { host?: string; zone?: string } = {};
