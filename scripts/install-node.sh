@@ -134,7 +134,7 @@ log "installing OS dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 
-PACKAGES=(curl wget jq openssl uuid-runtime qrencode ca-certificates git iproute2 golang-go ufw tar gzip coreutils bash systemd dnsutils rsync)
+PACKAGES=(curl jq openssl uuid-runtime qrencode ca-certificates git iproute2 golang-go ufw tar gzip coreutils bash systemd dnsutils rsync)
 # Capture the upgrade plan once. Piping it straight into `grep -q` closes the
 # pipe on the first match; with `set -o pipefail` the resulting SIGPIPE (141)
 # from apt-get became the status of the whole `if`, so every installed package
@@ -278,8 +278,13 @@ else
   warn "could not list admin tunnels before install (CF API) — orphan detection disabled"
 fi
 
+_ORPHAN_CHECK_DONE=0
 cleanup_orphan_tunnels() {
   local rc=$?
+  # On Ctrl-C bash runs the INT trap and then, because this handler exits, the
+  # EXIT trap as well — without this guard the diff would run twice.
+  [ "$_ORPHAN_CHECK_DONE" -eq 1 ] && exit $rc
+  _ORPHAN_CHECK_DONE=1
   [ $rc -eq 0 ] && return 0
   warn "cfvpnctl install exited with status $rc — checking for orphan admin tunnels"
   if [ "${TUNNELS_SNAPSHOT_OK:-0}" -ne 1 ]; then
@@ -309,6 +314,10 @@ trap cleanup_orphan_tunnels EXIT INT TERM
 log "running cfvpnctl install (mode=$MODE)"
 cfvpnctl install
 trap - EXIT INT TERM
+# Arm the re-install guard only now: everything irreplaceable (Reality keypair,
+# admin tunnel, user credentials) exists from this point on. A run that died
+# earlier — including at the systemd-unit gate below — stays retryable.
+bash "$ENV_FILE_HELPER" mark-installed
 
 log "installing healthcheck timer"
 cfvpnctl healthcheck install

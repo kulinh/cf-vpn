@@ -6,6 +6,7 @@
 # installed below so the library is usable (and testable) on its own.
 #
 # Provides:
+#   ssh_run             ARGV...                   — run one command on TARGET_HOST
 #   cfvpn_env_value_ok  VALUE                     — env-file value safety check
 #   cfvpn_require_env_value NAME VALUE            — same, but die() on reject
 #   cfvpn_sha256_file   FILE                      — lowercase sha256 of FILE
@@ -20,6 +21,28 @@ _CFVPN_COMMON_SH=1
 declare -F log  >/dev/null || log()  { printf '[cfvpn] %s\n' "$*"; }
 declare -F warn >/dev/null || warn() { printf '[cfvpn] WARN: %s\n' "$*" >&2; }
 declare -F die  >/dev/null || die()  { printf '[cfvpn] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# ssh_run — ARGV ONLY.
+#
+# Contract: `ssh_run cmd arg1 arg2` runs exactly that command with exactly
+# those arguments on $TARGET_HOST. Each argument is re-quoted with printf %q,
+# because ssh joins argv with spaces into one string that the remote login
+# shell re-parses — without the re-quoting anything relying on local quoting
+# is lost in transit.
+#
+# The flip side: a whole shell snippet passed as ONE argument is quoted too, so
+# the remote tries to execute a command *named* `awk "NR>1 …"` and fails with
+# 127. To run a script remotely, feed it on stdin:
+#
+#     ssh_run bash -s <<'EOF'
+#     …script…
+#     EOF
+#
+# Requires the caller to set TARGET_HOST and the _ssh_opts array.
+# ---------------------------------------------------------------------------
+# shellcheck disable=SC2154  # _ssh_opts/TARGET_HOST are set by the caller
+ssh_run() { ssh "${_ssh_opts[@]}" "$TARGET_HOST" "$(printf '%q ' "$@")"; }
 
 # ---------------------------------------------------------------------------
 # env-file value safety
@@ -59,22 +82,34 @@ cfvpn_sha256_file() {
 # cfvpn_extract_sha256 NAME  < checksum-file
 # Understands the formats upstream projects actually publish:
 #   "<hash>  filename"        (sha256sum / *.sha256sum / sha256sum.txt)
+#   "<hash> *filename"        (sha256sum binary mode)
 #   "<hash>"                  (bare single-hash *.sha256 file)
 #   "SHA2-256= <hash>"        (openssl dgst style, e.g. Xray *.dgst)
 #   "SHA256(filename)= <hash>"
-# A line mentioning NAME wins. Otherwise a file containing exactly one hash is
+# The filename is matched as a whole FIELD, not as a substring: a substring
+# match would happily hand back the hash of hysteria-linux-amd64-avx for
+# hysteria-linux-amd64. Otherwise a file containing exactly one hash is
 # accepted; a multi-entry file with no match is a failure (never guess).
 cfvpn_extract_sha256() {
-  local want="$1" line tok hash lone="" lone_count=0
+  local want="$1" line tok hash matched lone="" lone_count=0
   while IFS= read -r line || [ -n "$line" ]; do
-    hash=""
+    hash=""; matched=0
     for tok in $line; do
       tok="${tok##*=}"
       tok="${tok##*\)}"
-      if [[ "$tok" =~ ^[0-9a-fA-F]{64}$ ]]; then hash="${tok,,}"; break; fi
+      if [ -z "$hash" ] && [[ "$tok" =~ ^[0-9a-fA-F]{64}$ ]]; then
+        hash="${tok,,}"
+        continue
+      fi
+      # sha256sum writes "<hash>  name" (text) or "<hash> *name" (binary);
+      # some files carry a leading "./".
+      tok="${tok#\*}"; tok="${tok#./}"
+      # SHA256(name)= <hash> puts the name before the '=' we stripped above,
+      # so compare against the basename in every position.
+      [ -n "$want" ] && [ "$tok" = "$want" ] && matched=1
     done
     [ -n "$hash" ] || continue
-    if [ -n "$want" ] && [[ "$line" == *"$want"* ]]; then
+    if [ "$matched" -eq 1 ]; then
       printf '%s\n' "$hash"
       return 0
     fi

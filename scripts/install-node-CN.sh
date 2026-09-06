@@ -20,12 +20,11 @@
 #   4. download — fetch GFW-blocked binaries/packages to local STAGE_DIR.
 #        Every payload is verified against its upstream sha256 before it is
 #        shipped to the target and installed as root (see cfvpn-common.sh):
-#        [1/6] xray binary          github.com/XTLS/Xray-core
-#        [2/6] xray geo data        github.com/v2fly
-#        [3/6] cloudflared .deb     pkg.cloudflare.com (apt repo)
-#        [4/6] hysteria2            github.com/apernet/hysteria
-#        [5/6] jq                   github.com/jqlang/jq
-#        [6/6] curl (static glibc)  github.com/stunnel/static-curl
+#        [1/5] xray binary          github.com/XTLS/Xray-core
+#        [2/5] xray geo data        github.com/v2fly
+#        [3/5] cloudflared .deb     pkg.cloudflare.com (apt repo)
+#        [4/5] hysteria2            github.com/apernet/hysteria
+#        [5/5] jq                   github.com/jqlang/jq
 #   5. build locally (linux/amd64):
 #        cfvpnctl + cfvpn-agent  (Go, CGO_ENABLED=0)
 #        lego                    (go install, CGO_ENABLED=0)
@@ -70,7 +69,7 @@ require_env() {
 }
 
 # ----- 0. preflight LOCAL -----------------------------------------------------
-for cmd in curl python3 go gcc make unzip rsync ssh openssl jq xz; do
+for cmd in curl python3 go gcc make unzip rsync ssh openssl jq; do
   command -v "$cmd" >/dev/null || die "$cmd is required on this local machine"
 done
 
@@ -84,7 +83,7 @@ log "checking local network reachability"
 curl -fsS --max-time 10 -o /dev/null https://api.cloudflare.com/client/v4/ips \
   || die "local cannot reach api.cloudflare.com — check internet on this machine"
 curl -fsS --max-time 10 -o /dev/null \
-  https://pkg.cloudflare.com/cloudflared/debian/dists/any/InRelease \
+  https://pkg.cloudflare.com/cloudflared/dists/any/InRelease \
   || die "local cannot reach pkg.cloudflare.com (needed for cloudflared .deb)"
 # proxy.golang.org is needed by `go install`; warn-only since GOPROXY can be reset
 if ! curl -fsS --max-time 10 -o /dev/null https://proxy.golang.org 2>/dev/null; then
@@ -96,22 +95,22 @@ log "local network OK"
 SSH_KEY="${SSH_KEY:-}"
 # accept-new (not "no"): still convenient on a fresh VPS, but a CHANGED host key
 # now aborts instead of handing CF_API_TOKEN + the agent secret to whoever
-# answers. IdentitiesOnly stops ssh-agent from offering unrelated keys.
-_ssh_common=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 -o BatchMode=yes)
+# answers. IdentitiesOnly=yes always: it also stops ssh-agent from offering
+# unrelated keys when no -i is given.
+_ssh_common=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
+             -o BatchMode=yes -o IdentitiesOnly=yes)
 _ssh_opts=("${_ssh_common[@]}")
 # Quote SSH_KEY in case it contains spaces; rsync passes -e as a single string
 if [ -n "$SSH_KEY" ]; then
-  _ssh_opts+=(-i "$SSH_KEY" -o IdentitiesOnly=yes)
-  _rsync_e="ssh -i \"$SSH_KEY\" -o IdentitiesOnly=yes ${_ssh_common[*]}"
+  _ssh_opts+=(-i "$SSH_KEY")
+  _rsync_e="ssh -i \"$SSH_KEY\" ${_ssh_common[*]}"
 else
   _rsync_e="ssh ${_ssh_common[*]}"
 fi
 
-# ssh joins argv[1..] with spaces into ONE command string that the remote login
-# shell re-parses, so anything relying on local quoting is lost in transit
-# (that is what silently emptied the D1 sync step). Re-quote every argument for
-# the remote shell before handing it over.
-ssh_run() { ssh "${_ssh_opts[@]}" "$TARGET_HOST" "$(printf '%q ' "$@")"; }
+# ssh_run lives in scripts/lib/cfvpn-common.sh (sourced below, after
+# PROJECT_ROOT is known) and is ARGV-ONLY: pass a command and its arguments,
+# never a shell snippet. Remote scripts go on stdin: ssh_run bash -s <<'EOF'.
 
 : "${USER1_NAME:=user1}"
 : "${MODE:=auto}"
@@ -197,8 +196,13 @@ EOF
   printf '%s' "$resp" | jq -r '.result // [] | .[] | select(.name | startswith("cfvpn-admin-")) | "\(.id) \(.name)"'
 }
 
+_EXIT_HANDLED=0
 exit_handler() {
   local rc=$?
+  # On Ctrl-C bash runs the INT trap and then, because this handler exits, the
+  # EXIT trap as well — without this guard the whole diff would run twice.
+  [ "$_EXIT_HANDLED" -eq 1 ] && exit $rc
+  _EXIT_HANDLED=1
   cleanup_local_stage
   if [ "$rc" -ne 0 ] && [ "$INSTALL_PHASE_STARTED" -eq 1 ] && [ "$INSTALL_PHASE_DONE" -eq 0 ]; then
     warn "cfvpnctl install was interrupted (exit $rc) — checking for orphan admin tunnels"
@@ -248,8 +252,13 @@ log "target: root@$target_arch"
 # creating Cloudflare resources. Mirrors scripts/lib/cfvpn-env-file.sh check —
 # the helper itself is not on the target yet (it arrives with the rsync).
 if [ "$FORCE_REINSTALL" != "1" ]; then
-  if ssh_run grep -qE '^(REALITY_PRIVATE_KEY|AGENT_SHARED_SECRET)=' /etc/cfvpn/cfvpn.env 2>/dev/null; then
-    die "$TARGET_HOST already has /etc/cfvpn/cfvpn.env with node secrets.
+  if ssh_run bash -s <<'REMOTE' >/dev/null 2>&1
+[ -f /etc/cfvpn/.installed ] && exit 0
+grep -qE '^(REALITY_PRIVATE_KEY|ADMIN_TUNNEL_UUID)=' /etc/cfvpn/cfvpn.env 2>/dev/null
+REMOTE
+  then
+    die "$TARGET_HOST is already provisioned (/etc/cfvpn/.installed, or an env
+  file holding installer-generated keys).
   Re-running this installer regenerates the Reality keypair and every user
   credential, breaking every client already configured for this node.
   Upgrade in place with:  ssh$([ -n "$SSH_KEY" ] && echo " -i $SSH_KEY") $TARGET_HOST cfvpnctl upgrade
@@ -264,14 +273,23 @@ resolve_mode() {
     auto) ;;
     *) die "MODE must be direct, cloudflare, or auto (got: $MODE)" ;;
   esac
-  if ssh_run \
-    'awk "NR>1 && toupper(\$2)~/:01BB\$/ && \$4==\"0A\"{found=1} END{exit !found}" \
-     /proc/net/tcp /proc/net/tcp6 2>/dev/null' 2>/dev/null; then
-    warn "port :443 already in LISTEN on target; selecting MODE=cloudflare"
-    MODE=cloudflare
-  else
-    MODE=direct
-  fi
+  # The probe is a SCRIPT, so it goes on stdin. Passing it as a single argv
+  # element made the remote look for a command literally named `awk "NR>1 …"`,
+  # exit 127, and MODE=auto always resolved to direct.
+  local rc=0
+  ssh_run bash -s <<'REMOTE' >/dev/null 2>&1 || rc=$?
+set -u
+# /proc/net/tcp{,6}: col 2 is local_address (hex ip:port), col 4 is state.
+# :01BB = port 443, state 0A = TCP_LISTEN.
+awk 'NR>1 && toupper($2) ~ /:01BB$/ && $4 == "0A" { found = 1 }
+     END { exit !found }' /proc/net/tcp /proc/net/tcp6 2>/dev/null
+REMOTE
+  case "$rc" in
+    0) warn "port :443 already in LISTEN on target; selecting MODE=cloudflare"
+       MODE=cloudflare ;;
+    1) MODE=direct ;;
+    *) die "could not probe :443 on $TARGET_HOST (ssh/awk exit $rc) — refusing to guess MODE; pass MODE=direct or MODE=cloudflare" ;;
+  esac
 }
 resolve_mode
 log "selected MODE=$MODE"
@@ -407,8 +425,8 @@ gh_latest_tag() {
     | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])"
 }
 
-# ---- [1/6] xray binary -------------------------------------------------------
-log "  [1/6] xray   (github.com/XTLS/Xray-core)"
+# ---- [1/5] xray binary -------------------------------------------------------
+log "  [1/5] xray   (github.com/XTLS/Xray-core)"
 xray_ver=$(gh_latest_tag XTLS/Xray-core)
 xray_base="https://github.com/XTLS/Xray-core/releases/download/${xray_ver}"
 cfvpn_download_verified \
@@ -418,8 +436,8 @@ unzip -p "$STAGE_DIR/tmp/xray.zip" xray > "$STAGE_BIN/xray"
 chmod 755 "$STAGE_BIN/xray"
 log "    xray ${xray_ver} ($(du -sh "$STAGE_BIN/xray" | cut -f1))"
 
-# ---- [2/6] xray geo data -----------------------------------------------------
-log "  [2/6] xray geo data  (github.com/v2fly)"
+# ---- [2/5] xray geo data -----------------------------------------------------
+log "  [2/5] xray geo data  (github.com/v2fly)"
 cfvpn_download_verified \
   "https://github.com/v2fly/geoip/releases/latest/download/geoip.dat" \
   "$STAGE_SHARE/geoip.dat" "geoip.dat" \
@@ -430,22 +448,23 @@ cfvpn_download_verified \
   "https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat.sha256sum"
 log "    geoip $(du -sh "$STAGE_SHARE/geoip.dat" | cut -f1), geosite $(du -sh "$STAGE_SHARE/geosite.dat" | cut -f1)"
 
-# ---- [3/6] cloudflared .deb (from Cloudflare official apt repo) -------------
+# ---- [3/5] cloudflared .deb (from Cloudflare official apt repo) -------------
 # The apt Packages index is itself the checksum source: it carries SHA256 for
 # every .deb, so no extra fetch is needed.
-log "  [3/6] cloudflared   (pkg.cloudflare.com apt repo)"
-CF_APT_BASE="https://pkg.cloudflare.com/cloudflared/debian"
+log "  [3/5] cloudflared   (pkg.cloudflare.com apt repo)"
+CF_APT_BASE="https://pkg.cloudflare.com/cloudflared"
 CF_PACKAGES=$(curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
   --retry 3 --retry-connrefused --max-time 30 \
   "$CF_APT_BASE/dists/any/main/binary-amd64/Packages")
-# Take Filename/Version/SHA256 from the SAME stanza (records are blank-line
-# separated) — pairing the first Filename with some other package's hash would
-# be worse than not checking at all.
-CF_STANZA=$(printf '%s\n' "$CF_PACKAGES" | awk 'BEGIN{RS="";ORS=""} NR==1{print $0"\n"}')
-CF_FILENAME=$(printf '%s\n' "$CF_STANZA" | awk '/^Filename:/{print $2; exit}')
-CF_VER=$(printf '%s\n'      "$CF_STANZA" | awk '/^Version:/{print $2; exit}')
-CF_SHA256=$(printf '%s\n'   "$CF_STANZA" | awk '/^SHA256:/{print $2; exit}')
+CF_FILENAME=$(printf '%s\n' "$CF_PACKAGES" | awk '/^Filename:/{print $2; exit}')
 [ -z "$CF_FILENAME" ] && die "cloudflared: cannot parse Packages index from $CF_APT_BASE"
+# Take Version/SHA256 from the stanza that actually declares the file we are
+# about to download (records are blank-line separated) — pairing our Filename
+# with another package's hash would be worse than not checking at all.
+CF_STANZA=$(printf '%s\n' "$CF_PACKAGES" \
+  | awk -v want="Filename: $CF_FILENAME" 'BEGIN{RS="";ORS=""} index($0, want){print $0"\n"; exit}')
+CF_VER=$(printf '%s\n'    "$CF_STANZA" | awk '/^Version:/{print $2; exit}')
+CF_SHA256=$(printf '%s\n' "$CF_STANZA" | awk '/^SHA256:/{print $2; exit}')
 cfvpn_curl_dl "$CF_APT_BASE/$CF_FILENAME" "$STAGE_DIR/tmp/cloudflared.deb"
 if [ -n "$CF_SHA256" ]; then
   cfvpn_verify_sha256 "$STAGE_DIR/tmp/cloudflared.deb" "$CF_SHA256" "cloudflared.deb"
@@ -456,8 +475,8 @@ else
 fi
 log "    cloudflared ${CF_VER} deb ($(du -sh "$STAGE_DIR/tmp/cloudflared.deb" | cut -f1))"
 
-# ---- [4/6] hysteria2 ---------------------------------------------------------
-log "  [4/6] hysteria2   (github.com/apernet/hysteria)"
+# ---- [4/5] hysteria2 ---------------------------------------------------------
+log "  [4/5] hysteria2   (github.com/apernet/hysteria)"
 hy_url=$(curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
   --retry 3 --retry-connrefused --max-time 15 \
   https://api.github.com/repos/apernet/hysteria/releases/latest \
@@ -473,8 +492,8 @@ cfvpn_download_verified "$hy_url" "$STAGE_BIN/hysteria" "hysteria-linux-amd64" \
 chmod 755 "$STAGE_BIN/hysteria"
 log "    hysteria2 ($(du -sh "$STAGE_BIN/hysteria" | cut -f1))"
 
-# ---- [5/6] jq static binary --------------------------------------------------
-log "  [5/6] jq   (github.com/jqlang/jq)"
+# ---- [5/5] jq static binary --------------------------------------------------
+log "  [5/5] jq   (github.com/jqlang/jq)"
 jq_ver=$(gh_latest_tag jqlang/jq)
 jq_base="https://github.com/jqlang/jq/releases/download/${jq_ver}"
 cfvpn_download_verified "$jq_base/jq-linux-amd64" "$STAGE_BIN/jq" "jq-linux-amd64" \
@@ -482,19 +501,12 @@ cfvpn_download_verified "$jq_base/jq-linux-amd64" "$STAGE_BIN/jq" "jq-linux-amd6
 chmod 755 "$STAGE_BIN/jq"
 log "    jq ${jq_ver} ($(du -sh "$STAGE_BIN/jq" | cut -f1))"
 
-# ---- [6/6] curl static (glibc, linux/amd64) ---------------------------------
-log "  [6/6] curl static   (github.com/stunnel/static-curl)"
-curl_ver=$(gh_latest_tag stunnel/static-curl)
-curl_base="https://github.com/stunnel/static-curl/releases/download/${curl_ver}"
-curl_tar="curl-linux-x86_64-glibc-${curl_ver}.tar.xz"
-cfvpn_download_verified "$curl_base/$curl_tar" "$STAGE_DIR/tmp/curl.tar.xz" "$curl_tar" \
-  "$curl_base/${curl_tar}.sha256" "$curl_base/sha256sum.txt"
-mkdir -p "$STAGE_DIR/tmp/curl-extract"
-tar -xJf "$STAGE_DIR/tmp/curl.tar.xz" -C "$STAGE_DIR/tmp/curl-extract"
-curl_bin=$(find "$STAGE_DIR/tmp/curl-extract" -type f -name 'curl' -perm /111 | head -1)
-[ -z "$curl_bin" ] && die "curl binary not found inside stunnel/static-curl tarball"
-install -m 755 "$curl_bin" "$STAGE_BIN/curl"
-log "    curl ${curl_ver} ($(du -sh "$STAGE_BIN/curl" | cut -f1))"
+# NOTE: the static curl from stunnel/static-curl used to be staged here as
+# [6/6]. It was dropped: that project publishes NO checksum asset (verified),
+# so it could only ever be installed unverified as root, and nothing in the
+# flow needs it — the target's own curl (ca-certificates is installed in step 2)
+# already served the GFW preflight, and cfvpnctl / cfvpn-agent are Go binaries
+# that speak HTTPS themselves. All D1 and agent calls run on the operator box.
 
 # ----- 5. build locally (linux/amd64, CGO_ENABLED=0) -------------------------
 # CGO_ENABLED=0 forces static binaries — avoids glibc-version mismatch on
@@ -594,14 +606,14 @@ if ! dpkg -i "$S/tmp/cloudflared.deb"; then
   echo "[install-node-CN] resolving missing deps with apt-get install -f"
   apt-get install -y -f
 fi
-for b in xray hysteria lego cfvpnctl cfvpn-agent jq curl openssl; do
+for b in xray hysteria lego cfvpnctl cfvpn-agent jq openssl; do
   install -m 755 "$S/bin/$b" "/usr/local/bin/$b"
 done
 install -d /usr/local/share/xray /usr/local/etc/xray /var/log/xray
 install -m 644 "$S/share/xray/geoip.dat"   /usr/local/share/xray/geoip.dat
 install -m 644 "$S/share/xray/geosite.dat" /usr/local/share/xray/geosite.dat
 echo "[install-node-CN] installed binaries:"
-for b in xray cloudflared lego hysteria cfvpnctl cfvpn-agent jq curl openssl; do
+for b in xray cloudflared lego hysteria cfvpnctl cfvpn-agent jq openssl; do
   # cloudflared comes from the .deb and lands in /usr/bin, not /usr/local/bin —
   # resolving through PATH stops the banner from printing '?' for it.
   p=$(command -v "$b" || true)
@@ -667,6 +679,10 @@ fi
 INSTALL_PHASE_STARTED=1
 ssh_run cfvpnctl install
 INSTALL_PHASE_DONE=1
+# Arm the re-install guard only now: everything irreplaceable (Reality keypair,
+# admin tunnel, user credentials) exists from this point on. A run that died
+# earlier stays retryable.
+ssh_run bash "$REMOTE_ENV_HELPER" mark-installed
 
 log "installing healthcheck timer"
 ssh_run cfvpnctl healthcheck install

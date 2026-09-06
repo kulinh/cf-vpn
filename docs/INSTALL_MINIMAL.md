@@ -28,7 +28,7 @@ expects, and verifies systemd units after install.
 
 ```bash
 apt-get install -y \
-  curl wget jq openssl uuid-runtime qrencode ca-certificates git iproute2 \
+  curl jq openssl uuid-runtime qrencode ca-certificates git iproute2 \
   golang-go ufw tar gzip coreutils bash systemd dnsutils rsync
 ```
 
@@ -133,17 +133,26 @@ Tunnel registers — re-run after a minute.
 
 ## 7) Re-running / upgrading
 
-`install-node.sh` is for **fresh provisioning only**. It refuses to run when
-`/etc/cfvpn/cfvpn.env` already contains `REALITY_PRIVATE_KEY` or
-`AGENT_SHARED_SECRET`, and prints exactly what a re-run would regenerate:
+`install-node.sh` is for **fresh provisioning only**. It refuses to run once the
+node is provisioned and prints exactly what a re-run would regenerate:
 
 ```
-[cfvpn-env] ERROR: /etc/cfvpn/cfvpn.env already exists and holds this node's secrets.
+[cfvpn-env] ERROR: this node is already provisioned (/etc/cfvpn/.installed exists).
   ...It would replace:
     - REALITY_PRIVATE_KEY
     - UUID_USER1
     ...
 ```
+
+"Provisioned" means `/etc/cfvpn/.installed` exists — the installer writes it
+**only after `cfvpnctl install` succeeds** — or the env file already contains
+keys only the Go installer writes (`REALITY_PRIVATE_KEY`,
+`ADMIN_TUNNEL_UUID`), which covers nodes built before the marker existed.
+
+This is deliberate: the bootstrap writes `AGENT_SHARED_SECRET` *before* calling
+`cfvpnctl`, so a run that dies earlier — a failed apt, a Cloudflare API error,
+or the systemd-unit gate in step 5 — leaves nothing irreplaceable behind and
+**can simply be re-run**.
 
 Re-running would mint a new Reality keypair, a new `UUID_USER1`, new Hysteria2
 passwords and a new agent secret — every client already configured for the
@@ -164,8 +173,11 @@ sudo -E FORCE_REINSTALL=1 ... bash scripts/install-node.sh
 ```
 
 That backs the current env file up to `/etc/cfvpn/cfvpn.env.bak-<unixtime>`
-(mode 0600) before writing a fresh one. Afterwards you must re-issue every
-user's config for this node.
+(mode 0600), clears the `.installed` marker, and keeps only the values that
+must not be regenerated — `ADMIN_TUNNEL_UUID` (dropping it would make
+`cfvpnctl` create a **second** admin tunnel and orphan the first) plus the
+Cloudflare credentials. Everything else is reissued, so afterwards you must
+re-issue every user's config for this node.
 
 Without `FORCE_REINSTALL`, a re-run over a *partial* env file (one with no node
 secrets yet) is safe: the installer rewrites only the bootstrap keys it owns

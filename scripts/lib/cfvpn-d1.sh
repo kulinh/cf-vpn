@@ -68,7 +68,9 @@ EOF
 d1_zone_for_domain() {
   local domain="$1" resp ok zones z best=""
   [ -n "$domain" ] || return 0
-  resp="$(d1_query "$(jq -n '{sql:"SELECT name FROM zones", params:[]}')")"
+  # enabled=1 only: a disabled zone is one the panel refuses to place nodes in,
+  # so deriving a node's zone from it would contradict the panel.
+  resp="$(d1_query "$(jq -n '{sql:"SELECT name FROM zones WHERE enabled = 1", params:[]}')")"
   ok="$(printf '%s' "$resp" | jq -r '.success // false')"
   if [ "$ok" = "true" ]; then
     zones="$(printf '%s' "$resp" | jq -r '.result[0].results // [] | .[].name // empty')"
