@@ -1,11 +1,38 @@
 package commands
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kulinh/cf-vpn/internal/paths"
 )
+
+// TestMain installs package-wide safety defaults for the seams that would
+// otherwise touch the machine running the suite.
+//
+// This package's tests are routinely run as root on a node (that is where the
+// repo lives). Anything that writes outside a t.TempDir or execs a system tool
+// must be redirected here, not per test: a helper that forgets one override
+// silently reconfigures the live node — as happened with hysteriaConfigPath,
+// whose fixtures replaced a node's real hysteria config.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "cfvpn-commands-test-*")
+	if err != nil {
+		panic(err)
+	}
+	sysctlConfPath = filepath.Join(dir, "sysctl.d", "90-cfvpn.conf")
+	runTuneCommand = func(context.Context, string, ...string) ([]byte, error) { return []byte("bbr\n"), nil }
+	// Fixture Reality keys are correctly rejected by a real xray; tests that
+	// exercise the pre-flight call realValidateXrayConfig directly.
+	validateXrayConfig = func(context.Context, []byte) error { return nil }
+
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 // TestMain asserts that no test in this package leaves the mutable node paths
 // pointing at the real /etc/cfvpn. Every seam helper redirects them to a temp

@@ -30,7 +30,11 @@ const xrayValidateTimeout = 30 * time.Second
 //
 // A node without the xray binary (a workstation, a container running only the
 // CLI) skips validation rather than failing: there is nothing to validate with.
-var validateXrayConfig = func(ctx context.Context, config []byte) error {
+var validateXrayConfig = realValidateXrayConfig
+
+// realValidateXrayConfig is the production implementation behind
+// validateXrayConfig. Tests that want the genuine behaviour call it directly.
+func realValidateXrayConfig(ctx context.Context, config []byte) error {
 	if _, err := exec.LookPath(xrayBinary); err != nil {
 		return nil
 	}

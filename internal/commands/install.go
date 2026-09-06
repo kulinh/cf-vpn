@@ -13,6 +13,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -223,6 +225,10 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 		return UpgradeResult{}, err
 	}
 
+	// Network tuning (BBR/fq/mtu-probing) is applied on every upgrade so a
+	// rolling re-deploy is all it takes to bring existing nodes in line.
+	tuneNetBestEffort(ctx, stdout, stderr)
+
 	env, err := loadUpgradeEnv()
 	if err != nil {
 		return UpgradeResult{}, err
@@ -363,6 +369,14 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	cfgDir := filepath.Dir(envFilePath)
 	if err := copyTree(cfgDir, backupDir); err != nil {
 		return UpgradeResult{}, fmt.Errorf("backup config: %w", err)
+	}
+	// M-G9: each upgrade copies the whole config dir — CF_API_TOKEN,
+	// AGENT_SHARED_SECRET, REALITY_PRIVATE_KEY, HY2_OBFS_PW and hysteria's
+	// key.pem — into /etc/cfvpn.backup-<unixtime>, and nothing ever removed
+	// them. The files stay 0600, but the number of copies of the node's secrets
+	// grew without bound.
+	if err := pruneConfigBackups(in.BackupRoot, keepConfigBackups); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: prune old config backups: %v\n", err)
 	}
 	runner := resolveRunner(deps.SystemdRunner)
 	rb := &rollbacker{cf: deps.CF, runner: runner, backupDir: backupDir, configDir: cfgDir}
@@ -758,6 +772,58 @@ func (r *rollbacker) run(ctx context.Context, stderr io.Writer) {
 	}
 }
 
+// keepConfigBackups is how many cfvpn.backup-<unixtime> directories survive a
+// prune, newest first. Three covers "the upgrade before last went wrong"
+// without keeping the node's secrets around indefinitely.
+const keepConfigBackups = 3
+
+// configBackupRE matches the backup directories RunUpgrade creates. Anything
+// else in the backup root is left alone.
+var configBackupRE = regexp.MustCompile(`^cfvpn\.backup-(\d+)$`)
+
+// pruneConfigBackups removes all but the `keep` newest cfvpn.backup-<unixtime>
+// directories under root. The timestamp in the name orders them (numerically,
+// not lexically — "cfvpn.backup-9" must not outrank "cfvpn.backup-10").
+func pruneConfigBackups(root string, keep int) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	type backup struct {
+		name string
+		ts   int64
+	}
+	var backups []backup
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		m := configBackupRE.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		ts, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		backups = append(backups, backup{name: e.Name(), ts: ts})
+	}
+	if len(backups) <= keep {
+		return nil
+	}
+	sort.Slice(backups, func(i, j int) bool { return backups[i].ts > backups[j].ts })
+	var firstErr error
+	for _, b := range backups[keep:] {
+		if err := os.RemoveAll(filepath.Join(root, b.name)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func safeRollbackConfigDir(dir string) bool {
 	if dir == "" || dir == "." || dir == string(filepath.Separator) || dir == "/etc" {
 		return false
@@ -913,6 +979,9 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if err := ensureRuntimeBinaries(ctx, binRunner); err != nil {
 		return err
 	}
+
+	fmt.Fprintln(stdout, "tuning network stack...")
+	tuneNetBestEffort(ctx, stdout, stderr)
 	fmt.Fprintln(stdout, "issuing certificates...")
 	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
 	if err := deps.Cert.Issue(ctx, hy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {

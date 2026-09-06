@@ -97,11 +97,11 @@ func TestValidateXrayConfigAgainstRealBinary(t *testing.T) {
 	}
 	good := []byte(`{"inbounds":[{"port":10001,"listen":"127.0.0.1","protocol":"vless",` +
 		`"settings":{"clients":[],"decryption":"none"}}],"outbounds":[{"protocol":"freedom"}]}`)
-	if err := validateXrayConfig(context.Background(), good); err != nil {
+	if err := realValidateXrayConfig(context.Background(), good); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
 	bad := []byte(`{"inbounds":[{"protocol":"nope"}]}`)
-	err := validateXrayConfig(context.Background(), bad)
+	err := realValidateXrayConfig(context.Background(), bad)
 	if err == nil {
 		t.Fatal("invalid config accepted")
 	}
@@ -115,7 +115,7 @@ func TestValidateXrayConfigSkipsWhenBinaryMissing(t *testing.T) {
 	old := xrayBinary
 	xrayBinary = "cfvpn-xray-does-not-exist"
 	t.Cleanup(func() { xrayBinary = old })
-	if err := validateXrayConfig(context.Background(), []byte(`{"nonsense":`)); err != nil {
+	if err := realValidateXrayConfig(context.Background(), []byte(`{"nonsense":`)); err != nil {
 		t.Fatalf("expected a skip, got %v", err)
 	}
 }

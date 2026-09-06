@@ -315,6 +315,16 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "usage: cfvpnctl healthcheck {run|install}")
 			return 2
 		}
+	case "tune-net":
+		if len(args) > 1 {
+			fmt.Fprintln(stderr, "usage: cfvpnctl tune-net")
+			return 2
+		}
+		if err := commands.RunTuneNet(ctx, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "reconcile-units":
 		if err := commands.RunReconcileUnits(ctx, systemd.ExecRunner{}, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
