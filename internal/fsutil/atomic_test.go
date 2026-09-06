@@ -8,9 +8,10 @@ import (
 	"testing"
 )
 
-// The parent-directory fsync is what makes the rename durable; if it fails the
-// caller must hear about it instead of being told the write succeeded.
-func TestSyncDirReportsSyncFailure(t *testing.T) {
+// failDirFsync makes only the parent-directory fsync fail — the post-rename
+// step. The data fsync (a regular file) still runs for real.
+func failDirFsync(t *testing.T) {
+	t.Helper()
 	old := syncFile
 	syncFile = func(f *os.File) error {
 		info, err := f.Stat()
@@ -20,22 +21,93 @@ func TestSyncDirReportsSyncFailure(t *testing.T) {
 		return f.Sync()
 	}
 	t.Cleanup(func() { syncFile = old })
+}
 
+// failDataFsync makes the pre-rename data fsync fail: nothing is published.
+func failDataFsync(t *testing.T) {
+	t.Helper()
+	old := syncFile
+	syncFile = func(f *os.File) error {
+		info, err := f.Stat()
+		if err == nil && !info.IsDir() {
+			return errors.New("simulated data fsync failure")
+		}
+		return f.Sync()
+	}
+	t.Cleanup(func() { syncFile = old })
+}
+
+// The parent-directory fsync is what makes the rename durable; if it fails the
+// caller must hear about it instead of being told the write succeeded.
+func TestSyncDirReportsSyncFailure(t *testing.T) {
+	failDirFsync(t)
 	dir := t.TempDir()
 	if err := SyncDir(dir); err == nil {
 		t.Fatal("SyncDir swallowed the fsync failure")
 	} else if !strings.Contains(err.Error(), "simulated fsync failure") {
 		t.Fatalf("err = %v", err)
 	}
+}
 
-	// WriteFile must surface it too: the bytes are on disk, but the rename is
-	// not guaranteed to survive a crash and the caller decides what that means.
-	err := WriteFile(filepath.Join(dir, "cfg.json"), []byte("x"), 0o600)
+// A failure BEFORE the rename publishes nothing: the previous file must be
+// untouched and the error must NOT be a DurabilityError, because the caller has
+// to abort.
+func TestWriteFilePreRenameFailureLeavesFileUntouched(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failDataFsync(t)
+
+	err := WriteFile(path, []byte("candidate"), 0o600)
 	if err == nil {
-		t.Fatal("WriteFile reported success despite a failed directory fsync")
+		t.Fatal("WriteFile reported success despite a failed data fsync")
+	}
+	if IsDurability(err) {
+		t.Errorf("pre-rename failure reported as a DurabilityError: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "previous" {
+		t.Fatalf("file was modified by a failed write: %q", raw)
+	}
+	entries, _ := os.ReadDir(dir)
+	if len(entries) != 1 {
+		t.Fatalf("temp file leaked: %v", entries)
+	}
+}
+
+// A failure AFTER the rename has published the new content is a different
+// animal: the file IS the new content, so the caller must be able to tell and
+// carry on (restart the service) rather than abort.
+func TestWriteFilePostRenameFailureIsADurabilityError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte("previous"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	failDirFsync(t)
+
+	err := WriteFile(path, []byte("candidate"), 0o600)
+	if err == nil {
+		t.Fatal("WriteFile hid the failed directory fsync")
+	}
+	if !IsDurability(err) {
+		t.Fatalf("err = %v, want a DurabilityError", err)
+	}
+	var de *DurabilityError
+	if !errors.As(err, &de) {
+		t.Fatal("errors.As could not extract the DurabilityError")
+	}
+	if de.Path != path {
+		t.Errorf("DurabilityError.Path = %q, want %q", de.Path, path)
 	}
 	if !strings.Contains(err.Error(), "simulated fsync failure") {
-		t.Fatalf("err = %v", err)
+		t.Errorf("the underlying fsync error is not reported: %v", err)
+	}
+	raw, _ := os.ReadFile(path)
+	if string(raw) != "candidate" {
+		t.Fatalf("content = %q, want the new content — the rename did happen", raw)
 	}
 }
 

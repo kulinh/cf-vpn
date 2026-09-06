@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 )
 
@@ -78,8 +79,14 @@ const defaultXrayAssetDir = "/usr/local/share/xray"
 // XRAY_LOCATION_ASSET would report "geoip.dat not found" for a config the node
 // runs perfectly — a false negative that blocks every install, upgrade, rotate
 // and user mutation. (xray 26.3 defers that load to runtime, so it does not bite
-// today; pinning the value keeps the pre-flight honest across versions.) An
-// operator-set override still wins, because the service would see it too.
+// today; pinning the value keeps the pre-flight honest across versions.)
+//
+// Two sources only, in order: this process's own environment (whatever the
+// operator exported for cfvpnctl, or cfvpn-agent inherited from its unit's
+// EnvironmentFile), then defaultXrayAssetDir. cfvpn-xray.service's own
+// Environment= line is NOT read back — it is mirrored by defaultXrayAssetDir and
+// a test pins the two together, so an operator who changes the unit must change
+// that constant as well.
 func xrayAssetDir() string {
 	if dir := strings.TrimSpace(os.Getenv("XRAY_LOCATION_ASSET")); dir != "" {
 		return dir
@@ -129,7 +136,16 @@ func WriteXrayConfigChecked(ctx context.Context, path string, config []byte, mod
 func applyXrayConfig(ctx context.Context, config []byte, runner systemd.Runner, warn io.Writer) error {
 	previous, previousErr := os.ReadFile(xrayConfigPath)
 	if err := writeXrayConfigChecked(ctx, xrayConfigPath, config, 0o600); err != nil {
-		return err
+		// A DurabilityError means the rename already published the new config;
+		// only its crash-durability is unproven. Returning here would leave xray
+		// running the OLD config with the NEW one on disk — a divergence that the
+		// next restart from anywhere resolves silently and in favour of the file
+		// nobody restarted onto. Carry on and restart; report it as a warning.
+		if !fsutil.IsDurability(err) {
+			return err
+		}
+		warnf(warn, "warning: %v; continuing with the restart because the new config is live, "+
+			"but a crash in the next moments could lose the rename", err)
 	}
 	if err := systemd.Restart(ctx, runner, xrayServiceUnit); err != nil {
 		if previousErr == nil {

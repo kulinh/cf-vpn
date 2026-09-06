@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 )
 
@@ -119,6 +121,74 @@ func TestValidateXrayConfigSkipsWhenBinaryMissing(t *testing.T) {
 	t.Cleanup(func() { xrayBinary = old })
 	if err := realValidateXrayConfig(context.Background(), []byte(`{"nonsense":`)); err != nil {
 		t.Fatalf("expected a skip, got %v", err)
+	}
+}
+
+// A post-rename durability failure means the new config IS live. Aborting there
+// would leave xray running the old config with the new one on disk, to be
+// adopted silently by the next restart from anywhere — so applyXrayConfig must
+// carry on, restart, and report the problem as a warning.
+func TestApplyXrayConfigContinuesAfterDurabilityError(t *testing.T) {
+	withTempPaths(t)
+	if err := os.WriteFile(xrayConfigPath, []byte(`{"previous":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWrite := writeAtomicFile
+	writeAtomicFile = func(path string, content []byte, mode os.FileMode) error {
+		if err := oldWrite(path, content, mode); err != nil {
+			return err
+		}
+		// The real writer's post-rename failure: content published, directory
+		// entry not flushed.
+		return &fsutil.DurabilityError{Path: path, Err: errors.New("simulated fsync failure")}
+	}
+	t.Cleanup(func() { writeAtomicFile = oldWrite })
+
+	r := &userRestartRunner{}
+	var warn bytes.Buffer
+	if err := applyXrayConfig(context.Background(), []byte(`{"candidate":true}`), r, &warn); err != nil {
+		t.Fatalf("applyXrayConfig aborted on a published-but-unflushed write: %v", err)
+	}
+
+	raw, _ := os.ReadFile(xrayConfigPath)
+	if string(raw) != `{"candidate":true}` {
+		t.Fatalf("live config = %s, want the new content", raw)
+	}
+	if !strings.Contains(r.joined(), "restart cfvpn-xray.service") {
+		t.Fatalf("xray was not restarted onto the published config:\n%s", r.joined())
+	}
+	if !strings.Contains(warn.String(), "simulated fsync failure") {
+		t.Errorf("the durability problem was not surfaced: %q", warn.String())
+	}
+}
+
+// A failure BEFORE the rename publishes nothing, so it must still abort — no
+// restart, live file untouched.
+func TestApplyXrayConfigAbortsOnPreRenameWriteFailure(t *testing.T) {
+	withTempPaths(t)
+	if err := os.WriteFile(xrayConfigPath, []byte(`{"previous":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldWrite := writeAtomicFile
+	writeAtomicFile = func(string, []byte, os.FileMode) error {
+		return errors.New("disk full before rename")
+	}
+	t.Cleanup(func() { writeAtomicFile = oldWrite })
+
+	r := &userRestartRunner{}
+	var warn bytes.Buffer
+	err := applyXrayConfig(context.Background(), []byte(`{"candidate":true}`), r, &warn)
+	if err == nil {
+		t.Fatal("applyXrayConfig ignored a pre-rename write failure")
+	}
+	raw, _ := os.ReadFile(xrayConfigPath)
+	if string(raw) != `{"previous":true}` {
+		t.Fatalf("live config = %s, want the previous content", raw)
+	}
+	if strings.Contains(r.joined(), "restart cfvpn-xray.service") {
+		t.Fatalf("xray was restarted despite nothing being published:\n%s", r.joined())
 	}
 }
 

@@ -15,6 +15,7 @@
 package fsutil
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,6 +25,37 @@ import (
 // fsync is reported rather than swallowed — there is no portable way to make a
 // real fsync fail on demand.
 var syncFile = func(f *os.File) error { return f.Sync() }
+
+// DurabilityError reports a failure that happened AFTER the rename, i.e. once
+// the new content was already published: only the fsync of the parent directory
+// that makes the rename crash-proof did not complete.
+//
+// This must be distinguishable from a pre-rename failure. The two demand
+// opposite reactions: a pre-rename failure means nothing changed, so the caller
+// must abort; a DurabilityError means the file on disk IS the new content, so a
+// caller that aborts leaves the service running the old config while the new one
+// sits on disk — and the next restart, from anywhere, silently switches to a
+// config nobody validated against the running state.
+//
+// The correct reaction is "the write happened: carry on with the restart, but
+// say loudly that a crash in the next moments could lose the rename".
+type DurabilityError struct {
+	Path string
+	Err  error
+}
+
+func (e *DurabilityError) Error() string {
+	return fmt.Sprintf("%s was written and renamed into place, but its directory entry could not be flushed: %v", e.Path, e.Err)
+}
+
+func (e *DurabilityError) Unwrap() error { return e.Err }
+
+// IsDurability reports whether err is (or wraps) a DurabilityError — the new
+// content is on disk and callers should continue rather than roll back.
+func IsDurability(err error) bool {
+	var de *DurabilityError
+	return errors.As(err, &de)
+}
 
 // WriteFile atomically writes data to path with the given mode.
 //
@@ -67,7 +99,14 @@ func WriteFile(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	tmp = "" // renamed away; the deferred Remove must not touch the target
-	return SyncDir(dir)
+
+	// Past this point the new content is published. A directory-fsync failure is
+	// therefore NOT a write failure: it is reported as a DurabilityError so the
+	// caller can tell the difference (see the type's doc comment).
+	if err := SyncDir(dir); err != nil {
+		return &DurabilityError{Path: path, Err: err}
+	}
+	return nil
 }
 
 // SyncDir fsyncs a directory so entries created or renamed inside it survive a

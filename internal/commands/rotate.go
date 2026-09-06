@@ -138,7 +138,12 @@ func xrayDNSServersCSV(raw string) []string {
 
 // writeAtomicFile is the package-local alias for the one shared crash-atomic
 // writer (unique temp name + fsync of the parent directory).
-func writeAtomicFile(path string, content []byte, mode os.FileMode) error {
+//
+// It is a var so tests can inject the failure modes the real writer reports but
+// cannot be provoked portably — notably fsutil.DurabilityError, which says the
+// rename already published the content and only its crash-durability is
+// unproven.
+var writeAtomicFile = func(path string, content []byte, mode os.FileMode) error {
 	return fsutil.WriteFile(path, content, mode)
 }
 
