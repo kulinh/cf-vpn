@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
+import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { deleteNode, healthcheckNode, listNodes, patchNode, rotateNode } from '../lib/api'
+import { describeLoadError } from '../lib/errors'
 import type { Node } from '../lib/types'
 import type { NodeInput } from '../lib/api'
 
@@ -17,12 +19,17 @@ export function NodesPage() {
   const [confirmDeleteNodeId, setConfirmDeleteNodeId] = useState<string | null>(null)
   const [deletingNodeId, setDeletingNodeId] = useState<string | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     let mounted = true
-    void listNodes().then((items) => {
-      if (mounted) setNodes(items)
-    })
+    listNodes()
+      .then((items) => {
+        if (mounted) setNodes(items)
+      })
+      .catch((error: unknown) => {
+        if (mounted) setLoadError(describeLoadError(error))
+      })
     return () => {
       mounted = false
     }
@@ -53,22 +60,31 @@ export function NodesPage() {
     }
     setCheckingAll(true)
     try {
+      // Every entry resolves (never rejects) so the id travels with the
+      // result and survives even if `nodes` mutates (e.g. a delete) before
+      // this batch settles — matching results back to rows by id, not by
+      // array position, is what keeps a mid-batch delete from applying one
+      // node's healthcheck result to a different node (M-R2).
       const results = await Promise.allSettled(
         nodes.map(async (node) => {
-          const { latency_ms } = await healthcheckNode(node.id)
-          return { id: node.id, latencyMs: latency_ms > 0 ? latency_ms : null }
+          try {
+            const { latency_ms } = await healthcheckNode(node.id)
+            return { id: node.id, latencyMs: latency_ms > 0 ? latency_ms : null, status: 'active' as const }
+          } catch {
+            return { id: node.id, latencyMs: null, status: 'unreachable' as const }
+          }
         }),
       )
       setNodes((prev) =>
-        prev.map((node, index) => {
-          const result = results[index]
-          if (result.status === 'fulfilled') {
-            return { ...node, latencyMs: result.value.latencyMs, status: 'active' }
+        prev.map((node) => {
+          const result = results.find((r) => r.status === 'fulfilled' && r.value.id === node.id)
+          if (result?.status === 'fulfilled') {
+            return { ...node, latencyMs: result.value.latencyMs, status: result.value.status }
           }
-          return { ...node, status: 'unreachable' }
+          return node
         }),
       )
-      const alive = results.filter((result) => result.status === 'fulfilled').length
+      const alive = results.filter((r) => r.status === 'fulfilled' && r.value.status === 'active').length
       setToastMessage(`Checked ${results.length} nodes, ${alive} alive`)
     } finally {
       setCheckingAll(false)
@@ -178,6 +194,7 @@ export function NodesPage() {
             {checkingAll ? 'Checking all...' : 'Check all'}
           </button>
         </div>
+        <ErrorBanner message={loadError} />
         <div className="overflow-x-auto rounded-lg border border-slate-800">
           <table className="w-full min-w-[640px] text-sm">
             <thead className="bg-slate-900 text-slate-400">
@@ -277,6 +294,7 @@ export function NodesPage() {
         title={`Rotate ${confirmingNode?.label ?? 'node'} host?`}
         message="This requests a fresh VPN host assignment for the selected node."
         confirmLabel="Confirm rotate"
+        confirming={rotatingNodeId != null}
         onConfirm={() => {
           void handleConfirmRotate()
         }}
@@ -285,6 +303,7 @@ export function NodesPage() {
 
       <ConfirmDialog
         open={confirmDeleteNodeId != null}
+        confirming={deletingNodeId != null}
         title={`Delete ${confirmingDeleteNode?.label ?? 'node'}?`}
         message="This permanently removes the node from the panel. The agent service is not touched."
         confirmLabel="Confirm delete"

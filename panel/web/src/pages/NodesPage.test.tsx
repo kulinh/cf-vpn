@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { NodesPage } from './NodesPage'
 import * as api from '../lib/api'
 import type { Node } from '../lib/types'
@@ -46,6 +46,14 @@ test('shows no nodes found when list is empty', async () => {
   render(<NodesPage />)
 
   expect(await screen.findByText(/no nodes found/i)).toBeInTheDocument()
+})
+
+test('shows a load-failure banner instead of a silent empty state when listNodes rejects', async () => {
+  vi.spyOn(api, 'listNodes').mockRejectedValue(new Error('nodes failed'))
+
+  render(<NodesPage />)
+
+  expect(await screen.findByText(/failed to load — nodes failed\. reload\./i)).toBeInTheDocument()
 })
 
 test('rotate shows loading then success toast', async () => {
@@ -141,6 +149,49 @@ test('delete failure shows error toast and keeps node', async () => {
 
   expect(await screen.findByText(/delete failed/i)).toBeInTheDocument()
   expect(screen.getByText('Singapore')).toBeInTheDocument()
+})
+
+test('check-all results follow node id, not array position, when a node is deleted mid-batch (M-R2)', async () => {
+  vi.spyOn(api, 'listNodes').mockResolvedValue([
+    makeNode({ id: 'sg', label: 'Singapore' }),
+    makeNode({ id: 'jp', label: 'Tokyo' }),
+    makeNode({ id: 'hk', label: 'Hong Kong' }),
+  ])
+
+  const pending: Record<string, { resolve: (v: { latency_ms: number }) => void; reject: (e: Error) => void }> = {}
+  vi.spyOn(api, 'healthcheckNode').mockImplementation(
+    (nodeId) =>
+      new Promise((resolve, reject) => {
+        pending[nodeId] = { resolve, reject }
+      }),
+  )
+  vi.spyOn(api, 'deleteNode').mockResolvedValue({ warnings: [] })
+
+  render(<NodesPage />)
+  await screen.findByText('Singapore')
+
+  fireEvent.click(screen.getByRole('button', { name: /check all/i }))
+  await waitFor(() => expect(Object.keys(pending)).toEqual(['sg', 'jp', 'hk']))
+
+  // Delete Singapore (the first row) while its own healthcheck — and the
+  // other two — are still in flight. This shrinks the `nodes` array that
+  // the batch resolution zips against.
+  fireEvent.click(screen.getAllByRole('button', { name: /^delete$/i })[0])
+  fireEvent.click(screen.getByRole('button', { name: /confirm delete/i }))
+  await waitFor(() => expect(screen.queryByText('Singapore')).not.toBeInTheDocument())
+
+  // Resolve out of row order, with a value for `sg` that would leak into
+  // Tokyo's cell under index-based zipping (sg was array position 0, and
+  // after the delete Tokyo becomes position 0).
+  pending.sg.resolve({ latency_ms: 999 })
+  pending.jp.resolve({ latency_ms: 55 })
+  pending.hk.reject(new Error('unreachable'))
+
+  await screen.findByText(/checked 3 nodes/i)
+
+  expect(screen.getByText('55 ms')).toBeInTheDocument()
+  expect(screen.queryByText('999 ms')).not.toBeInTheDocument()
+  expect(screen.getByText('unreachable')).toBeInTheDocument()
 })
 
 test('checks all node latency and marks failed nodes unreachable', async () => {
