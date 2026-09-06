@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createNode, healthcheckNode, listEvents, listNodes, listUsers } from './api'
+import { createNode, healthcheckNode, listEvents, listNodes, listUsers, patchNode, rotateNode } from './api'
 
 function jsonResponse(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -57,5 +57,70 @@ describe('lib/api session handling', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(htmlLoginResponse()))
 
     await expect(createNode({ id: 'sg', label: 'Singapore' })).rejects.toThrow('session-expired')
+  })
+
+  it('surfaces the agent-provided detail verbatim on a failed rotate', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse(
+          { error: 'rotate failed', detail: 'do NOT retry' },
+          { status: 500 },
+        ),
+      ),
+    )
+
+    await expect(rotateNode('sg')).rejects.toThrow('do NOT retry')
+  })
+
+  it('falls back to the error field, then a generic message, when rotate fails without a detail', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(jsonResponse({ error: 'agent unreachable' }, { status: 502 })),
+    )
+    await expect(rotateNode('sg')).rejects.toThrow('agent unreachable')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response('oops', { status: 500, headers: { 'content-type': 'text/plain' } }),
+      ),
+    )
+    await expect(rotateNode('sg')).rejects.toThrow('rotate failed')
+  })
+
+  it('passes through a disabled node status', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse([
+          {
+            id: 'sg',
+            label: 'Singapore',
+            admin_host: 'sg-admin.example.com',
+            vpn_host: 'sg.example.com',
+            zone: 'example.com',
+            status: 'disabled',
+            last_seen_at: null,
+            latency_ms: null,
+            created_at: 0,
+          },
+        ]),
+      ),
+    )
+
+    const nodes = await listNodes()
+    expect(nodes[0].status).toBe('disabled')
+  })
+
+  it('surfaces the agent-provided detail verbatim on a failed patch', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({ error: 'patch failed', detail: 'do NOT retry' }, { status: 500 }),
+      ),
+    )
+
+    await expect(patchNode('sg', { label: 'New label' })).rejects.toThrow('do NOT retry')
   })
 })

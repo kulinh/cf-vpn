@@ -80,9 +80,12 @@ test('rotate shows loading then success toast', async () => {
   expect(screen.getByText(/new-host\.example\.com/i)).toBeInTheDocument()
 })
 
-test('shows error toast when rotate fails', async () => {
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ id: 'sg' })])
-  vi.spyOn(api, 'rotateNode').mockRejectedValue(new Error('boom'))
+test('shows the thrown detail in the toast and refetches nodes when rotate fails', async () => {
+  const listNodesSpy = vi
+    .spyOn(api, 'listNodes')
+    .mockResolvedValueOnce([makeNode({ id: 'sg', vpnHost: 'old-vpn.example.com' })])
+    .mockResolvedValueOnce([makeNode({ id: 'sg', vpnHost: 'agent-actual-host.example.com' })])
+  vi.spyOn(api, 'rotateNode').mockRejectedValue(new Error('do NOT retry'))
 
   render(<NodesPage />)
   await screen.findByText('Singapore')
@@ -90,7 +93,9 @@ test('shows error toast when rotate fails', async () => {
   fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
   fireEvent.click(screen.getByRole('button', { name: /confirm rotate/i }))
 
-  expect(await screen.findByText(/rotate failed/i)).toBeInTheDocument()
+  expect(await screen.findByText(/do NOT retry/)).toBeInTheDocument()
+  expect(await screen.findByText(/agent-actual-host\.example\.com/i)).toBeInTheDocument()
+  expect(listNodesSpy).toHaveBeenCalledTimes(2)
 })
 
 test('rotate updates both vpn host and hy2 host in the row', async () => {

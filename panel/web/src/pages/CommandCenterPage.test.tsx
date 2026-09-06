@@ -65,3 +65,11 @@ test('shows the session-expired banner when the initial load rejects with sessio
 
   expect(await screen.findByText(/session expired — reload the page/i)).toBeInTheDocument()
 })
+
+test('shows a Disabled badge for a disabled node', async () => {
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode({ status: 'disabled' })])
+
+  render(<CommandCenterPage />)
+
+  expect(await screen.findByText('Disabled')).toBeInTheDocument()
+})

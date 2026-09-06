@@ -150,8 +150,18 @@ export function NodesPage() {
         ),
       )
       setToastMessage('Rotated successfully')
-    } catch {
-      setToastMessage('Rotate failed')
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Rotate failed')
+      // The agent may have rotated the host even though the request that
+      // reported it back failed (e.g. a post-rotate durability error) — or
+      // it may have retried onto a different host. Re-fetch so the row
+      // reflects whatever the agent actually did rather than staying stale.
+      try {
+        setNodes(await listNodes())
+      } catch {
+        // Load-failure banner isn't appropriate mid-toast; leave the stale
+        // row rather than losing the rotate-failure toast to a second error.
+      }
     } finally {
       setRotatingNodeId(null)
     }
