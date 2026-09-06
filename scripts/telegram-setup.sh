@@ -12,20 +12,30 @@ die() { printf 'telegram-setup: ERROR: %s\n' "$*" >&2; exit 1; }
 : "${PANEL_HOST:?set PANEL_HOST (e.g. panel.rwl247.dev)}"
 
 # tg_call <method> <extra curl args...>
-# The bot token (and any --data-urlencode secrets passed as args) travel via
-# curl --config on stdin, so they never appear in argv / ps output.
+# The bot token travels via curl --config on stdin so it never appears in argv
+# / ps output. Anything SECRET must go the same way: put it in TG_CONFIG_EXTRA
+# (config-file syntax, i.e. long options without the leading --), never in the
+# argv passed to this function — `--data-urlencode "secret_token=…"` as an
+# argument is visible to every local user for the lifetime of the call.
 tg_call() {
   local method="$1"; shift
   curl -sS --max-time 30 "$@" --config - <<EOF
 url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}"
+${TG_CONFIG_EXTRA:-}
 EOF
 }
 
 echo "Setting webhook -> https://${PANEL_HOST}/telegram/webhook"
+# Telegram restricts secret_token to [A-Za-z0-9_-], so it needs no escaping for
+# curl's quoted config-file syntax; reject anything else rather than mangle it.
+if ! [[ "$TELEGRAM_WEBHOOK_SECRET" =~ ^[A-Za-z0-9_-]{1,256}$ ]]; then
+  die "TELEGRAM_WEBHOOK_SECRET must match ^[A-Za-z0-9_-]{1,256}\$ (Telegram's own rule)"
+fi
+TG_CONFIG_EXTRA="$(printf 'data-urlencode = "secret_token=%s"' "$TELEGRAM_WEBHOOK_SECRET")"
 resp=$(tg_call setWebhook \
   --data-urlencode "url=https://${PANEL_HOST}/telegram/webhook" \
-  --data-urlencode "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
   --data-urlencode 'allowed_updates=["message","callback_query"]') || resp=""
+TG_CONFIG_EXTRA=""
 echo "$resp" | jq -e '.ok' >/dev/null 2>&1 \
   || die "setWebhook failed: ${resp:-<no response>}"
 echo
