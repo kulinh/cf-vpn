@@ -16,7 +16,9 @@ export function QrModal({ open, userId, subscriptionUrl, onClose }: QrModalProps
     QRCode.toCanvas(canvasRef.current, subscriptionUrl, {
       width: 256,
       margin: 2,
-      color: { dark: '#e2e8f0', light: '#1e293b' },
+      // QR modules must be dark-on-light for scanners to decode reliably;
+      // the modal chrome around the canvas stays dark to match the UI theme.
+      color: { dark: '#0f172a', light: '#ffffff' },
     }).catch(() => {
       // ignore
     })
