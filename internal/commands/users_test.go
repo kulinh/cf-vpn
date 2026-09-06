@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/xray"
 )
 
@@ -23,10 +24,14 @@ func withTempPaths(t *testing.T) (cfgPath, subDir string) {
 	dir := t.TempDir()
 	cfgPath = filepath.Join(dir, "config.json")
 	subDir = filepath.Join(dir, "subs")
-	oldC, oldS, oldH := xrayConfigPath, subscriptionDir, hysteriaConfigPath
+	oldC, oldS, oldH, oldE := xrayConfigPath, subscriptionDir, hysteriaConfigPath, envFilePath
 	xrayConfigPath = cfgPath
 	subscriptionDir = subDir
 	hysteriaConfigPath = filepath.Join(dir, "hy-cfg.yaml")
+	// Redirect the env file too: without this the tests read the real
+	// /etc/cfvpn/cfvpn.env of whatever machine runs them, so their result
+	// depends on that node's MODE and Reality params.
+	envFilePath = filepath.Join(dir, "cfvpn.env")
 	// Write a minimal hysteria config with alice so ListUsers/SetUsers work.
 	if err := os.WriteFile(hysteriaConfigPath, []byte("listen: :20515\ntls:\n  cert: cert.pem\n  key: key.pem\nobfs:\n  type: salamander\n  salamander:\n    password: pw\nbandwidth:\n  up: 100mbps\n  down: 100mbps\nauth:\n  type: userpass\n  userpass:\n    alice: alice-hy2pw\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -35,8 +40,17 @@ func withTempPaths(t *testing.T) (cfgPath, subDir string) {
 		xrayConfigPath = oldC
 		subscriptionDir = oldS
 		hysteriaConfigPath = oldH
+		envFilePath = oldE
 	})
 	return
+}
+
+// writeTestEnv writes the node env file the commands under test read.
+func writeTestEnv(t *testing.T, values map[string]string) {
+	t.Helper()
+	if err := state.SaveAtomic(envFilePath, values, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestValidateAddUserRejectsInvalidName(t *testing.T) {

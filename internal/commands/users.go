@@ -15,7 +15,6 @@ import (
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/subscription"
 	"github.com/kulinh/cf-vpn/internal/systemd"
-	"github.com/kulinh/cf-vpn/internal/templates"
 	"github.com/kulinh/cf-vpn/internal/xray"
 )
 
@@ -73,21 +72,11 @@ func writeSubscriptionFile(name, content string) error {
 	return fsutil.WriteFile(filepath.Join(subscriptionDir, name+".txt"), []byte(content), 0o600)
 }
 
-// buildSubscriptionFor constructs the subscription string for a user, branching
-// on the node's mode.
-func buildSubscriptionFor(name, uuid, domain string, env map[string]string) string {
-	var uri string
-	if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
-		uri = subscription.BuildVLESSRealityURI(
-			name, uuid, domain,
-			env[state.KeyRealitySNI],
-			env[state.KeyRealityPub],
-			env[state.KeyRealityShortID],
-		)
-	} else {
-		uri = subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, templates.VLESSPath)
-	}
-	return subscription.BuildSubscriptionB64(uri)
+// buildSubscriptionFor constructs the base64 subscription payload for a user:
+// the VLESS line for the node's mode plus the HY2 line when the node and the
+// user both have Hysteria2 credentials.
+func buildSubscriptionFor(name, uuid, domain, hy2PW string, env map[string]string, warn io.Writer) string {
+	return subscription.BuildSubscriptionB64(buildUserURIs(name, uuid, domain, hy2PW, env, warn)...)
 }
 
 func resolveRunner(r systemd.Runner) systemd.Runner {
@@ -149,7 +138,17 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 		return fmt.Errorf("save xray config: %w", err)
 	}
 
-	sub := buildSubscriptionFor(in.Name, uuid, in.Domain, env)
+	// M-G5: mirror RunRemoveUser and add the user to Hysteria2 as well.
+	// Without this the CLI created users that existed in xray but not in
+	// hysteria, and the agent's next currentSyncUsers() minted a Hy2 password
+	// that does not match the one the panel/D1 holds — the exact drift the
+	// previous audit round could only warn about.
+	hy2PW, err := addHysteriaUser(ctx, in.Name, resolveRunner(runner), stderr)
+	if err != nil {
+		return err
+	}
+
+	sub := buildSubscriptionFor(in.Name, uuid, in.Domain, hy2PW, env, stderr)
 	if err := writeSubscriptionFile(in.Name, sub+"\n"); err != nil {
 		return fmt.Errorf("write subscription: %w", err)
 	}
@@ -160,6 +159,39 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 
 	fmt.Fprintln(stdout, sub)
 	return nil
+}
+
+// addHysteriaUser adds name to the node's hysteria config with a fresh
+// password and restarts hysteria, returning the password so it can go into the
+// subscription. A node with no hysteria config at all (nothing to join) is not
+// an error: the caller just gets an empty password and no HY2 line.
+func addHysteriaUser(ctx context.Context, name string, runner systemd.Runner, stderr io.Writer) (string, error) {
+	users, err := hysteria.ListUsers(hysteriaConfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			warnf(stderr, "warning: no hysteria config at %s; user %q gets no Hy2 credential", hysteriaConfigPath, name)
+			return "", nil
+		}
+		return "", fmt.Errorf("load hysteria config: %w", err)
+	}
+	for _, u := range users {
+		if u.Name == name {
+			// Already present (e.g. a retry): keep the existing password so the
+			// user's client keeps working.
+			return u.Password, nil
+		}
+	}
+	pw, err := GeneratePassword(24)
+	if err != nil {
+		return "", fmt.Errorf("generate hy2 password: %w", err)
+	}
+	if err := hysteria.SetUsers(hysteriaConfigPath, append(users, hysteria.User{Name: name, Password: pw})); err != nil {
+		return "", fmt.Errorf("add hysteria user: %w", err)
+	}
+	if err := hysteria.ReloadService(ctx, runner); err != nil {
+		return "", fmt.Errorf("reload hysteria: %w", err)
+	}
+	return pw, nil
 }
 
 // RunRemoveUser removes a user from xray config, deletes its subscription
@@ -236,16 +268,15 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 		env = map[string]string{}
 	}
 
-	buildURI := func(name, uuid string) string {
-		if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
-			return subscription.BuildVLESSRealityURI(
-				name, uuid, in.Domain,
-				env[state.KeyRealitySNI],
-				env[state.KeyRealityPub],
-				env[state.KeyRealityShortID],
-			)
+	hy2PW, hy2Err := hy2PasswordsByName()
+	if hy2Err != nil {
+		warnf(stderr, "warning: cannot read hysteria config (%v); no HY2 lines will be emitted", hy2Err)
+	}
+
+	printURIs := func(name, uuid string) {
+		for _, uri := range buildUserURIs(name, uuid, in.Domain, hy2PW[name], env, stderr) {
+			fmt.Fprintln(stdout, uri)
 		}
-		return subscription.BuildVLESSHTTPUpgradeURI(name, uuid, in.Domain, templates.VLESSPath)
 	}
 
 	if in.Name != "" {
@@ -253,7 +284,7 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 		if !ok {
 			return fmt.Errorf("user %q not found", in.Name)
 		}
-		fmt.Fprintln(stdout, buildURI(in.Name, uuid))
+		printURIs(in.Name, uuid)
 		return nil
 	}
 
@@ -267,7 +298,7 @@ func RunGenSub(ctx context.Context, in UserInputs, stdout, stderr io.Writer) err
 			fmt.Fprintln(stdout)
 		}
 		fmt.Fprintf(stdout, "# %s\n", name)
-		fmt.Fprintln(stdout, buildURI(name, uuid))
+		printURIs(name, uuid)
 	}
 	return nil
 }

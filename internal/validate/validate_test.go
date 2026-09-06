@@ -28,14 +28,14 @@ func TestHostnameRejects(t *testing.T) {
 		"host name.com",
 		" host.com",
 		"host.com ",
-		"host.com.",     // trailing dot leaves an empty label
-		"-lead.com",     // label may not start with '-'
-		"trail-.com",    // ... nor end with one
-		"host.com:443",  // port is not part of a hostname
-		"http://h.com",  // scheme
-		"h.com/path",    // path
-		"a..b.com",      // empty label
-		strings.Repeat("a", 64) + ".com", // label > 63
+		"host.com.",                       // trailing dot leaves an empty label
+		"-lead.com",                       // label may not start with '-'
+		"trail-.com",                      // ... nor end with one
+		"host.com:443",                    // port is not part of a hostname
+		"http://h.com",                    // scheme
+		"h.com/path",                      // path
+		"a..b.com",                        // empty label
+		strings.Repeat("a", 64) + ".com",  // label > 63
 		strings.Repeat("a.", 200) + "com", // > 253 bytes
 	}
 	for _, bad := range cases {

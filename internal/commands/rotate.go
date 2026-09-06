@@ -66,6 +66,12 @@ func RunRotateCleanup(ctx context.Context, tunnelID string, deps RotateDeps, std
 // Callers must invoke this after any user-set or host change so panel-served
 // subscriptions stay in sync with the live xray state.
 func RegenerateSubscriptions(domain string) error {
+	return RegenerateSubscriptionsTo(domain, os.Stderr)
+}
+
+// RegenerateSubscriptionsTo is RegenerateSubscriptions with an explicit sink
+// for the "this node cannot serve a usable URI" warnings (see buildUserURIs).
+func RegenerateSubscriptionsTo(domain string, warn io.Writer) error {
 	cfg, err := xray.Load(xrayConfigPath)
 	if err != nil {
 		return fmt.Errorf("load xray config: %w", err)
@@ -76,23 +82,17 @@ func RegenerateSubscriptions(domain string) error {
 		return fmt.Errorf("load env: %w", err)
 	}
 
+	hy2PW, hy2Err := hy2PasswordsByName()
+	if hy2Err != nil {
+		warnf(warn, "warning: cannot read hysteria config (%v); subscriptions will have no HY2 line", hy2Err)
+	}
+
 	for _, name := range xray.ListUserNames(cfg) {
 		uuid, ok := xray.GetVLESSClient(cfg, name)
 		if !ok {
 			return fmt.Errorf("user %q has no vless client", name)
 		}
-		var uri string
-		if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
-			uri = subscription.BuildVLESSRealityURI(
-				name, uuid, domain,
-				env[state.KeyRealitySNI],
-				env[state.KeyRealityPub],
-				env[state.KeyRealityShortID],
-			)
-		} else {
-			uri = subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, templates.VLESSPath)
-		}
-		sub := subscription.BuildSubscriptionB64(uri)
+		sub := subscription.BuildSubscriptionB64(buildUserURIs(name, uuid, domain, hy2PW[name], env, warn)...)
 		if err := writeSubscriptionFile(name, sub+"\n"); err != nil {
 			return fmt.Errorf("write subscription for %s: %w", name, err)
 		}

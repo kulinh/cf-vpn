@@ -286,7 +286,13 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 		if name == userName && hy2PassUser1 != "" {
 			pass = hy2PassUser1
 		} else {
-			pass, _ = generatePasswordFrom(rng, 24)
+			// M-G6: this used to swallow the error. io.ReadFull failing returns
+			// ("", err), which would render `Password: ""` into auth.userpass —
+			// a credential anyone can guess.
+			pass, err = generatePasswordFrom(rng, 24)
+			if err != nil {
+				return UpgradeResult{}, fmt.Errorf("generate hy2 password for %s: %w", name, err)
+			}
 		}
 		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: name, Password: pass})
 	}
