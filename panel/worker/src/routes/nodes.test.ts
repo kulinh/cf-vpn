@@ -5,9 +5,10 @@ vi.mock("../lib/agent-client", async (orig) => {
   return { ...actual, callAgent: vi.fn() };
 });
 
-vi.mock("../lib/events", () => ({
-  logEvent: vi.fn().mockResolvedValue(undefined)
-}));
+vi.mock("../lib/events", async (orig) => {
+  const actual = await orig<typeof import("../lib/events")>();
+  return { ...actual, logEvent: vi.fn().mockResolvedValue(undefined) };
+});
 
 vi.mock("../lib/cf-api", async (orig) => {
   const actual = await orig<typeof import("../lib/cf-api")>();
@@ -19,7 +20,7 @@ vi.mock("../lib/cf-api", async (orig) => {
   };
 });
 
-import { callAgent } from "../lib/agent-client";
+import { AgentHttpError, callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
 import { deleteNode, nodeHealthcheck, nodeRotate, nodeSyncCore, sweepNodesHealth } from "./nodes";
@@ -569,83 +570,195 @@ describe("sweepNodesHealth", () => {
     vi.mocked(logEvent).mockClear();
   });
 
-  type SweepNode = { id: string; admin_host: string; agent_secret: string; status: string };
+  type SweepNode = {
+    id: string;
+    admin_host: string;
+    agent_secret: string;
+    status: string;
+    consecutive_failures?: number;
+  };
+  type Write = { sql: string; args: unknown[] };
 
-  function makeSweepEnv(nodes: SweepNode[]): { env: Env; updates: { sql: string; args: unknown[] }[] } {
-    const updates: { sql: string; args: unknown[] }[] = [];
+  // The sweep now folds every per-node UPDATE and event INSERT into one
+  // env.DB.batch(), so the stub records what the batch received.
+  function makeSweepEnv(nodes: SweepNode[]): { env: Env; writes: Write[]; batches: number } {
+    const writes: Write[] = [];
+    const state = { batches: 0 };
     const db = {
       prepare(sql: string) {
-        const state: { args: unknown[] } = { args: [] };
+        const bound: { args: unknown[] } = { args: [] };
         const stmt = {
+          sql,
+          get args() {
+            return bound.args;
+          },
           bind(...args: unknown[]) {
-            state.args = args;
+            bound.args = args;
             return stmt;
           },
           async all() {
-            return { results: nodes };
+            return { results: nodes.map((n) => ({ consecutive_failures: 0, ...n })) };
           },
           async run() {
-            updates.push({ sql, args: state.args });
+            writes.push({ sql, args: bound.args });
             return { success: true };
           }
         };
         return stmt;
+      },
+      async batch(stmts: Array<{ sql: string; args: unknown[] }>) {
+        state.batches += 1;
+        for (const st of stmts) writes.push({ sql: st.sql, args: st.args });
+        return [];
       }
     };
-    return { env: { DB: db } as unknown as Env, updates };
+    const env = { DB: db } as unknown as Env;
+    return {
+      env,
+      writes,
+      get batches() {
+        return state.batches;
+      }
+    };
   }
 
-  it("refreshes last_seen and latency for reachable nodes without logging", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
+  const eventInserts = (writes: Write[]) => writes.filter((w) => /INSERT INTO events/.test(w.sql));
+  const eventAction = (w: Write) => w.args[2];
+  const eventDetail = (w: Write) => String(w.args[6]);
+
+  it("refreshes last_seen, latency and resets the failure counter for reachable nodes", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1 }
+    ]);
     vi.mocked(callAgent).mockResolvedValue({ ok: true });
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    expect(updates).toHaveLength(1);
-    expect(updates[0].sql).toContain("status='active', last_seen_at=?, latency_ms=?");
-    expect(updates[0].args[2]).toBe("a");
-    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+    expect(env.writes).toHaveLength(1);
+    expect(env.writes[0].sql).toContain("status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0");
+    expect(env.writes[0].args[2]).toBe("a");
+    expect(eventInserts(env.writes)).toHaveLength(0);
+  });
+
+  it("uses a single batch for the whole fleet", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" },
+      { id: "b", admin_host: "b.example.com", agent_secret: "s", status: "active" },
+      { id: "c", admin_host: "c.example.com", agent_secret: "s", status: "active" }
+    ]);
+    vi.mocked(callAgent).mockResolvedValue({ ok: true });
+
+    await sweepNodesHealth(env.env);
+
+    expect(env.batches).toBe(1);
+    expect(env.writes).toHaveLength(3);
   });
 
   it("logs a recover event when a previously unreachable node answers", async () => {
-    const { env } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable" }]);
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable", consecutive_failures: 4 }
+    ]);
     vi.mocked(callAgent).mockResolvedValue({ ok: true });
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    const recover = vi.mocked(logEvent).mock.calls.find((c) => c[2] === "node.healthcheck.recover");
-    expect(recover).toBeDefined();
-    expect(recover?.[1]).toBe("cron");
+    const events = eventInserts(env.writes);
+    expect(events).toHaveLength(1);
+    expect(eventAction(events[0])).toBe("node.healthcheck.recover");
+    expect(events[0].args[1]).toBe("cron");
   });
 
-  it("marks a node unreachable on transport error and logs once", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
+  it("does not flip status on the first transport failure — only counts it", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 0 }
+    ]);
+    vi.mocked(callAgent).mockRejectedValue(new Error("AbortError: The operation was aborted"));
+
+    await sweepNodesHealth(env.env);
+
+    expect(env.writes).toHaveLength(1);
+    expect(env.writes[0].sql).toBe("UPDATE nodes SET consecutive_failures=? WHERE id=?");
+    expect(env.writes[0].args).toEqual([1, "a"]);
+    expect(eventInserts(env.writes)).toHaveLength(0);
+  });
+
+  it("marks a node unreachable on the second consecutive transport failure and logs once", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1 }
+    ]);
     vi.mocked(callAgent).mockRejectedValue(new Error("fetch failed"));
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    expect(updates).toHaveLength(1);
-    expect(updates[0].sql).toContain("status='unreachable'");
-    expect(vi.mocked(logEvent)).toHaveBeenCalledTimes(1);
+    const update = env.writes.find((w) => /UPDATE nodes/.test(w.sql))!;
+    expect(update.sql).toContain("status='unreachable', consecutive_failures=?");
+    expect(update.args).toEqual([2, "a"]);
+    const events = eventInserts(env.writes);
+    expect(events).toHaveLength(1);
+    expect(eventAction(events[0])).toBe("node.healthcheck");
   });
 
   it("does not re-mark or re-log an already-unreachable node", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable" }]);
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable", consecutive_failures: 5 }
+    ]);
     vi.mocked(callAgent).mockRejectedValue(new Error("fetch failed"));
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    expect(updates).toHaveLength(0);
-    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+    expect(env.writes).toHaveLength(1);
+    expect(env.writes[0].sql).toBe("UPDATE nodes SET consecutive_failures=? WHERE id=?");
+    expect(eventInserts(env.writes)).toHaveLength(0);
   });
 
-  it("leaves status alone on agent_http_4xx config errors", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
-    vi.mocked(callAgent).mockRejectedValue(new Error("agent_http_403"));
+  it("leaves status alone on a 4xx config error but logs it once", async () => {
+    const first = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 0 }
+    ]);
+    vi.mocked(callAgent).mockRejectedValue(new AgentHttpError(403, "agent_http_403: forbidden"));
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(first.env);
 
-    expect(updates).toHaveLength(0);
-    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+    expect(first.writes.some((w) => /status=/.test(w.sql))).toBe(false);
+    const events = eventInserts(first.writes);
+    expect(events).toHaveLength(1);
+    expect(eventDetail(events[0])).toContain("config_error");
+
+    // Second consecutive config failure: counted, but silent.
+    const second = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1 }
+    ]);
+    await sweepNodesHealth(second.env);
+
+    expect(second.writes.some((w) => /status=/.test(w.sql))).toBe(false);
+    expect(eventInserts(second.writes)).toHaveLength(0);
+  });
+
+  it("classifies a 4xx carrying a JSON body as a config error (H13 regression)", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1 }
+    ]);
+    // The agent answers 401 with {"error":"unauthorized"} — the old regex on the
+    // message text never saw a status and flipped the node to unreachable.
+    vi.mocked(callAgent).mockRejectedValue(new AgentHttpError(401, "agent_http_401: unauthorized"));
+
+    await sweepNodesHealth(env.env);
+
+    expect(env.writes.some((w) => /status='unreachable'/.test(w.sql))).toBe(false);
+  });
+
+  it("reports a rejected per-node task instead of discarding it", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }
+    ]);
+    vi.mocked(callAgent).mockImplementation(() => {
+      throw { toString: () => { throw new Error("boom"); } };
+    });
+
+    await sweepNodesHealth(env.env);
+
+    expect(errorSpy).toHaveBeenCalledWith("sweep failed for node", "a", expect.any(String));
+    errorSpy.mockRestore();
   });
 });

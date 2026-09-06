@@ -172,12 +172,20 @@ export default {
     return notFound(pathname);
   },
 
+  // Both triggers are matched explicitly and anything else is refused: the old
+  // "prune if the string matches, otherwise sweep" shape meant editing the cron
+  // expression in wrangler.toml silently turned the daily prune into a second
+  // sweep, and the events table would then grow without bound.
   async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
+    if (event.cron === "*/5 * * * *") {
+      await sweepNodesHealth(env);
+      return;
+    }
     if (event.cron === "17 3 * * *") {
       const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
       await env.DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run();
       return;
     }
-    await sweepNodesHealth(env);
+    console.warn("unhandled cron trigger, doing nothing:", event.cron);
   }
 };

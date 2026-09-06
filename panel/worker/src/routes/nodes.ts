@@ -10,7 +10,7 @@ import { all, one, nowTs } from "../lib/db";
 import { callAgent, isConfigError, MAX_TIMEOUT_MS } from "../lib/agent-client";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials, isCfTunnelId } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
-import { logEvent } from "../lib/events";
+import { eventStatement, logEvent } from "../lib/events";
 import { generateAdminHost, validateAdminHost } from "../lib/hosts";
 import { generateHost, generateHy2Host, pickZone } from "../lib/host-gen";
 
@@ -535,31 +535,104 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
 // (agent_http_4xx signals a config problem, not an outage, and leaves status
 // alone). Events are logged only on status transitions so a dead node doesn't
 // emit a log line every sweep.
+interface SweepRow {
+  id: string;
+  admin_host: string;
+  agent_secret: string | null;
+  status: string;
+  consecutive_failures: number | null;
+}
+
+// A node must miss two consecutive sweeps before it is called unreachable: a
+// single tunnel hiccup (agent_http_520/502, one slow round-trip) produced 79
+// error→recover pairs in 29 days of prod events, i.e. ~99% noise.
+const UNREACHABLE_AFTER_FAILURES = 2;
+
 export async function sweepNodesHealth(env: Env): Promise<void> {
-  const { results } = await env.DB.prepare("SELECT id, admin_host, agent_secret, status FROM nodes")
-    .all<Pick<NodeRow, "id" | "admin_host" | "agent_secret" | "status">>();
-  await Promise.allSettled(
-    (results ?? []).map(async (row) => {
+  const { results } = await env.DB.prepare(
+    "SELECT id, admin_host, agent_secret, status, consecutive_failures FROM nodes"
+  ).all<SweepRow>();
+  const rows = results ?? [];
+
+  const settled = await Promise.allSettled(
+    rows.map(async (row): Promise<D1PreparedStatement[]> => {
+      const writes: D1PreparedStatement[] = [];
+      const failures = (row.consecutive_failures ?? 0) + 1;
       try {
         const startedAt = Date.now();
-        await agentCall<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+        await agentCall<AgentHealthcheckResponse>(
+          env,
+          { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
+          "/admin/v1/healthcheck",
+          { method: "POST", body: "{}" },
+          HEALTHCHECK_TIMEOUT_MS
+        );
         const latencyMs = Math.max(1, Date.now() - startedAt);
-        await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
-          .bind(nowTs(), latencyMs, row.id)
-          .run();
+        writes.push(
+          env.DB.prepare(
+            "UPDATE nodes SET status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0 WHERE id=?"
+          ).bind(nowTs(), latencyMs, row.id)
+        );
         if (row.status === "unreachable") {
-          await logEvent(env, "cron", "node.healthcheck.recover", "ok", { latency_ms: latencyMs }, row.id);
+          writes.push(
+            eventStatement(env, "cron", "node.healthcheck.recover", "ok", { latency_ms: latencyMs }, row.id)
+          );
         }
+        return writes;
       } catch (e) {
         const msg = String(e);
-        const looksTransportError = !/agent_http_4\d\d/.test(msg);
-        if (looksTransportError && row.status !== "unreachable") {
-          await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(row.id).run();
-          await logEvent(env, "cron", "node.healthcheck", "error", { message: msg }, row.id);
+        if (isConfigError(e)) {
+          // A config problem (bad agent_secret, validation) is not an outage:
+          // never flip status. But it used to be invisible — status stayed
+          // 'active' while last_seen_at froze — so log exactly once, on the
+          // first consecutive occurrence.
+          writes.push(
+            env.DB.prepare("UPDATE nodes SET consecutive_failures=? WHERE id=?").bind(failures, row.id)
+          );
+          if (failures === 1) {
+            writes.push(
+              eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, config_error: true }, row.id)
+            );
+          }
+          return writes;
         }
+        const flip = failures >= UNREACHABLE_AFTER_FAILURES && row.status !== "unreachable";
+        writes.push(
+          flip
+            ? env.DB.prepare("UPDATE nodes SET status='unreachable', consecutive_failures=? WHERE id=?").bind(failures, row.id)
+            : env.DB.prepare("UPDATE nodes SET consecutive_failures=? WHERE id=?").bind(failures, row.id)
+        );
+        if (flip) {
+          writes.push(
+            eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, consecutive_failures: failures }, row.id)
+          );
+        }
+        return writes;
       }
     })
   );
+
+  const writes: D1PreparedStatement[] = [];
+  settled.forEach((result, i) => {
+    if (result.status === "fulfilled") {
+      writes.push(...result.value);
+      return;
+    }
+    // The allSettled array used to be discarded, so a thrown statement builder
+    // vanished without a trace.
+    console.error("sweep failed for node", rows[i]?.id, String(result.reason));
+  });
+
+  if (writes.length === 0) {
+    return;
+  }
+  // One transaction, one subrequest — the old code issued N UPDATEs plus N
+  // event INSERTs, which alone approached the free-plan subrequest cap.
+  try {
+    await env.DB.batch(writes);
+  } catch (e) {
+    console.error("sweep batch write failed", String(e));
+  }
 }
 
 export async function nodeRotate(env: Env, id: string, request: Request, actor: string): Promise<Response> {
