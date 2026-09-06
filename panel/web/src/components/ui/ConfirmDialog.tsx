@@ -5,6 +5,7 @@ type ConfirmDialogProps = {
   confirmLabel?: string
   cancelLabel?: string
   confirming?: boolean
+  busyLabel?: string
   onConfirm: () => void
   onCancel: () => void
 }
@@ -16,6 +17,7 @@ export function ConfirmDialog({
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
   confirming = false,
+  busyLabel = 'Working...',
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
@@ -55,7 +57,7 @@ export function ConfirmDialog({
             disabled={confirming}
             className="rounded bg-indigo-500 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {confirming ? 'Rotating...' : confirmLabel}
+            {confirming ? busyLabel : confirmLabel}
           </button>
         </div>
       </div>
