@@ -17,6 +17,7 @@ func directEnv() map[string]string {
 	return map[string]string{
 		state.KeyMode:           "direct",
 		state.KeyDomain:         "cdn-a1b2.rwl.one",
+		state.KeyNodeID:         "SG1",
 		state.KeyRealityPub:     "XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl",
 		state.KeyRealityShortID: "d3cbbc0b4c5bc5f9",
 		state.KeyRealitySNI:     "www.apple.com",
@@ -28,11 +29,13 @@ func directEnv() map[string]string {
 }
 
 // The exact strings the Worker (panel/worker/src/lib/subscription.ts) produces
-// for these inputs.
+// for these inputs. The fragment tag is `${username}@${node_id}` — matching
+// the Worker's buildSubscriptionURIs() — so a user provisioned from the panel
+// and one provisioned by `cfvpnctl` get identically-named entries.
 const (
-	wantRealityURI = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=d3cbbc0b4c5bc5f9&fp=chrome#alice-Reality"
-	wantHy2URI     = "hysteria2://alice:Zm9vYmFy_-abc@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice-HY2"
-	wantHTTPUpURI  = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&sni=cdn-a1b2.rwl.one#alice-HTTPUpgrade"
+	wantRealityURI = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=d3cbbc0b4c5bc5f9&fp=chrome#alice%40SG1-Reality"
+	wantHy2URI     = "hysteria2://alice:Zm9vYmFy_-abc@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40SG1-HY2"
+	wantHTTPUpURI  = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&sni=cdn-a1b2.rwl.one#alice%40SG1-HTTPUpgrade"
 )
 
 const testUUID = "2f8a1c3e-1111-4222-8333-abcdefabcdef"
@@ -81,6 +84,7 @@ func TestBuildUserURIsDirectWithoutFullRealityEmitsNoVLESS(t *testing.T) {
 func TestBuildUserURIsCloudflareMode(t *testing.T) {
 	env := map[string]string{
 		state.KeyMode:      "cloudflare",
+		state.KeyNodeID:    "SG1",
 		state.KeyHy2Host:   "hy2-c3d4.rwl.one",
 		state.KeyHy2Port:   "24430",
 		state.KeyHy2ObfsPW: "kQ3x",
@@ -105,6 +109,7 @@ func TestBuildUserURIsUnknownModeEmitsNoVLESS(t *testing.T) {
 	for _, mode := range []string{"", "  ", "legacy", "ws", "DIRECT"} {
 		env := map[string]string{
 			state.KeyMode:      mode,
+			state.KeyNodeID:    "SG1",
 			state.KeyHy2Host:   "hy2-c3d4.rwl.one",
 			state.KeyHy2Port:   "24430",
 			state.KeyHy2ObfsPW: "kQ3x",
@@ -148,6 +153,25 @@ func TestBuildUserURIsNoHy2WhenNodeIncomplete(t *testing.T) {
 				t.Errorf("%s: emitted an HY2 URI anyway: %s", name, uri)
 			}
 		}
+	}
+}
+
+// A node without NODE_ID set (predates the env var, or a bare test harness)
+// must still produce a usable URI — falling back to the bare username rather
+// than a tag ending in a trailing "@".
+func TestBuildUserURIsFallsBackToBareNameWithoutNodeID(t *testing.T) {
+	env := directEnv()
+	delete(env, state.KeyNodeID)
+	var warn bytes.Buffer
+	got := buildUserURIs("alice", testUUID, "cdn-a1b2.rwl.one", "Zm9vYmFy_-abc", env, &warn)
+	if len(got) != 2 {
+		t.Fatalf("got %#v", got)
+	}
+	if !strings.HasSuffix(got[0], "#alice-Reality") {
+		t.Errorf("VLESS fragment = %q, want suffix #alice-Reality", got[0])
+	}
+	if !strings.HasSuffix(got[1], "#alice-HY2") {
+		t.Errorf("HY2 fragment = %q, want suffix #alice-HY2", got[1])
 	}
 }
 
@@ -256,7 +280,7 @@ func TestRunGenSubDirectEmitsRealityAndHy2(t *testing.T) {
 	if lines[0] != wantRealityURI {
 		t.Errorf("VLESS line drifted\n got: %s\nwant: %s", lines[0], wantRealityURI)
 	}
-	wantHy2 := "hysteria2://alice:alice-hy2pw@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice-HY2"
+	wantHy2 := "hysteria2://alice:alice-hy2pw@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40SG1-HY2"
 	if lines[1] != wantHy2 {
 		t.Errorf("HY2 line drifted\n got: %s\nwant: %s", lines[1], wantHy2)
 	}

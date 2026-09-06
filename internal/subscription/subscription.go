@@ -6,6 +6,10 @@
 // either side — so every escape here mirrors the Worker's encodeURIComponent
 // exactly (see EncodeURIComponent) and every builder below has a golden test
 // pinning the literal string the Worker produces.
+//
+// The URI lines are byte-identical; the Worker additionally prefixes
+// REMARKS=RWL8899 as the first line of the subscription payload it serves —
+// the node side does not add that line to the files/output it generates.
 package subscription
 
 import (
