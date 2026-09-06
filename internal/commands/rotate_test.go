@@ -466,10 +466,11 @@ func TestRunRotateDirectHy2RotatesHostCertDNSService(t *testing.T) {
 		t.Errorf("result Hy2ObfsPW: got %q want obfs-test-pw", res.Hy2ObfsPW)
 	}
 
-	// hysteria config rewritten: must contain the fixed HysteriaCertPaths cert path
+	// hysteria config rewritten: must contain the HysteriaCertPaths cert path
 	// and must preserve the existing users (alice and bob from writeTestHysteriaConfig).
+	wantCert, _ := HysteriaCertPaths()
 	hyBody, _ := os.ReadFile(hysteriaConfigPath)
-	if !bytes.Contains(hyBody, []byte("/etc/cfvpn/hysteria/cert.pem")) {
+	if !bytes.Contains(hyBody, []byte(wantCert)) {
 		t.Errorf("hysteria config missing cert path; got: %s", hyBody)
 	}
 	if !bytes.Contains(hyBody, []byte("alice")) || !bytes.Contains(hyBody, []byte("bob")) {

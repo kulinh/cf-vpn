@@ -74,7 +74,10 @@ curl -fsSL --max-time 30 "$check_url" -o checksums.txt`
 	if err != nil {
 		return fmt.Errorf("read cloudflared checksums: %w", err)
 	}
-	if err := VerifyFileSHA256(filepath.Join(dir, "cloudflared-linux-amd64"), checksums); err != nil {
+	// cloudflared's checksum file is fetched per asset and often holds nothing
+	// but the digest, so this caller opts into the bare-digest form. lego's
+	// checksums.txt lists every asset and must match by name.
+	if err := VerifyFileSHA256BareDigestAllowed(filepath.Join(dir, "cloudflared-linux-amd64"), checksums); err != nil {
 		return fmt.Errorf("verify cloudflared: %w", err)
 	}
 

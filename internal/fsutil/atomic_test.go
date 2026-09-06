@@ -1,11 +1,49 @@
 package fsutil
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// The parent-directory fsync is what makes the rename durable; if it fails the
+// caller must hear about it instead of being told the write succeeded.
+func TestSyncDirReportsSyncFailure(t *testing.T) {
+	old := syncFile
+	syncFile = func(f *os.File) error {
+		info, err := f.Stat()
+		if err == nil && info.IsDir() {
+			return errors.New("simulated fsync failure")
+		}
+		return f.Sync()
+	}
+	t.Cleanup(func() { syncFile = old })
+
+	dir := t.TempDir()
+	if err := SyncDir(dir); err == nil {
+		t.Fatal("SyncDir swallowed the fsync failure")
+	} else if !strings.Contains(err.Error(), "simulated fsync failure") {
+		t.Fatalf("err = %v", err)
+	}
+
+	// WriteFile must surface it too: the bytes are on disk, but the rename is
+	// not guaranteed to survive a crash and the caller decides what that means.
+	err := WriteFile(filepath.Join(dir, "cfg.json"), []byte("x"), 0o600)
+	if err == nil {
+		t.Fatal("WriteFile reported success despite a failed directory fsync")
+	}
+	if !strings.Contains(err.Error(), "simulated fsync failure") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestSyncDirReportsOpenFailure(t *testing.T) {
+	if err := SyncDir(filepath.Join(t.TempDir(), "does-not-exist")); err == nil {
+		t.Fatal("SyncDir swallowed the open failure")
+	}
+}
 
 func TestWriteFileCreatesWithMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "cfg.json")

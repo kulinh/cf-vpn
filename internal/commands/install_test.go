@@ -370,8 +370,9 @@ func TestRunInstallIssuesHy2AndDirectVPNCertsToServicePaths(t *testing.T) {
 		t.Fatalf("RunInstall: %v", err)
 	}
 
+	wantCert, wantKey := HysteriaCertPaths()
 	want := []fakeCertIssue{
-		{host: "hy2.example.com", cert: "/etc/cfvpn/hysteria/cert.pem", key: "/etc/cfvpn/hysteria/key.pem", token: "cf-token"},
+		{host: "hy2.example.com", cert: wantCert, key: wantKey, token: "cf-token"},
 	}
 	if !reflect.DeepEqual(cert.issues, want) {
 		t.Fatalf("cert issues = %#v, want %#v", cert.issues, want)
@@ -678,10 +679,11 @@ func TestRunInstallDirectModeWiresAllSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hysteria config missing: %v", err)
 	}
+	hyCert, hyKey := HysteriaCertPaths()
 	wantHy := `listen: ":24430"
 tls:
-  cert: "/etc/cfvpn/hysteria/cert.pem"
-  key: "/etc/cfvpn/hysteria/key.pem"
+  cert: "` + hyCert + `"
+  key: "` + hyKey + `"
 obfs:
   type: salamander
   salamander:

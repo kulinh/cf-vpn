@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/kulinh/cf-vpn/internal/systemd"
 )
 
 // xrayBinary is the xray executable used to parse a candidate config.
@@ -53,11 +56,35 @@ func realValidateXrayConfig(ctx context.Context, config []byte) error {
 
 	ctx, cancel := context.WithTimeout(ctx, xrayValidateTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, xrayBinary, "run", "-test", "-config", f.Name()).CombinedOutput()
+	cmd := exec.CommandContext(ctx, xrayBinary, "run", "-test", "-config", f.Name())
+	cmd.Env = append(os.Environ(), "XRAY_LOCATION_ASSET="+xrayAssetDir())
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("xray rejected the new config (%w): %s", err, lastLine(out))
 	}
 	return nil
+}
+
+// defaultXrayAssetDir is where the Xray-install script puts geoip.dat and
+// geosite.dat. It must match the Environment= line in systemd.XrayService()
+// (internal/systemd/units.go), which is what the running service uses.
+const defaultXrayAssetDir = "/usr/local/share/xray"
+
+// xrayAssetDir returns the asset directory the validation run should use.
+//
+// The pre-flight must fail for the same reasons the service would and for no
+// others. Our routing block references "geoip:private", so on any build that
+// resolves assets while parsing, an exec inheriting a different (or empty)
+// XRAY_LOCATION_ASSET would report "geoip.dat not found" for a config the node
+// runs perfectly — a false negative that blocks every install, upgrade, rotate
+// and user mutation. (xray 26.3 defers that load to runtime, so it does not bite
+// today; pinning the value keeps the pre-flight honest across versions.) An
+// operator-set override still wins, because the service would see it too.
+func xrayAssetDir() string {
+	if dir := strings.TrimSpace(os.Getenv("XRAY_LOCATION_ASSET")); dir != "" {
+		return dir
+	}
+	return defaultXrayAssetDir
 }
 
 // NOTE on hysteria: `hysteria server` exposes no config-check flag (verified
@@ -90,6 +117,31 @@ func writeXrayConfigChecked(ctx context.Context, path string, config []byte, mod
 // WriteXrayConfigChecked is the exported form for cfvpn-agent.
 func WriteXrayConfigChecked(ctx context.Context, path string, config []byte, mode os.FileMode) error {
 	return writeXrayConfigChecked(ctx, path, config, mode)
+}
+
+// applyXrayConfig is the full publish cycle every xray writer owes the node:
+// validate the candidate, replace the live file, restart xray, and — if the
+// restart fails — put the previous bytes back and restart on those, so the node
+// is never left with a config xray refuses AND xray down.
+//
+// Diagnostics from the restore path go to warn (the restart error itself is
+// what the caller gets back).
+func applyXrayConfig(ctx context.Context, config []byte, runner systemd.Runner, warn io.Writer) error {
+	previous, previousErr := os.ReadFile(xrayConfigPath)
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, config, 0o600); err != nil {
+		return err
+	}
+	if err := systemd.Restart(ctx, runner, xrayServiceUnit); err != nil {
+		if previousErr == nil {
+			if rerr := writeAtomicFile(xrayConfigPath, previous, 0o600); rerr != nil {
+				warnf(warn, "warning: restore previous xray config failed: %v", rerr)
+			} else if rerr := systemd.Restart(ctx, runner, xrayServiceUnit); rerr != nil {
+				warnf(warn, "warning: restart %s on the restored config failed: %v", xrayServiceUnit, rerr)
+			}
+		}
+		return fmt.Errorf("restart %s: %w", xrayServiceUnit, err)
+	}
+	return nil
 }
 
 // writeXrayConfigIfChanged is writeIfChanged for xray configs: identical

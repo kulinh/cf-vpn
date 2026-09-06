@@ -131,30 +131,37 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 		flow = "xtls-rprx-vision"
 	}
 
-	if err := xray.AddUser(&cfg, in.Name, uuid, flow); err != nil {
-		return err
-	}
-	if err := xray.SaveAtomic(xrayConfigPath, cfg, 0o600); err != nil {
-		return fmt.Errorf("save xray config: %w", err)
-	}
-
 	// M-G5: mirror RunRemoveUser and add the user to Hysteria2 as well.
 	// Without this the CLI created users that existed in xray but not in
 	// hysteria, and the agent's next currentSyncUsers() minted a Hy2 password
 	// that does not match the one the panel/D1 holds — the exact drift the
 	// previous audit round could only warn about.
+	//
+	// Hysteria goes FIRST on purpose. If it fails after the xray config were
+	// already written, the node would be left with exactly that drift (an
+	// xray-only user); in the other order a failure leaves an unused hysteria
+	// entry, which the next sync simply overwrites.
 	hy2PW, err := addHysteriaUser(ctx, in.Name, resolveRunner(runner), stderr)
 	if err != nil {
+		return err
+	}
+
+	if err := xray.AddUser(&cfg, in.Name, uuid, flow); err != nil {
+		return err
+	}
+	rendered, err := xray.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("render xray config: %w", err)
+	}
+	// Validate, publish, restart, and restore the previous config if the
+	// restart fails — the same cycle every other xray writer performs.
+	if err := applyXrayConfig(ctx, rendered, resolveRunner(runner), stderr); err != nil {
 		return err
 	}
 
 	sub := buildSubscriptionFor(in.Name, uuid, in.Domain, hy2PW, env, stderr)
 	if err := writeSubscriptionFile(in.Name, sub+"\n"); err != nil {
 		return fmt.Errorf("write subscription: %w", err)
-	}
-
-	if err := systemd.Restart(ctx, resolveRunner(runner), xrayServiceUnit); err != nil {
-		return fmt.Errorf("restart %s: %w", xrayServiceUnit, err)
 	}
 
 	fmt.Fprintln(stdout, sub)
@@ -214,17 +221,20 @@ func RunRemoveUser(ctx context.Context, in UserInputs, runner systemd.Runner, st
 	if err := xray.RemoveUser(&cfg, in.Name); err != nil {
 		return err
 	}
-	if err := xray.SaveAtomic(xrayConfigPath, cfg, 0o600); err != nil {
-		return fmt.Errorf("save xray config: %w", err)
+	rendered, err := xray.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("render xray config: %w", err)
+	}
+	// Validate, publish, restart, restore-on-failed-restart. Revoking access is
+	// the point of this command, so xray goes first here: a later hysteria
+	// failure leaves the user unable to reach VLESS, not still on it.
+	if err := applyXrayConfig(ctx, rendered, resolveRunner(runner), stderr); err != nil {
+		return err
 	}
 
 	subFile := filepath.Join(subscriptionDir, in.Name+".txt")
 	if err := os.Remove(subFile); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove subscription: %w", err)
-	}
-
-	if err := systemd.Restart(ctx, resolveRunner(runner), xrayServiceUnit); err != nil {
-		return fmt.Errorf("restart %s: %w", xrayServiceUnit, err)
 	}
 
 	// Mirror the agent's applyUsers: remove from Hysteria2 config too.

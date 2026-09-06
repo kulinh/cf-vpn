@@ -28,6 +28,7 @@ import (
 	"github.com/kulinh/cf-vpn/internal/subscription"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 	"github.com/kulinh/cf-vpn/internal/templates"
+	"github.com/kulinh/cf-vpn/internal/validate"
 	"github.com/kulinh/cf-vpn/internal/xray"
 	"github.com/kulinh/cf-vpn/internal/zones"
 )
@@ -143,6 +144,9 @@ func RunUpgradeCheck(ctx context.Context, in UpgradeInputs, deps InstallDeps, st
 	if deps.IP == nil {
 		deps.IP = netinfo.NewDefault()
 	}
+	if err := validateUpgradeIdentity(env); err != nil {
+		return err
+	}
 	if zoneOfDomain(env["DOMAIN"]) == "" {
 		return fmt.Errorf("resolve zone for %s: invalid domain", env["DOMAIN"])
 	}
@@ -175,6 +179,16 @@ func RunUpgradeCheck(ctx context.Context, in UpgradeInputs, deps InstallDeps, st
 }
 
 func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout, stderr io.Writer) (UpgradeResult, error) {
+	// Pre-flight the values the renderers require BEFORE anything with a side
+	// effect: the lock, the config backup, the binary (re)install and the sysctl
+	// tuning all happen below, and a malformed ADMIN_TUNNEL_UUID used to abort
+	// only once RenderCloudflared* rejected it — after all of that.
+	if preEnv, err := loadUpgradeEnv(); err != nil {
+		return UpgradeResult{}, err
+	} else if err := validateUpgradeIdentity(preEnv); err != nil {
+		return UpgradeResult{}, err
+	}
+
 	// H11: an upgrade rewrites xray, cloudflared, hysteria and cfvpn.env and
 	// restarts the services — exactly what the config lock protects. Without it
 	// a concurrent POST /admin/v1/sync interleaves its own read-modify-write and
@@ -683,6 +697,53 @@ func loadUpgradeEnv() (map[string]string, error) {
 		return nil, fmt.Errorf("ADMIN_TUNNEL_UUID or TUNNEL_UUID is required")
 	}
 	return env, nil
+}
+
+// adminHostForEnv resolves the admin hostname an upgrade will render into the
+// cloudflared ingress: derived from NODE_ID when present (runUpgradeCore
+// regenerates it), otherwise the stored ADMIN_HOST.
+func adminHostForEnv(env map[string]string) (string, error) {
+	if nodeID := strings.TrimSpace(env["NODE_ID"]); nodeID != "" {
+		return generateAdminHost(nodeID)
+	}
+	adminHost := strings.TrimSpace(env["ADMIN_HOST"])
+	if adminHost == "" {
+		return "", fmt.Errorf("NODE_ID or ADMIN_HOST is required")
+	}
+	return adminHost, nil
+}
+
+// validateUpgradeIdentity pre-flights the three values the cloudflared renderer
+// insists on. It performs no I/O and has no side effects.
+//
+// Without this an upgrade on a node whose ADMIN_TUNNEL_UUID is not canonical
+// (or whose ADMIN_HOST is malformed) fails inside RenderCloudflared* — i.e.
+// AFTER the config lock is taken, the config dir is backed up, the runtime
+// binaries are (re)installed and the sysctl tuning is applied. Failing here
+// instead makes the whole command a no-op, and says exactly which env key to
+// fix.
+func validateUpgradeIdentity(env map[string]string) error {
+	if err := validate.Hostname(strings.TrimSpace(env["DOMAIN"])); err != nil {
+		return fmt.Errorf("DOMAIN in %s is not a valid hostname (%w); fix it before upgrading", envFilePath, err)
+	}
+	tunnelUUID := strings.TrimSpace(env["ADMIN_TUNNEL_UUID"])
+	if tunnelUUID == "" {
+		tunnelUUID = strings.TrimSpace(env["TUNNEL_UUID"])
+	}
+	if err := validate.UUID(tunnelUUID); err != nil {
+		return fmt.Errorf("ADMIN_TUNNEL_UUID in %s is not a Cloudflare tunnel UUID (%w); "+
+			"the cloudflared config cannot be rendered from it — fix the env file before upgrading",
+			envFilePath, err)
+	}
+	adminHost, err := adminHostForEnv(env)
+	if err != nil {
+		return err
+	}
+	if err := validate.Hostname(adminHost); err != nil {
+		return fmt.Errorf("admin host %q (from NODE_ID/ADMIN_HOST in %s) is not a valid hostname: %w",
+			adminHost, envFilePath, err)
+	}
+	return nil
 }
 
 func validateIPv4(ip string) error {

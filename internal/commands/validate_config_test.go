@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kulinh/cf-vpn/internal/systemd"
 )
 
 // H12: a config xray refuses must never reach the live file.
@@ -117,6 +119,53 @@ func TestValidateXrayConfigSkipsWhenBinaryMissing(t *testing.T) {
 	t.Cleanup(func() { xrayBinary = old })
 	if err := realValidateXrayConfig(context.Background(), []byte(`{"nonsense":`)); err != nil {
 		t.Fatalf("expected a skip, got %v", err)
+	}
+}
+
+// The validation exec must run with the same XRAY_LOCATION_ASSET the service
+// uses, so the pre-flight cannot fail for an asset-path reason the running node
+// would not have.
+func TestValidateXrayConfigPassesAssetDir(t *testing.T) {
+	dir := t.TempDir()
+	captured := filepath.Join(dir, "captured")
+	script := filepath.Join(dir, "fake-xray")
+	body := "#!/bin/sh\nprintf '%s' \"$XRAY_LOCATION_ASSET\" > " + captured + "\nexit 0\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldBin := xrayBinary
+	xrayBinary = script
+	t.Cleanup(func() { xrayBinary = oldBin })
+
+	t.Setenv("XRAY_LOCATION_ASSET", "")
+	if err := realValidateXrayConfig(context.Background(), []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(captured)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != defaultXrayAssetDir {
+		t.Errorf("XRAY_LOCATION_ASSET = %q, want the service default %q", got, defaultXrayAssetDir)
+	}
+
+	// An operator override wins — the service would inherit it too.
+	t.Setenv("XRAY_LOCATION_ASSET", "/opt/xray-assets")
+	if err := realValidateXrayConfig(context.Background(), []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = os.ReadFile(captured)
+	if string(got) != "/opt/xray-assets" {
+		t.Errorf("XRAY_LOCATION_ASSET = %q, want the override", got)
+	}
+}
+
+func TestXrayAssetDirMatchesTheUnitFile(t *testing.T) {
+	// systemd.XrayService() is what the running node uses; a drift between the
+	// two would make the pre-flight validate against different assets.
+	unit := systemd.XrayService(xrayConfigPath)
+	if !strings.Contains(unit, "Environment=XRAY_LOCATION_ASSET="+defaultXrayAssetDir) {
+		t.Fatalf("cfvpn-xray.service does not set XRAY_LOCATION_ASSET=%s:\n%s", defaultXrayAssetDir, unit)
 	}
 }
 

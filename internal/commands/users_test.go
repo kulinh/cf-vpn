@@ -198,6 +198,9 @@ func TestRunGenSubSingleUser(t *testing.T) {
 	if err := xray.SaveAtomic(cfgPath, cfg, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// MODE must be set: a node with an unknown mode serves no transport, so
+	// buildUserURIs emits nothing for it (matching the Worker).
+	writeTestEnv(t, map[string]string{state.KeyMode: "cloudflare"})
 
 	var out, errBuf bytes.Buffer
 	err := RunGenSub(context.Background(), UserInputs{Name: "user1", Domain: "vpn.example.com"}, &out, &errBuf)
@@ -223,6 +226,7 @@ func TestRunGenSubAllUsers(t *testing.T) {
 	if err := xray.SaveAtomic(cfgPath, cfg, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeTestEnv(t, map[string]string{state.KeyMode: "cloudflare"})
 
 	var out, errBuf bytes.Buffer
 	err := RunGenSub(context.Background(), UserInputs{Name: "", Domain: "vpn.example.com"}, &out, &errBuf)

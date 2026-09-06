@@ -97,6 +97,35 @@ func TestBuildUserURIsCloudflareMode(t *testing.T) {
 
 // The transport path is taken from XHTTP_PATH when the node sets it, like the
 // Worker's `r.xhttp_path ?? "/api/v1/sync"`.
+// The Worker's branch is three-way: direct ⇒ Reality or nothing, cloudflare ⇒
+// HTTPUpgrade, anything else ⇒ nothing. An empty or unrecognised MODE used to
+// fall through to HTTPUpgrade here, describing a transport the node does not
+// serve.
+func TestBuildUserURIsUnknownModeEmitsNoVLESS(t *testing.T) {
+	for _, mode := range []string{"", "  ", "legacy", "ws", "DIRECT"} {
+		env := map[string]string{
+			state.KeyMode:      mode,
+			state.KeyHy2Host:   "hy2-c3d4.rwl.one",
+			state.KeyHy2Port:   "24430",
+			state.KeyHy2ObfsPW: "kQ3x",
+		}
+		var warn bytes.Buffer
+		got := buildUserURIs("alice", testUUID, "cdn-a1b2.rwl.one", "Zm9vYmFy_-abc", env, &warn)
+		for _, uri := range got {
+			if strings.HasPrefix(uri, "vless://") {
+				t.Errorf("MODE=%q: emitted a VLESS URI anyway: %s", mode, uri)
+			}
+		}
+		// HY2 is independent of the VLESS transport and must still be offered.
+		if len(got) != 1 || got[0] != wantHy2URI {
+			t.Errorf("MODE=%q: expected only the HY2 line, got %#v", mode, got)
+		}
+		if !strings.Contains(warn.String(), "is not \"direct\" or \"cloudflare\"") {
+			t.Errorf("MODE=%q: expected a warning, got %q", mode, warn.String())
+		}
+	}
+}
+
 func TestBuildUserURIsUsesXHTTPPathOverride(t *testing.T) {
 	env := map[string]string{state.KeyMode: "cloudflare", state.KeyXHTTPPath: "/cdn-cgi/trace"}
 	got := buildUserURIs("alice", testUUID, "cdn-a1b2.rwl.one", "", env, nil)

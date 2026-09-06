@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/kulinh/cf-vpn/internal/hysteria"
 	"github.com/kulinh/cf-vpn/internal/state"
@@ -32,7 +33,12 @@ import (
 func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn io.Writer) []string {
 	var lines []string
 
-	if env[state.KeyMode] == "direct" {
+	// Three-way, exactly like the Worker: direct ⇒ Reality or nothing,
+	// cloudflare ⇒ HTTPUpgrade, anything else ⇒ nothing. A node whose MODE is
+	// empty or unrecognised serves neither transport, so guessing HTTPUpgrade
+	// for it only produces a link that cannot connect.
+	switch mode := strings.TrimSpace(env[state.KeyMode]); mode {
+	case "direct":
 		pub := env[state.KeyRealityPub]
 		sid := env[state.KeyRealityShortID]
 		sni := env[state.KeyRealitySNI]
@@ -44,12 +50,15 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 		} else {
 			lines = append(lines, subscription.BuildVLESSRealityURI(name, uuid, domain, sni, pub, sid))
 		}
-	} else {
+	case "cloudflare":
 		path := env[state.KeyXHTTPPath]
 		if path == "" {
 			path = templates.VLESSPath
 		}
 		lines = append(lines, subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, path))
+	default:
+		warnf(warn, "warning: MODE=%q is not \"direct\" or \"cloudflare\"; emitting no VLESS URI for %q "+
+			"— this node's mode is unknown, so no transport can be described", mode, name)
 	}
 
 	if uri, ok := buildHy2Line(name, hy2PW, env, warn); ok {

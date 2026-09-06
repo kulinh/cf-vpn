@@ -74,6 +74,9 @@ func TestReconcileUnitsIdempotentWhenInSync(t *testing.T) {
 }
 
 func TestRunReconcileUnitsRestartsLongRunningNotOneshot(t *testing.T) {
+	// RunReconcileUnits takes the config lock, which lives next to
+	// xrayConfigPath: withTempPaths keeps it out of /etc/cfvpn/xray.
+	withTempPaths(t)
 	dir := withUnitDir(t)
 	seedCanonicalUnits(t, dir)
 	// Drift one long-running service, one oneshot service, one timer.
@@ -102,6 +105,7 @@ func TestRunReconcileUnitsRestartsLongRunningNotOneshot(t *testing.T) {
 }
 
 func TestRunReconcileUnitsNoDriftSkipsReload(t *testing.T) {
+	withTempPaths(t) // the config lock lives next to xrayConfigPath
 	withUnitDirSeeded(t)
 	rec := &installRecorder{}
 	var out bytes.Buffer

@@ -28,16 +28,6 @@ import (
 func ExpectedSHA256(checksums []byte, filename string) (string, error) {
 	want := filepath.Base(filename)
 
-	// Some releases (cloudflared's <asset>.sha256) publish the bare digest with
-	// no file name, or the digest plus the name; a single 64-hex token is
-	// unambiguous and belongs to the file it was fetched for.
-	if fields := strings.Fields(string(checksums)); len(fields) == 1 && len(fields[0]) == 64 {
-		digest := strings.ToLower(fields[0])
-		if _, err := hex.DecodeString(digest); err == nil {
-			return digest, nil
-		}
-	}
-
 	for _, line := range strings.Split(string(checksums), "\n") {
 		fields := strings.Fields(strings.TrimSpace(line))
 		if len(fields) < 2 {
@@ -59,11 +49,41 @@ func ExpectedSHA256(checksums []byte, filename string) (string, error) {
 	return "", fmt.Errorf("no sha256 entry for %s in the checksums file", want)
 }
 
+// ExpectedSHA256BareDigest reads a checksum file that holds nothing but the
+// digest, the form cloudflared publishes as <asset>.sha256. A file naming its
+// asset is still accepted and matched by name.
+//
+// This is deliberately a SEPARATE entry point rather than a fallback inside
+// ExpectedSHA256: accepting "a lone 64-hex token belongs to whatever file you
+// happen to be verifying" for every caller would let a checksums file fetched
+// for one asset silently authorise a different one. Only the caller that knows
+// its checksum URL is per-asset may opt in.
+func ExpectedSHA256BareDigest(checksums []byte, filename string) (string, error) {
+	if fields := strings.Fields(string(checksums)); len(fields) == 1 && len(fields[0]) == 64 {
+		digest := strings.ToLower(fields[0])
+		if _, err := hex.DecodeString(digest); err == nil {
+			return digest, nil
+		}
+		return "", fmt.Errorf("checksum for %s is not hex: %q", filepath.Base(filename), fields[0])
+	}
+	return ExpectedSHA256(checksums, filename)
+}
+
 // VerifyFileSHA256 hashes path and compares it with the entry for that file in
 // the checksums file. A missing entry is an error — the whole point is that the
 // download is never installed unverified.
 func VerifyFileSHA256(path string, checksums []byte) error {
-	want, err := ExpectedSHA256(checksums, path)
+	return verifyFileSHA256(path, checksums, ExpectedSHA256)
+}
+
+// VerifyFileSHA256BareDigestAllowed is VerifyFileSHA256 for a per-asset
+// checksum file that may contain only the digest (cloudflared's .sha256).
+func VerifyFileSHA256BareDigestAllowed(path string, checksums []byte) error {
+	return verifyFileSHA256(path, checksums, ExpectedSHA256BareDigest)
+}
+
+func verifyFileSHA256(path string, checksums []byte, expected func([]byte, string) (string, error)) error {
+	want, err := expected(checksums, path)
 	if err != nil {
 		return err
 	}

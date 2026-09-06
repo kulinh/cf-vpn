@@ -427,8 +427,15 @@ func Load(path string) (Config, error) {
 	return cfg, json.Unmarshal(raw, &cfg)
 }
 
+// Marshal renders the config exactly as SaveAtomic would write it. Callers that
+// must validate the candidate (with `xray run -test`) before it replaces the
+// live file need the bytes, not the write.
+func Marshal(cfg Config) ([]byte, error) {
+	return json.MarshalIndent(cfg, "", "  ")
+}
+
 func SaveAtomic(path string, cfg Config, mode os.FileMode) error {
-	raw, err := json.MarshalIndent(cfg, "", "  ")
+	raw, err := Marshal(cfg)
 	if err != nil {
 		return err
 	}

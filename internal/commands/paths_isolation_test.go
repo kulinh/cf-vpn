@@ -6,24 +6,40 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/kulinh/cf-vpn/internal/paths"
 )
 
-// TestMain installs package-wide safety defaults for the seams that would
-// otherwise touch the machine running the suite.
+// TestMain redirects every mutable node path and every system-touching seam to
+// a per-run temp directory BEFORE any test executes.
 //
 // This package's tests are routinely run as root on a node (that is where the
-// repo lives). Anything that writes outside a t.TempDir or execs a system tool
-// must be redirected here, not per test: a helper that forgets one override
-// silently reconfigures the live node — as happened with hysteriaConfigPath,
-// whose fixtures replaced a node's real hysteria config.
+// repo lives), so a helper that forgets one override does not fail a test — it
+// silently reconfigures the live node. That is not hypothetical: withUpgradeSeams
+// once forgot hysteriaConfigPath and the fixtures replaced a node's real
+// hysteria config (port, obfs password, user set), damage that would only have
+// surfaced at the next hysteria restart.
+//
+// Defaults belong here rather than in each helper: a per-test helper that
+// forgets one var then merely inherits a safe temp path instead of /etc.
+// Helpers still redirect and seed their own content — they just no longer carry
+// the whole safety burden.
 func TestMain(m *testing.M) {
 	dir, err := os.MkdirTemp("", "cfvpn-commands-test-*")
 	if err != nil {
 		panic(err)
 	}
+
+	// Node config paths.
+	envFilePath = filepath.Join(dir, "cfvpn", "cfvpn.env")
+	xrayConfigPath = filepath.Join(dir, "cfvpn", "xray", "config.json")
+	cloudflaredConfig = filepath.Join(dir, "cfvpn", "cloudflared", "config.yml")
+	cloudflaredCredDir = filepath.Join(dir, "cfvpn", "cloudflared")
+	hysteriaConfigPath = filepath.Join(dir, "cfvpn", "hysteria", "config.yaml")
+	hysteriaCertDir = filepath.Join(dir, "cfvpn", "hysteria")
+	subscriptionDir = filepath.Join(dir, "subscriptions")
+	systemdUnitDir = filepath.Join(dir, "systemd")
 	sysctlConfPath = filepath.Join(dir, "sysctl.d", "90-cfvpn.conf")
+
+	// System-touching seams.
 	runTuneCommand = func(context.Context, string, ...string) ([]byte, error) { return []byte("bbr\n"), nil }
 	// Fixture Reality keys are correctly rejected by a real xray; tests that
 	// exercise the pre-flight call realValidateXrayConfig directly.
@@ -34,28 +50,35 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// TestMain asserts that no test in this package leaves the mutable node paths
-// pointing at the real /etc/cfvpn. Every seam helper redirects them to a temp
-// dir and restores them in t.Cleanup; when one forgets (withUpgradeSeams once
-// forgot hysteriaConfigPath) the tests silently rewrite the live config of the
-// machine running `go test`, which on a node means replacing hysteria's port,
-// obfs password and user set with fixtures.
-//
-// Running this as a plain test after the others is not possible — order is not
-// guaranteed — so each guard below is cheap and checked here at the boundary.
-func TestNodePathVarsMatchProductionDefaultsAtStart(t *testing.T) {
-	cases := map[string]struct{ got, want string }{
-		"envFilePath":        {envFilePath, paths.EnvFile},
-		"xrayConfigPath":     {xrayConfigPath, paths.XrayConfigFile},
-		"cloudflaredConfig":  {cloudflaredConfig, paths.CloudflaredConfig},
-		"subscriptionDir":    {subscriptionDir, paths.SubscriptionDir},
-		"hysteriaConfigPath": {hysteriaConfigPath, "/etc/cfvpn/hysteria/config.yaml"},
-		"systemdUnitDir":     {systemdUnitDir, "/etc/systemd/system"},
+// nodePathVars is every package-level path a test could write through.
+func nodePathVars() map[string]string {
+	return map[string]string{
+		"envFilePath":        envFilePath,
+		"xrayConfigPath":     xrayConfigPath,
+		"cloudflaredConfig":  cloudflaredConfig,
+		"cloudflaredCredDir": cloudflaredCredDir,
+		"hysteriaConfigPath": hysteriaConfigPath,
+		"hysteriaCertDir":    hysteriaCertDir,
+		"subscriptionDir":    subscriptionDir,
+		"systemdUnitDir":     systemdUnitDir,
+		"sysctlConfPath":     sysctlConfPath,
 	}
-	for name, c := range cases {
-		if c.got != c.want {
-			t.Errorf("%s = %q at test start, want the production default %q — a previous "+
-				"test leaked its override (or a helper forgot to restore it)", name, c.got, c.want)
+}
+
+// No test may run with a node path pointing into the live system. Asserting the
+// negative ("not under /etc") rather than an exact value keeps this true whether
+// the value comes from TestMain's defaults or a per-test helper's temp dir.
+func TestNodePathVarsNeverPointAtTheLiveSystem(t *testing.T) {
+	for name, path := range nodePathVars() {
+		if path == "" {
+			t.Errorf("%s is empty", name)
+			continue
+		}
+		for _, forbidden := range []string{"/etc/", "/var/lib/cfvpn", "/usr/", "/lib/"} {
+			if strings.HasPrefix(path, forbidden) {
+				t.Errorf("%s = %q points at the live system (%s); TestMain must redirect it",
+					name, path, forbidden)
+			}
 		}
 	}
 }
@@ -64,14 +87,11 @@ func TestNodePathVarsMatchProductionDefaultsAtStart(t *testing.T) {
 // documents the full set so a new path var is not forgotten.
 func TestSeamHelperRedirectsEveryNodePath(t *testing.T) {
 	dir := withUpgradeSeams(t)
-	for name, got := range map[string]string{
-		"envFilePath":        envFilePath,
-		"xrayConfigPath":     xrayConfigPath,
-		"cloudflaredConfig":  cloudflaredConfig,
-		"subscriptionDir":    subscriptionDir,
-		"hysteriaConfigPath": hysteriaConfigPath,
-		"systemdUnitDir":     systemdUnitDir,
+	for _, name := range []string{
+		"envFilePath", "xrayConfigPath", "cloudflaredConfig",
+		"subscriptionDir", "hysteriaConfigPath", "systemdUnitDir",
 	} {
+		got := nodePathVars()[name]
 		if !strings.HasPrefix(got, dir) {
 			t.Errorf("%s = %q, want a path under the test temp dir %q", name, got, dir)
 		}
