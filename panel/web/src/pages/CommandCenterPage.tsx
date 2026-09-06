@@ -75,6 +75,8 @@ export function CommandCenterPage() {
         return <span className="rounded bg-red-900 px-2 py-0.5 text-xs text-red-300">Down</span>
       case 'degraded':
         return <span className="rounded bg-yellow-900 px-2 py-0.5 text-xs text-yellow-300">Degraded</span>
+      case 'disabled':
+        return <span className="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-300">Disabled</span>
       default:
         return <span className="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-300">Unknown</span>
     }

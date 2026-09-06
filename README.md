@@ -1,14 +1,14 @@
 # cfvpn
 
-Multi-VPS VPN control plane. Cloudflare Worker (Hono + D1) + React panel + per-node `cfvpn-agent` driving Xray (VLESS) and Hysteria2 over systemd. Operator CLI is `cfvpnctl`.
+Multi-VPS VPN control plane. Cloudflare Worker (raw fetch handler + D1) + React panel + per-node `cfvpn-agent` driving Xray (VLESS) and Hysteria2 over systemd. Operator CLI is `cfvpnctl`.
 
 ## Architecture
 
 ```
 Panel (React, Cloudflare Pages)
-  └─ Worker API (Hono + D1) ──┐  Bearer (AGENT_SHARED_SECRET)
-                               │
-  cfvpn-agent (:6788) ◄────────┘  via cloudflared admin tunnel
+  └─ Worker API (raw fetch handler + D1) ──┐  Bearer (AGENT_SHARED_SECRET)
+                                            │
+  cfvpn-agent (:6788) ◄────────────────────┘  via cloudflared admin tunnel
     ├─ xray
     │    ├─ direct mode:    VLESS + XTLS-Reality on :443 (xtls-rprx-vision)
     │    └─ cloudflare mode: VLESS + HTTPUpgrade on 127.0.0.1:10001, path /api/v1/sync
@@ -55,7 +55,7 @@ sudo -E \
   bash scripts/install-node.sh
 ```
 
-`install-node.sh` auto-detects mode by probing `:443`. To force a mode, pass `--mode=direct` or `--mode=cloudflare` to the underlying `cfvpnctl install` (edit the script, or run `cfvpnctl install` manually after you've populated `cfvpn.env`).
+`install-node.sh` auto-detects mode by probing `:443` (`MODE=auto`, the default). To force a mode, pass `MODE=direct` or `MODE=cloudflare` as an env var to `install-node.sh`, or set it in `cfvpn.env` before running `cfvpnctl install` manually — `cfvpnctl install` has no `--mode` flag; it always reads `MODE=` from `cfvpn.env` (`--mode` only exists on `cfvpnctl upgrade` / `cfvpnctl install --upgrade`).
 
 `AGENT_SHARED_SECRET` is generated automatically when not exported, written to `/etc/cfvpn/cfvpn.env` and mirrored into D1 (`nodes.agent_secret`) by the installer itself — nothing to copy by hand.
 
@@ -260,28 +260,18 @@ Migrations 0010 and 0011 are purely additive (nullable columns) — backwards co
 - `0010_nodes_reality_xhttp.sql` adds `reality_pubkey`, `reality_sid`, `reality_sni`, `reality_dest`, `xhttp_path`.
 - `0011_nodes_agent_secret.sql` adds `agent_secret` — the per-node bearer the Worker sends on `/admin/v1/*`. Mirror `/etc/cfvpn/cfvpn.env`'s `AGENT_SHARED_SECRET` into this column with the SQL printed by `install-node.sh`. The Worker falls back to the global `AGENT_SHARED_SECRET` env var when the column is null, so existing nodes keep working until you migrate them.
 
-### Deploy order (migrations 0016–0019)
+### Deploy order
 
-**Migrations first, Worker second.** The cron sweep reads `nodes.consecutive_failures` (0017) and `nodes.last_sweep_outcome` (0019); a Worker deployed ahead of them makes every sweep throw, and `last_seen_at` silently stops advancing fleet-wide.
+**Migrations first, Worker second.** The Worker generally assumes the schema it was written against already exists — a Worker deployed ahead of a migration it depends on can throw on every request that touches the new/changed columns (e.g. the cron sweep silently stops advancing `last_seen_at` fleet-wide if deployed ahead of the columns it reads).
 
-`d1_migrations` on prod is stuck at `0013` even though `0014` and `0015` were applied out of band, so `wrangler d1 migrations apply` would replay `0014` and abort on `duplicate column name`, taking everything after it down with it. Backfill the bookkeeping first:
+Fresh DB:
 
 ```bash
-# 1. Backfill the two out-of-band migrations so the runner skips them
-wrangler --config panel/worker/wrangler.toml d1 execute cfvpn_panel_prod --remote \
-  --command "INSERT INTO d1_migrations (name) VALUES ('0014_nodes_tunnel_uuid.sql'), ('0015_normalize_zone_created_at_ms.sql');"
-
-# 2. Verify: max(id) should now cover 0015 and nothing should be pending but 0016+
-wrangler --config panel/worker/wrangler.toml d1 migrations list cfvpn_panel_prod --remote
-
-# 3. Apply 0016 (created_at normalisation), 0017 + 0019 (sweep columns), 0018 (drop dead indexes)
 wrangler --config panel/worker/wrangler.toml d1 migrations apply cfvpn_panel_prod --remote
-
-# 4. Only now deploy the Worker
 npm --prefix panel/worker run deploy
 ```
 
-Each file holds a single `ALTER` on purpose — D1 has no `ADD COLUMN IF NOT EXISTS`, so a partial failure stays recoverable.
+Prod is at `0019` as of 2026-09-06 (migrations 0016–0019, plus the `d1_migrations` bookkeeping backfill for 0014/0015, were applied that day). Each migration file holds a single `ALTER` on purpose — D1 has no `ADD COLUMN IF NOT EXISTS`, so a partial failure stays recoverable.
 
 ## Tests
 

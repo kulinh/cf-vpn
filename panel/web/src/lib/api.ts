@@ -51,6 +51,18 @@ async function parseJsonOrThrow<T>(response: Response, label: string): Promise<T
   return (await response.json()) as T
 }
 
+// Throws for a non-OK response, preferring the server's {error, detail} body
+// (e.g. "do NOT retry" guidance from the agent) over a generic fallback
+// message. Session-expired is checked first since an expired-session
+// redirect can come back as a 200 OK HTML page.
+async function throwApiError(response: Response, fallback: string): Promise<never> {
+  if (isSessionExpired(response)) {
+    throw new Error('session-expired')
+  }
+  const body = (await response.json().catch(() => ({}))) as { error?: string; detail?: string }
+  throw new Error(body.detail ?? body.error ?? fallback)
+}
+
 function parseRotateNodeResponse(raw: RotateNodeApiResponse): RotateNodeResponse {
   const vpnHost = raw.vpn_host
 
@@ -71,7 +83,12 @@ function parseNode(raw: NodeApiResponse): Node {
   return {
     id: raw.id,
     label: raw.label,
-    status: status === 'unreachable' || status === 'degraded' ? status : status === 'active' || status === 'down' ? status : 'unknown',
+    status:
+      status === 'unreachable' || status === 'degraded' || status === 'disabled'
+        ? status
+        : status === 'active' || status === 'down'
+          ? status
+          : 'unknown',
     latencyMs: raw.latency_ms ?? null,
     vpnHost: raw.vpn_host,
     adminHost: raw.admin_host,
@@ -90,6 +107,10 @@ export async function rotateNode(nodeId: string): Promise<RotateNodeResponse> {
   const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/rotate`, {
     method: 'POST',
   })
+
+  if (!response.ok) {
+    await throwApiError(response, 'rotate failed')
+  }
 
   const raw = await parseJsonOrThrow<RotateNodeApiResponse>(response, 'rotate')
   return parseRotateNodeResponse(raw)
@@ -182,12 +203,8 @@ export async function patchNode(
     body: JSON.stringify(input),
   })
 
-  if (isSessionExpired(response)) {
-    throw new Error('session-expired')
-  }
-
   if (!response.ok) {
-    throw new Error('patch node failed')
+    await throwApiError(response, 'patch node failed')
   }
 }
 

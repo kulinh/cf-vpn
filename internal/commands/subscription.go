@@ -33,6 +33,18 @@ import (
 func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn io.Writer) []string {
 	var lines []string
 
+	// The fragment tag must match what the Worker produces for the same user
+	// on this node — `${username}@${node_id}` in
+	// panel/worker/src/lib/subscription.ts — so a client that sees links from
+	// both sources (panel sync + `cfvpnctl gen-sub`) doesn't get duplicate,
+	// differently-named entries for the same endpoint. Fall back to the bare
+	// name if NODE_ID isn't set (e.g. a node that predates the env var, or a
+	// test harness) rather than emitting a tag ending in "@".
+	tag := name
+	if nodeID := strings.TrimSpace(env[state.KeyNodeID]); nodeID != "" {
+		tag = name + "@" + nodeID
+	}
+
 	// Three-way, exactly like the Worker: direct ⇒ Reality or nothing,
 	// cloudflare ⇒ HTTPUpgrade, anything else ⇒ nothing. A node whose MODE is
 	// empty or unrecognised serves neither transport, so guessing HTTPUpgrade
@@ -48,20 +60,20 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 				"an HTTPUpgrade URI would be served by nothing on this node",
 				pub, sid, sni, name)
 		} else {
-			lines = append(lines, subscription.BuildVLESSRealityURI(name, uuid, domain, sni, pub, sid))
+			lines = append(lines, subscription.BuildVLESSRealityURI(tag, uuid, domain, sni, pub, sid))
 		}
 	case "cloudflare":
 		path := env[state.KeyXHTTPPath]
 		if path == "" {
 			path = templates.VLESSPath
 		}
-		lines = append(lines, subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, path))
+		lines = append(lines, subscription.BuildVLESSHTTPUpgradeURI(tag, uuid, domain, path))
 	default:
 		warnf(warn, "warning: MODE=%q is not \"direct\" or \"cloudflare\"; emitting no VLESS URI for %q "+
 			"— this node's mode is unknown, so no transport can be described", mode, name)
 	}
 
-	if uri, ok := buildHy2Line(name, hy2PW, env, warn); ok {
+	if uri, ok := buildHy2Line(tag, name, hy2PW, env, warn); ok {
 		lines = append(lines, uri)
 	}
 	return lines
@@ -71,7 +83,10 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 // configuration and the user has a password in the hysteria config. Anything
 // missing is reported rather than silently dropped (the Worker drops it
 // silently; on the node we can at least say why).
-func buildHy2Line(name, hy2PW string, env map[string]string, warn io.Writer) (string, bool) {
+//
+// tag names the fragment (matches the Worker's `<user>@<node>`); name is the
+// bare username used for the userpass auth in the URI's authority.
+func buildHy2Line(tag, name, hy2PW string, env map[string]string, warn io.Writer) (string, bool) {
 	host := env[state.KeyHy2Host]
 	if host == "" {
 		return "", false
@@ -91,7 +106,7 @@ func buildHy2Line(name, hy2PW string, env map[string]string, warn io.Writer) (st
 			"(run `cfvpnctl add-user` or a panel sync to provision it)", name)
 		return "", false
 	}
-	return subscription.BuildHy2URI(name, name, hy2PW, host, port, obfs), true
+	return subscription.BuildHy2URI(tag, name, hy2PW, host, port, obfs), true
 }
 
 // hy2PasswordsByName reads the node's hysteria config and returns password by
