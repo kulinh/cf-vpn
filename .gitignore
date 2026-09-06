@@ -31,6 +31,7 @@ panel/web/.vite/
 
 # Worker build and dependency outputs
 panel/worker/node_modules/
+panel/worker/node_modules
 panel/worker/.wrangler/
 
 # Wrangler / Playwright local caches
