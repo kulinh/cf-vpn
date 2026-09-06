@@ -10,15 +10,22 @@ function ok(): Response {
   return new Response("ok", { status: 200 });
 }
 
-// Constant-time string comparison. The Workers runtime does not expose
-// crypto.timingSafeEqual, so we fold every byte into an accumulator and only
-// branch on the final result — no early return that could leak, via timing,
-// how many leading characters matched the webhook secret.
-function timingSafeEqual(a: string, b: string): boolean {
-  const len = Math.max(a.length, b.length);
-  let diff = a.length ^ b.length;
-  for (let i = 0; i < len; i += 1) {
-    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+// Constant-time comparison. The Workers runtime does not expose
+// crypto.timingSafeEqual, so compare SHA-256 digests instead of the strings:
+// the loop then always runs over a fixed 32 bytes, so neither the number of
+// matching leading characters nor the *length* of the secret is observable
+// (the previous version looped max(a.length, b.length) times).
+export async function timingSafeEqual(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder();
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b))
+  ]);
+  const x = new Uint8Array(da);
+  const y = new Uint8Array(db);
+  let diff = 0;
+  for (let i = 0; i < x.length; i += 1) {
+    diff |= x[i] ^ y[i];
   }
   return diff === 0;
 }
@@ -38,7 +45,7 @@ export async function handleTelegramWebhook(
     return ok(); // bot not configured — ignore
   }
   const secret = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
-  if (!timingSafeEqual(secret, env.TELEGRAM_WEBHOOK_SECRET)) {
+  if (!(await timingSafeEqual(secret, env.TELEGRAM_WEBHOOK_SECRET))) {
     return ok();
   }
 

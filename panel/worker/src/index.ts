@@ -1,6 +1,6 @@
 import type { Env } from "./types";
 import { enforceRateLimit, requireActorEmail } from "./lib/auth";
-import { notFound } from "./lib/http";
+import { error, notFound } from "./lib/http";
 import { handleMe } from "./routes/me";
 import {
   createNode,
@@ -20,43 +20,53 @@ import { listEvents } from "./routes/events";
 import { publicSubscription } from "./routes/sub";
 import { handleTelegramWebhook } from "./routes/telegram";
 
+// decodeURIComponent throws URIError on a malformed escape ("/sub/%"), and the
+// /sub/ parse runs before any auth — an unauthenticated 500 (Workers "1101
+// Worker threw exception") for anyone who sends a stray percent sign.
+function safeDecode(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return "";
+  }
+}
+
 function parseNodeID(pathname: string): string {
   const m = pathname.match(/^\/api\/nodes\/([^/]+)$/);
-  return m ? decodeURIComponent(m[1]) : "";
+  return m ? safeDecode(m[1]) : "";
 }
 
 function parseNodeAction(pathname: string, action: string): string {
   const m = pathname.match(new RegExp(`^/api/nodes/([^/]+)/${action}$`));
-  return m ? decodeURIComponent(m[1]) : "";
+  return m ? safeDecode(m[1]) : "";
 }
 
 function parseUserID(pathname: string): string {
   const m = pathname.match(/^\/api\/users\/([^/]+)$/);
-  return m ? decodeURIComponent(m[1]) : "";
+  return m ? safeDecode(m[1]) : "";
 }
 
 function parseUserSubscriptionID(pathname: string): string {
   const m = pathname.match(/^\/api\/users\/([^/]+)\/subscription$/);
-  return m ? decodeURIComponent(m[1]) : "";
+  return m ? safeDecode(m[1]) : "";
 }
 
 function parseUserUpgradeNodesID(pathname: string): string {
   const m = pathname.match(/^\/api\/users\/([^/]+)\/upgrade-nodes$/);
-  return m ? decodeURIComponent(m[1]) : "";
+  return m ? safeDecode(m[1]) : "";
 }
 
 function parseZoneName(pathname: string): string {
   const m = pathname.match(/^\/api\/zones\/([^/]+)$/);
-  return m ? decodeURIComponent(m[1]) : "";
+  return m ? safeDecode(m[1]) : "";
 }
 
 function parseSubToken(pathname: string): string {
   const m = pathname.match(/^\/sub\/([^/]+)$/);
-  return m ? decodeURIComponent(m[1]) : "";
+  return m ? safeDecode(m[1]) : "";
 }
 
-export default {
-  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
 
@@ -80,8 +90,14 @@ export default {
 
     if (pathname === "/telegram/webhook" && request.method === "POST") {
       // Unauthenticated (Access-bypassing) endpoint — rate-limit by source IP.
-      const ipLimited = enforceRateLimit(`tg:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`);
-      if (ipLimited) return ipLimited;
+      // Never answer Telegram with a non-2xx: it retries, and none of the
+      // mutating commands (u:del, n:rotate) are idempotent or deduplicated by
+      // update_id. Drop the update instead and keep the rate-limit semantics as
+      // "ignore", matching routes/telegram.ts's own invariant.
+      if (enforceRateLimit(`tg:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`)) {
+        console.warn("telegram webhook rate-limited; update dropped");
+        return new Response("ok", { status: 200 });
+      }
       return handleTelegramWebhook(env, request, ctx);
     }
 
@@ -170,6 +186,19 @@ export default {
     }
 
     return notFound(pathname);
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    try {
+      return await route(request, env, ctx);
+    } catch (e) {
+      // Last-resort guard: an uncaught throw is a Workers 1101 with no body we
+      // control. Log it for observability, return a generic shape — never the
+      // exception text, which can carry hostnames, tokens or SQL.
+      console.error("unhandled worker error", String(e));
+      return error(500, { error: "internal_error" });
+    }
   },
 
   // Both triggers are matched explicitly and anything else is refused: the old

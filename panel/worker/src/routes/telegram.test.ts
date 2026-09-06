@@ -36,6 +36,13 @@ describe("handleTelegramWebhook", () => {
     expect(dispatchMock).not.toHaveBeenCalled();
   });
 
+  it("rejects a secret that shares a prefix but differs in length", async () => {
+    dispatchMock.mockClear();
+    const res = await handleTelegramWebhook(env, req({ update_id: 1 }, "SS"), fakeCtx());
+    expect(res.status).toBe(200);
+    expect(dispatchMock).not.toHaveBeenCalled();
+  });
+
   it("ignores updates from the wrong chat id", async () => {
     dispatchMock.mockClear();
     const update = { update_id: 1, message: { message_id: 1, chat: { id: -999, type: "group" }, text: "/help" } };
