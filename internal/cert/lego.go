@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 )
 
 const adminHostZone = "rwl247.dev"
@@ -95,6 +97,9 @@ func (m *LegoManager) run(ctx context.Context, host, token string, command ...st
 	if wait := os.Getenv("LEGO_PROPAGATION_WAIT"); wait != "" {
 		args = append(args, "--dns.propagation-wait="+wait)
 	}
+	if len(command) == 0 {
+		return fmt.Errorf("lego: no command given for %s", host)
+	}
 	args = append(args, command...)
 	out, err := r.Run(ctx, []string{"CF_DNS_API_TOKEN=" + token}, bin, args...)
 	if err != nil {
@@ -119,15 +124,19 @@ func (m *LegoManager) copyResult(host, certPath, keyPath string) error {
 	return nil
 }
 
+// copyCertFile publishes a freshly issued certificate or key.
+//
+// M-G1: it used os.WriteFile, whose perm argument only applies when the file is
+// CREATED. A key left 0644 by an older acme.sh-era install stayed 0644 through
+// every renewal (proven on a live node), and the in-place truncate meant a
+// crash mid-write left hysteria with a half key it cannot start from.
+// fsutil.WriteFile chmods explicitly and renames into place.
 func copyCertFile(src, dst string) error {
 	raw, err := os.ReadFile(src)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", src, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", filepath.Dir(dst), err)
-	}
-	if err := os.WriteFile(dst, raw, 0o600); err != nil {
+	if err := fsutil.WriteFile(dst, raw, 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", dst, err)
 	}
 	return nil

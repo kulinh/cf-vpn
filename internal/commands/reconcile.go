@@ -62,7 +62,22 @@ func reconcileUnits() ([]string, error) {
 // canonical templates. It rewrites only drifted units, then daemon-reloads and
 // restarts/re-enables exactly those that changed. Safe to run at any time; a
 // node already in sync makes no systemd calls.
+//
+// H11: it restarts xray/hysteria, so it takes the same config lock as every
+// other writer. Callers that already hold the lock (RunUpgrade's in-place
+// re-render) must use runReconcileUnitsLocked — flock does not nest.
 func RunReconcileUnits(ctx context.Context, runner systemd.Runner, stdout io.Writer) error {
+	unlock, err := AcquireConfigLock(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire config lock: %w", err)
+	}
+	defer unlock()
+	return runReconcileUnitsLocked(ctx, runner, stdout)
+}
+
+// runReconcileUnitsLocked is RunReconcileUnits for callers already holding the
+// config lock.
+func runReconcileUnitsLocked(ctx context.Context, runner systemd.Runner, stdout io.Writer) error {
 	r := resolveRunner(runner)
 	changed, err := reconcileUnits()
 	if err != nil {

@@ -173,6 +173,16 @@ func RunUpgradeCheck(ctx context.Context, in UpgradeInputs, deps InstallDeps, st
 }
 
 func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout, stderr io.Writer) (UpgradeResult, error) {
+	// H11: an upgrade rewrites xray, cloudflared, hysteria and cfvpn.env and
+	// restarts the services — exactly what the config lock protects. Without it
+	// a concurrent POST /admin/v1/sync interleaves its own read-modify-write and
+	// one of the two user sets is silently lost.
+	unlock, err := AcquireConfigLock(ctx)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("acquire config lock: %w", err)
+	}
+	defer unlock()
+
 	if in.Now == nil {
 		in.Now = time.Now
 	}
@@ -619,7 +629,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 	if reconcileOut == nil {
 		reconcileOut = io.Discard
 	}
-	if err := RunReconcileUnits(ctx, runner, reconcileOut); err != nil && stderr != nil {
+	if err := runReconcileUnitsLocked(ctx, runner, reconcileOut); err != nil && stderr != nil {
 		fmt.Fprintf(stderr, "warning: reconcile systemd units failed: %v\n", err)
 	}
 
@@ -805,6 +815,15 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if in.CFAPIToken == "" || in.CFAccountID == "" || in.User1Name == "" || in.NodeID == "" {
 		return fmt.Errorf("CF_API_TOKEN, CF_ACCOUNT_ID, NODE_ID, and USER1_NAME are required")
 	}
+
+	// H11: install rewrites every config the lock protects (xray, hysteria,
+	// cloudflared, cfvpn.env) and restarts the services.
+	unlock, err := AcquireConfigLock(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire config lock: %w", err)
+	}
+	defer unlock()
+
 	adminHost, err := generateAdminHost(in.NodeID)
 	if err != nil {
 		return err
@@ -1230,8 +1249,13 @@ func CertPathsForHost(host string) (certPath, keyPath string) {
 	return filepath.Join("/etc/cfvpn/certs", host, "fullchain.pem"), filepath.Join("/etc/cfvpn/certs", host, "privkey.pem")
 }
 
+// hysteriaCertDir holds the Hysteria2 leaf + key. It is a var so tests can
+// redirect it: without that, anything exercising cert issue/renew would read
+// and write the real /etc/cfvpn/hysteria of the machine running `go test`.
+var hysteriaCertDir = "/etc/cfvpn/hysteria"
+
 func HysteriaCertPaths() (certPath, keyPath string) {
-	return "/etc/cfvpn/hysteria/cert.pem", "/etc/cfvpn/hysteria/key.pem"
+	return filepath.Join(hysteriaCertDir, "cert.pem"), filepath.Join(hysteriaCertDir, "key.pem")
 }
 
 func XrayCertPaths() (certPath, keyPath string) {

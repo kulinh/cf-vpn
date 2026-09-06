@@ -98,7 +98,7 @@ func RunAddUser(ctx context.Context, in UserInputs, runner systemd.Runner, stdou
 
 	// Serialize the whole load→mutate→save→restart against the agent and any
 	// concurrent CLI invocation so the user-count check and the write can't race.
-	unlock, err := AcquireConfigLock()
+	unlock, err := AcquireConfigLock(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire config lock: %w", err)
 	}
@@ -201,7 +201,7 @@ func RunRemoveUser(ctx context.Context, in UserInputs, runner systemd.Runner, st
 		return err
 	}
 
-	unlock, err := AcquireConfigLock()
+	unlock, err := AcquireConfigLock(ctx)
 	if err != nil {
 		return fmt.Errorf("acquire config lock: %w", err)
 	}

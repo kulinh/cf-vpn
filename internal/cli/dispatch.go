@@ -279,7 +279,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", paths.EnvFile, err)
 			return 1
 		}
-		if err := commands.RunCertRenew(ctx, env, commands.CertRenewDeps{Cert: cert.NewDefault()}, stdout, stderr); err != nil {
+		if err := commands.RunCertRenew(ctx, env, commands.CertRenewDeps{Cert: cert.NewDefault(), Runner: systemd.ExecRunner{}}, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

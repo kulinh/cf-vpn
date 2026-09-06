@@ -905,13 +905,21 @@ func withUpgradeSeams(t *testing.T) string {
 	dir := t.TempDir()
 	cfgDir := filepath.Join(dir, "etc", "cfvpn")
 	oldEnv, oldCfg, oldCloud, oldSub, oldSysd := envFilePath, xrayConfigPath, cloudflaredConfig, subscriptionDir, systemdUnitDir
+	// hysteriaConfigPath MUST be redirected too. Without it the HY2 backfill in
+	// RunUpgrade wrote /etc/cfvpn/hysteria/config.yaml for real, so running
+	// `go test` as root on a node replaced that node's live hysteria config
+	// (port, obfs password and user set) with test fixtures — the damage only
+	// surfacing at the next hysteria restart.
+	oldHy := hysteriaConfigPath
 	envFilePath = filepath.Join(cfgDir, "cfvpn.env")
 	xrayConfigPath = filepath.Join(cfgDir, "xray.json")
 	cloudflaredConfig = filepath.Join(cfgDir, "cloudflared.yml")
 	subscriptionDir = filepath.Join(cfgDir, "subscriptions")
 	systemdUnitDir = filepath.Join(dir, "units")
+	hysteriaConfigPath = filepath.Join(cfgDir, "hysteria.yaml")
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, cloudflaredConfig, subscriptionDir, systemdUnitDir = oldEnv, oldCfg, oldCloud, oldSub, oldSysd
+		hysteriaConfigPath = oldHy
 	})
 	return dir
 }
