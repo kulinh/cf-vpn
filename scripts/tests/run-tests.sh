@@ -153,12 +153,21 @@ is "$(printf 'MD5= 0123456789abcdef0123456789abcdef\nSHA1= 0123456789abcdef01234
    "$h1" "openssl .dgst style (only the 64-hex line qualifies)"
 printf '%s  other-a\n%s  other-b\n' "$h1" "$h2" | cfvpn_extract_sha256 not-listed >/dev/null 2>&1
 is "$?" "1" "multi-entry file with no match fails instead of guessing"
-# A substring match would return the -avx hash for the plain binary.
-is "$(printf '%s  hysteria-linux-amd64-avx\n%s  hysteria-linux-amd64\n' "$h2" "$h1" \
-      | cfvpn_extract_sha256 hysteria-linux-amd64)" "$h1" \
-   "matches the filename FIELD, not a substring (…-avx must not win)"
+# Real shape of apernet/hysteria's hashes.txt: ~27 entries, every name carries
+# a "build/" prefix, and the plain binary sits next to its -avx sibling. A
+# path-sensitive match finds nothing here (and then, because every line holds a
+# valid hash, the "exactly one hash" fallback cannot save it either).
+hysteria_hashes="$(printf '%s  build/hysteria-linux-386\n%s  build/hysteria-linux-amd64-avx\n%s  build/hysteria-linux-amd64\n%s  build/hysteria-linux-arm64\n' \
+  "$h2" "$h2" "$h1" "$h2")"
+is "$(printf '%s\n' "$hysteria_hashes" | cfvpn_extract_sha256 hysteria-linux-amd64)" "$h1" \
+   "hashes.txt with a build/ prefix and an -avx sibling picks the right hash"
+is "$(printf '%s  ./jq-linux-amd64\n' "$h1" | cfvpn_extract_sha256 jq-linux-amd64)" \
+   "$h1" "leading ./ is ignored"
 is "$(printf '%s *hysteria-linux-amd64\n' "$h1" | cfvpn_extract_sha256 hysteria-linux-amd64)" \
    "$h1" "sha256sum binary-mode '*name' prefix"
+printf '%s  build/hysteria-linux-amd64-avx\n%s  build/hysteria-linux-arm64\n' "$h1" "$h2" \
+  | cfvpn_extract_sha256 hysteria-linux-amd64 >/dev/null 2>&1
+is "$?" "1" "…and an -avx-only listing still fails rather than returning its hash"
 
 section "cfvpn-common.sh — sha256 verification"
 echo hello >"$TMPROOT/payload"

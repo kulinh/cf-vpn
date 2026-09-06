@@ -14,7 +14,7 @@
 # Flow:
 #   0. preflight LOCAL — tool checks + local CF API reachability
 #   1. SSH/MODE — verify SSH + probe target /proc/net to pick direct/cloudflare
-#   2. OS deps on target — minimal apt: ca-certificates + ufw
+#   2. OS deps on target — minimal apt: ca-certificates + curl + ufw
 #   3. preflight TARGET — DNS / TCP443 / HTTPS / clock-skew (FAIL-FAST before
 #                         any heavy download or resource creation)
 #   4. download — fetch GFW-blocked binaries/packages to local STAGE_DIR.
@@ -295,12 +295,16 @@ resolve_mode
 log "selected MODE=$MODE"
 
 # ----- 2. OS dependencies on target (minimal) ---------------------------------
+# curl is required: step 3's GFW preflight does its HTTPS checks with the
+# target's own curl, and nothing else ships one any more (the unverifiable
+# static curl that used to be staged here was dropped). ca-certificates must
+# land in the same step so those HTTPS checks can complete a TLS handshake.
 log "installing minimal OS dependencies on $TARGET_HOST"
 ssh_run bash <<'REMOTE'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y -q
-PACKAGES=(ca-certificates ufw)
+PACKAGES=(ca-certificates curl ufw)
 TO_INSTALL=()
 for pkg in "${PACKAGES[@]}"; do
   dpkg -s "$pkg" >/dev/null 2>&1 || TO_INSTALL+=("$pkg")
@@ -504,8 +508,9 @@ log "    jq ${jq_ver} ($(du -sh "$STAGE_BIN/jq" | cut -f1))"
 # NOTE: the static curl from stunnel/static-curl used to be staged here as
 # [6/6]. It was dropped: that project publishes NO checksum asset (verified),
 # so it could only ever be installed unverified as root, and nothing in the
-# flow needs it — the target's own curl (ca-certificates is installed in step 2)
-# already served the GFW preflight, and cfvpnctl / cfvpn-agent are Go binaries
+# flow needs it — the target gets curl + ca-certificates from apt in step 2
+# (which is what the GFW preflight uses), and cfvpnctl / cfvpn-agent are Go
+# binaries
 # that speak HTTPS themselves. All D1 and agent calls run on the operator box.
 
 # ----- 5. build locally (linux/amd64, CGO_ENABLED=0) -------------------------

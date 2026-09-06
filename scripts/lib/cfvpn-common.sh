@@ -81,17 +81,21 @@ cfvpn_sha256_file() {
 
 # cfvpn_extract_sha256 NAME  < checksum-file
 # Understands the formats upstream projects actually publish:
-#   "<hash>  filename"        (sha256sum / *.sha256sum / sha256sum.txt)
-#   "<hash> *filename"        (sha256sum binary mode)
-#   "<hash>"                  (bare single-hash *.sha256 file)
-#   "SHA2-256= <hash>"        (openssl dgst style, e.g. Xray *.dgst)
+#   "<hash>  filename"          (sha256sum / *.sha256sum / sha256sum.txt)
+#   "<hash> *filename"          (sha256sum binary mode)
+#   "<hash>  build/filename"    (hashes.txt written from a build dir)
+#   "<hash>"                    (bare single-hash *.sha256 file)
+#   "SHA2-256= <hash>"          (openssl dgst style, e.g. Xray *.dgst)
 #   "SHA256(filename)= <hash>"
-# The filename is matched as a whole FIELD, not as a substring: a substring
-# match would happily hand back the hash of hysteria-linux-amd64-avx for
-# hysteria-linux-amd64. Otherwise a file containing exactly one hash is
-# accepted; a multi-entry file with no match is a failure (never guess).
+# Matching is on the BASENAME as a whole field: a substring match would hand
+# back the hash of hysteria-linux-amd64-avx for hysteria-linux-amd64, while a
+# path-sensitive match would miss "build/hysteria-linux-amd64" (which is the
+# shape apernet/hysteria actually publishes). Otherwise a file containing
+# exactly one hash is accepted; a multi-entry file with no match is a failure
+# (never guess).
 cfvpn_extract_sha256() {
-  local want="$1" line tok hash matched lone="" lone_count=0
+  local want="$1" want_base line tok hash matched lone="" lone_count=0
+  want_base="${want##*/}"
   while IFS= read -r line || [ -n "$line" ]; do
     hash=""; matched=0
     for tok in $line; do
@@ -101,12 +105,13 @@ cfvpn_extract_sha256() {
         hash="${tok,,}"
         continue
       fi
-      # sha256sum writes "<hash>  name" (text) or "<hash> *name" (binary);
-      # some files carry a leading "./".
-      tok="${tok#\*}"; tok="${tok#./}"
+      # sha256sum writes "<hash>  name" (text) or "<hash> *name" (binary), and
+      # the name may carry any directory prefix ("./", "build/", …).
+      tok="${tok#\*}"
+      tok="${tok##*/}"
       # SHA256(name)= <hash> puts the name before the '=' we stripped above,
       # so compare against the basename in every position.
-      [ -n "$want" ] && [ "$tok" = "$want" ] && matched=1
+      [ -n "$want_base" ] && [ "$tok" = "$want_base" ] && matched=1
     done
     [ -n "$hash" ] || continue
     if [ "$matched" -eq 1 ]; then
