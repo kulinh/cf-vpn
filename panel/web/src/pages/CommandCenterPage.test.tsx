@@ -48,3 +48,20 @@ test('shows no nodes found when list is empty', async () => {
 
   expect(await screen.findByText(/no nodes found/i)).toBeInTheDocument()
 })
+
+test('shows a load-failure banner instead of a silent empty state when listNodes rejects', async () => {
+  vi.spyOn(api, 'listNodes').mockRejectedValue(new Error('nodes failed'))
+
+  render(<CommandCenterPage />)
+
+  expect(await screen.findByText(/failed to load — nodes failed\. reload\./i)).toBeInTheDocument()
+  expect(screen.getByText(/no nodes found/i)).toBeInTheDocument()
+})
+
+test('shows the session-expired banner when the initial load rejects with session-expired', async () => {
+  vi.spyOn(api, 'listNodes').mockRejectedValue(new Error('session-expired'))
+
+  render(<CommandCenterPage />)
+
+  expect(await screen.findByText(/session expired — reload the page/i)).toBeInTheDocument()
+})
