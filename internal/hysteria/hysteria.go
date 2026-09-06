@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 )
 
@@ -53,10 +54,7 @@ func WriteConfig(path string, cfg Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, body, 0o600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
+	return fsutil.WriteFile(path, body, 0o600)
 }
 
 func Load(path string) (Config, error) {
@@ -78,16 +76,24 @@ func ListUsers(path string) ([]User, error) {
 	return users, nil
 }
 
+// SetUsers rewrites the auth.userpass block of an existing hysteria config.
+//
+// It returns an error when the block cannot be located instead of writing the
+// file back unchanged. The silent no-op it replaces was the worst possible
+// outcome: the agent reported {"ok":true} to the panel while no Hy2 credential
+// had been applied, ListUsers then returned nothing, and the next add/delete
+// minted fresh passwords for every user because currentSyncUsers saw them
+// "missing" from hysteria.
 func SetUsers(path string, users []User) error {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	out := replaceUserpass(body, users)
-	if err := os.WriteFile(path, out, 0o600); err != nil {
-		return err
+	out, ok := replaceUserpass(body, users)
+	if !ok {
+		return fmt.Errorf("hysteria: no auth.userpass block found in %s; refusing to report success without applying %d user(s)", path, len(users))
 	}
-	return os.Chmod(path, 0o600)
+	return fsutil.WriteFile(path, out, 0o600)
 }
 
 func ReloadService(ctx context.Context, r systemd.Runner) error {
@@ -129,11 +135,14 @@ func parseUsers(body []byte) []User {
 	return users
 }
 
-func replaceUserpass(body []byte, users []User) []byte {
+// replaceUserpass returns the config body with the auth.userpass entries
+// replaced by users. ok is false when no auth.userpass block exists, in which
+// case the body is returned unchanged and the caller MUST treat it as failure.
+func replaceUserpass(body []byte, users []User) ([]byte, bool) {
 	lines := splitLines(body)
 	start, end := userpassRange(lines)
 	if start < 0 {
-		return body
+		return body, false
 	}
 
 	users = append([]User(nil), users...)
@@ -148,7 +157,7 @@ func replaceUserpass(body []byte, users []User) []byte {
 	out = append(out, lines[:start]...)
 	out = append(out, repl...)
 	out = append(out, lines[end:]...)
-	return []byte(strings.Join(out, "\n") + trailingNewline(body))
+	return []byte(strings.Join(out, "\n") + trailingNewline(body)), true
 }
 
 func userpassRange(lines []string) (int, int) {

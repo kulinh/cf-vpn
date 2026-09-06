@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"sort"
 	"text/template"
 
 	"github.com/kulinh/cf-vpn/internal/hysteria"
+	"github.com/kulinh/cf-vpn/internal/validate"
 )
 
 type XrayUser struct {
@@ -58,7 +61,37 @@ ingress:
   - service: http_status:404
 `
 
+// validateCloudflaredInputs guards the only text/template-rendered config in
+// the tree. Every other renderer builds a map and json.Marshal()s it, which is
+// injection-proof; this one interpolates straight into unquoted YAML.
+//
+// Proven before this check existed: a Domain carrying a newline plus
+// "    service: http://127.0.0.1:22" rendered with err == nil and produced a
+// valid ingress whose FIRST matching rule published the node's SSH port through
+// the Cloudflare tunnel (cloudflared takes the first match). TunnelUUID
+// additionally lands inside a filesystem path (credentials-file), so it is
+// pinned to the UUID shape.
+func validateCloudflaredInputs(tunnelUUID string, hosts map[string]string) error {
+	if err := validate.UUID(tunnelUUID); err != nil {
+		return fmt.Errorf("cloudflared config: tunnel uuid: %w", err)
+	}
+	names := make([]string, 0, len(hosts))
+	for name := range hosts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		if err := validate.Hostname(hosts[name]); err != nil {
+			return fmt.Errorf("cloudflared config: %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func RenderCloudflaredAdmin(tunnelUUID, adminHost string) (string, error) {
+	if err := validateCloudflaredInputs(tunnelUUID, map[string]string{"admin host": adminHost}); err != nil {
+		return "", err
+	}
 	t, err := template.New("cloudflared-admin").Parse(cloudflaredAdminTemplate)
 	if err != nil {
 		return "", err
@@ -69,6 +102,9 @@ func RenderCloudflaredAdmin(tunnelUUID, adminHost string) (string, error) {
 }
 
 func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, error) {
+	if err := validateCloudflaredInputs(tunnelUUID, map[string]string{"domain": domain, "admin host": adminHost}); err != nil {
+		return "", err
+	}
 	t, err := template.New("cloudflared-with-admin").Parse(cloudflaredWithAdminTemplate)
 	if err != nil {
 		return "", err

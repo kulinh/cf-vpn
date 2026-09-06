@@ -122,6 +122,9 @@ func TestReRenderInPlaceReconcilesDriftedUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	env["MODE"] = "direct"
+	// ADMIN_HOST is always set on a real node; the cloudflared renderer now
+	// rejects an empty ingress hostname instead of emitting "hostname: ".
+	env["ADMIN_HOST"] = "jpy-04.rwl247.dev"
 	env[state.KeyRealityPriv] = "test-priv-x25519"
 	env[state.KeyRealityPub] = "test-pub"
 	env[state.KeyRealityShortID] = "abcd1234"

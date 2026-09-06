@@ -765,7 +765,7 @@ func TestRunRotateCloudflareHappyPath(t *testing.T) {
 	if err := state.SaveAtomic(envFilePath, map[string]string{
 		"DOMAIN":            "old.example.com",
 		"MODE":              "cloudflare",
-		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_TUNNEL_UUID": "7b4d2e90-2222-4333-9444-0123456789ab",
 		"ADMIN_HOST":        "admin.example.com",
 		"PUBLIC_IP":         "203.0.113.10",
 		"HY2_PORT":          "45321",
@@ -810,7 +810,7 @@ func TestRunRotateCloudflareHappyPath(t *testing.T) {
 	if len(cf.upsertCNAME) != 1 ||
 		cf.upsertCNAME[0].zoneID != "vpn-zone" ||
 		cf.upsertCNAME[0].name != "vpn-new.example.com" ||
-		cf.upsertCNAME[0].target != "tunnel-uuid-1.cfargotunnel.com" {
+		cf.upsertCNAME[0].target != "7b4d2e90-2222-4333-9444-0123456789ab.cfargotunnel.com" {
 		t.Fatalf("unexpected CNAME upsert: %#v", cf.upsertCNAME)
 	}
 	// HY2 A record upserted with PUBLIC_IP from env.
@@ -880,7 +880,7 @@ func TestRunRotateCloudflareHappyPath(t *testing.T) {
 	if !bytes.Contains(cfdBytes, []byte("admin.example.com")) {
 		t.Errorf("cloudflared.yml missing admin host: %s", cfdBytes)
 	}
-	if !bytes.Contains(cfdBytes, []byte("tunnel-uuid-1")) {
+	if !bytes.Contains(cfdBytes, []byte("7b4d2e90-2222-4333-9444-0123456789ab")) {
 		t.Errorf("cloudflared.yml missing tunnel uuid: %s", cfdBytes)
 	}
 
@@ -916,7 +916,7 @@ func TestRunRotateCloudflareWithoutHy2(t *testing.T) {
 	if err := state.SaveAtomic(envFilePath, map[string]string{
 		"DOMAIN":            "old.example.com",
 		"MODE":              "cloudflare",
-		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_TUNNEL_UUID": "7b4d2e90-2222-4333-9444-0123456789ab",
 		"ADMIN_HOST":        "admin.example.com",
 		"PUBLIC_IP":         "203.0.113.10",
 	}, 0o600); err != nil {
@@ -952,7 +952,7 @@ func TestRunRotateCloudflareRollsBackOnXrayRestartFailure(t *testing.T) {
 	if err := state.SaveAtomic(envFilePath, map[string]string{
 		"DOMAIN":            "old.example.com",
 		"MODE":              "cloudflare",
-		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_TUNNEL_UUID": "7b4d2e90-2222-4333-9444-0123456789ab",
 		"ADMIN_HOST":        "admin.example.com",
 		"PUBLIC_IP":         "203.0.113.10",
 	}, 0o600); err != nil {
