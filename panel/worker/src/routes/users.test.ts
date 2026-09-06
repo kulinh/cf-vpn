@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/agent-client", () => ({
-  callAgent: vi.fn()
-}));
+vi.mock("../lib/agent-client", async (orig) => {
+  const actual = await orig<typeof import("../lib/agent-client")>();
+  return { ...actual, callAgent: vi.fn() };
+});
 
 vi.mock("../lib/events", () => ({
   logEvent: vi.fn().mockResolvedValue(undefined)

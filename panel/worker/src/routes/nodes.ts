@@ -7,12 +7,17 @@ import type {
   NodeRow
 } from "../types";
 import { all, one, nowTs } from "../lib/db";
-import { callAgent } from "../lib/agent-client";
+import { callAgent, isConfigError, MAX_TIMEOUT_MS } from "../lib/agent-client";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials, isCfTunnelId } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
 import { generateAdminHost, validateAdminHost } from "../lib/hosts";
 import { generateHost, generateHy2Host, pickZone } from "../lib/host-gen";
+
+// A healthy sweep over the Cloudflare tunnel already measures 450–1700 ms, and
+// a tunnel hiccup costs far more than that; 5s was low enough that the cron
+// sweep flapped nodes between active/unreachable every few hours.
+const HEALTHCHECK_TIMEOUT_MS = 15000;
 
 type AgentCaller = typeof callAgent;
 type TestAgentCaller = (...args: Parameters<AgentCaller>) => Promise<unknown>;
@@ -283,7 +288,7 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
     try {
       const status = await agentCall<AgentStatusResponse>(
         env,
-        { adminHost: row.admin_host, agentSecret: row.agent_secret },
+        { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
         "/admin/v1/status",
         { method: "GET" },
         5000
@@ -312,7 +317,7 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
       try {
         await agentCall<{ ok: boolean }>(
           env,
-          { adminHost: row.admin_host, agentSecret: row.agent_secret },
+          { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
           "/admin/v1/shutdown-tunnel",
           { method: "POST", body: "{}" },
           15000
@@ -457,7 +462,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     return row;
   }
   try {
-    const status = await agentCall<AgentStatusResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/status", { method: "GET" }, 5000);
+    const status = await agentCall<AgentStatusResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/status", { method: "GET" }, 5000);
     const mode = typeof status.mode === "string" && status.mode.length > 0 ? status.mode : row.mode ?? null;
     const syncRuntimeFields = mode === "direct";
     const syncCloudflareFields = mode === "cloudflare";
@@ -489,7 +494,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     // not erase a previously-good "active" status — they signal a config
     // problem, not a node outage.
     const msg = String(e);
-    const looksTransportError = !/agent_http_4\d\d/.test(msg);
+    const looksTransportError = !isConfigError(e);
     if (looksTransportError) {
       await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(id).run();
     }
@@ -505,7 +510,7 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
   }
   try {
     const startedAt = Date.now();
-    const out = await callAgent<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+    const out = await agentCall<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, HEALTHCHECK_TIMEOUT_MS);
     const latencyMs = Math.max(1, Date.now() - startedAt);
     const now = nowTs();
     const measured = { ...out, latency_ms: latencyMs };
@@ -537,7 +542,7 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
     (results ?? []).map(async (row) => {
       try {
         const startedAt = Date.now();
-        await agentCall<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+        await agentCall<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
         const latencyMs = Math.max(1, Date.now() - startedAt);
         await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
           .bind(nowTs(), latencyMs, row.id)
@@ -626,7 +631,7 @@ export async function nodeRotateCore(
   try {
     const out = await agentCall<AgentRotateResponse>(
       env,
-      { adminHost: row.admin_host, agentSecret: row.agent_secret },
+      { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/rotate-domain",
       {
         method: "POST",
@@ -642,7 +647,7 @@ export async function nodeRotateCore(
           old_hy2_zone_id: oldZone?.cf_zone_id ?? ""
         })
       },
-      120000
+      MAX_TIMEOUT_MS
     );
     await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=?")
       .bind(out.vpn_host, out.hy2_host, out.hy2_port, out.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
@@ -690,10 +695,10 @@ export async function nodeSyncCore(
   try {
     const out = await agentCall<AgentSyncResponse>(
       env,
-      { adminHost: row.admin_host, agentSecret: row.agent_secret },
+      { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/sync",
       { method: "POST", body: JSON.stringify({ users }) },
-      120000
+      MAX_TIMEOUT_MS
     );
     const syncRuntimeFields = row.mode === "direct";
     const syncCloudflareFields = row.mode === "cloudflare";

@@ -1,6 +1,6 @@
 import type { AgentAddUserResponse, Env } from "../types";
 import { all, nowTs, one, randomHex, userIDFromName } from "../lib/db";
-import { callAgent } from "../lib/agent-client";
+import { callAgent, MAX_TIMEOUT_MS } from "../lib/agent-client";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
 import { buildSubscriptionForClient } from "../lib/subscription";
@@ -80,10 +80,10 @@ export async function createUserByName(env: Env, rawName: string | undefined, ac
     nodes.map(async (node) => {
       const creds = await callAgent<AgentAddUserResponse>(
         env,
-        { adminHost: node.admin_host, agentSecret: node.agent_secret },
+        { adminHost: node.admin_host, agentSecret: node.agent_secret, nodeId: node.id },
         "/admin/v1/users",
         { method: "POST", body: JSON.stringify({ name: id }) },
-        120000
+        MAX_TIMEOUT_MS
       );
       await env.DB.prepare(
         "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
@@ -129,10 +129,10 @@ export async function deleteUser(env: Env, id: string, actor: string): Promise<R
       try {
         await callAgent(
           env,
-          { adminHost: node.admin_host, agentSecret: node.agent_secret },
+          { adminHost: node.admin_host, agentSecret: node.agent_secret, nodeId: node.id },
           `/admin/v1/users/${encodeURIComponent(id)}`,
           { method: "DELETE" },
-          120000
+          MAX_TIMEOUT_MS
         );
       } catch (e) {
         // Treat 404 as success — the user is already absent on that node.
@@ -185,10 +185,10 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
     nodesToAdd.map(async (node) => {
       const creds = await callAgent<AgentAddUserResponse>(
         env,
-        { adminHost: node.admin_host, agentSecret: node.agent_secret },
+        { adminHost: node.admin_host, agentSecret: node.agent_secret, nodeId: node.id },
         "/admin/v1/users",
         { method: "POST", body: JSON.stringify({ name: id }) },
-        120000
+        MAX_TIMEOUT_MS
       );
       await env.DB.prepare(
         "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
