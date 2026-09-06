@@ -1,17 +1,28 @@
 package netcheck
 
 import (
+	"errors"
 	"net"
 	"strconv"
+	"syscall"
 	"time"
 )
 
-// IsTCPPortBound returns true if host:port already has a listener locally.
+// IsTCPPortBound reports whether host:port already has a listener locally.
+//
+// Only EADDRINUSE means "bound". Every other failure — EACCES on :443 when not
+// running as root, EADDRNOTAVAIL for an address this host does not own — says
+// nothing about a listener and is returned as an error. Reporting those as
+// "bound" made SuggestMode() pick cloudflare on a node where direct was
+// correct, purely because the probe ran unprivileged.
 func IsTCPPortBound(host string, port int) (bool, error) {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return true, nil
+		if errors.Is(err, syscall.EADDRINUSE) {
+			return true, nil
+		}
+		return false, err
 	}
 	_ = ln.Close()
 	return false, nil
@@ -29,9 +40,13 @@ func CanReachOutbound443(timeout time.Duration) bool {
 
 // SuggestMode returns "direct" if 443 is free locally and we can reach the
 // internet on 443; otherwise "cloudflare".
+//
+// A probe error (typically EACCES because the caller is not root) is treated as
+// "unknown, not bound": xray itself runs as root and can bind :443, so the
+// permission of whoever ran the probe must not decide the node's mode.
 func SuggestMode() string {
-	bound, _ := IsTCPPortBound("0.0.0.0", 443)
-	if bound {
+	bound, err := IsTCPPortBound("0.0.0.0", 443)
+	if err == nil && bound {
 		return "cloudflare"
 	}
 	if !CanReachOutbound443(3 * time.Second) {

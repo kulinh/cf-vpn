@@ -1,12 +1,19 @@
 package xray
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"os/exec"
 	"strings"
+	"time"
 )
+
+// keygenTimeout bounds the `xray x25519` exec. It is a fast local keygen; the
+// timeout exists so a wedged or hung xray binary cannot wedge an install
+// forever (the call had no context at all).
+const keygenTimeout = 10 * time.Second
 
 type Keypair struct{ Private, Public string }
 
@@ -41,7 +48,9 @@ func GenerateRealityParams(opts GenerateRealityOptions) (RealityParams, error) {
 	if opts.StubKeypair != nil {
 		kp = *opts.StubKeypair
 	} else {
-		out, err := exec.Command(opts.XrayBin, "x25519").Output()
+		ctx, cancel := context.WithTimeout(context.Background(), keygenTimeout)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, opts.XrayBin, "x25519").Output()
 		if err != nil {
 			return RealityParams{}, fmt.Errorf("xray x25519: %w", err)
 		}

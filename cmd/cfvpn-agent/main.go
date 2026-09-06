@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -13,8 +14,10 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/kulinh/cf-vpn/internal/cert"
@@ -26,6 +29,7 @@ import (
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 	"github.com/kulinh/cf-vpn/internal/templates"
+	"github.com/kulinh/cf-vpn/internal/validate"
 	"github.com/kulinh/cf-vpn/internal/xray"
 	"github.com/kulinh/cf-vpn/internal/zones"
 )
@@ -121,9 +125,74 @@ func main() {
 	// all admin endpoints require an Authorization: Bearer <secret> header.
 	handler := withAuth(mux)
 
-	server := &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: 10 * time.Second}
-	log.Printf("cfvpn-agent listening on %s", addr)
-	log.Fatal(server.ListenAndServe())
+	// M-G7: explicit timeouts (the defaults are "no limit", so one stuck peer
+	// pins a connection and its goroutine forever) and a graceful shutdown.
+	// WriteTimeout has to outlast the slowest handler: rotate-domain issues a
+	// certificate, which waits on ACME DNS propagation.
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      10 * time.Minute,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+	errCh := make(chan error, 1)
+	go func() {
+		log.Printf("cfvpn-agent listening on %s", addr)
+		errCh <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-errCh:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	case sig := <-stop:
+		// `systemctl restart cfvpn-agent` in the middle of applyUsers is exactly
+		// how xray and hysteria end up with different user sets: the flock is
+		// released by the kernel on exit, but a half-applied config is not
+		// rolled back by anyone. Let in-flight handlers finish first.
+		log.Printf("cfvpn-agent received %s; draining in-flight requests", sig)
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if err := server.Shutdown(ctx); err != nil {
+			log.Printf("graceful shutdown failed (%v); closing connections", err)
+			_ = server.Close()
+		}
+		log.Print("cfvpn-agent stopped")
+	}
+}
+
+// shutdownGrace bounds the drain on SIGTERM. It must stay below the unit's
+// TimeoutStopSec (systemd's default 90s) so systemd never has to SIGKILL us
+// mid-write.
+const shutdownGrace = 60 * time.Second
+
+// acquireLockOrFail takes the node config lock for a request, writing the
+// response itself when it cannot.
+//
+// M-G3: a lock held by another writer (a `cfvpnctl install` can now hold it for
+// minutes, see H11) is a RETRYABLE condition, so it answers 503 lock_busy
+// rather than 500. The panel can back off on that; a 500 looks like the node is
+// broken and, worse, an unbounded blocking flock used to hold the connection
+// open until the panel's own timeout fired while leaking an OS thread per
+// waiter on the agent.
+func acquireLockOrFail(w http.ResponseWriter, r *http.Request) (func(), error) {
+	unlock, err := commands.AcquireConfigLock(r.Context())
+	if err == nil {
+		return unlock, nil
+	}
+	if errors.Is(err, commands.ErrLockBusy) {
+		writeError(w, http.StatusServiceUnavailable, "lock_busy",
+			"another cfvpn config operation is in progress on this node; retry shortly")
+		return nil, err
+	}
+	writeError(w, http.StatusInternalServerError, "lock_failed", err.Error())
+	return nil, err
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +259,24 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	// H7/H8: the hostnames in this request are written into cfvpn.env, into
+	// cloudflared's YAML ingress and into a cert request. Validate them at the
+	// boundary rather than trusting the caller, whatever the panel does today.
+	if err := validateRotateRequest(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_host", err.Error())
+		return
+	}
+
+	// H11: rotate rewrites xray/config.json, cloudflared/config.yml,
+	// hysteria/config.yaml and cfvpn.env — every file the config lock exists to
+	// protect — and used to hold nothing at all, so a rotate interleaved with a
+	// sync silently lost one side's user set.
+	unlock, err := acquireLockOrFail(w, r)
+	if err != nil {
+		return
+	}
+	defer unlock()
+
 	env, err := state.Load(paths.EnvFile)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "env_load_failed", err.Error())
@@ -290,6 +377,47 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// validateRotateRequest trims and checks every hostname the rotate request
+// carries. new_host is required; the others are optional and only checked when
+// present. Zone ids, when supplied, must look like Cloudflare zone ids because
+// they are interpolated into API paths.
+func validateRotateRequest(req *rotateRequest) error {
+	req.NewHost = strings.TrimSpace(req.NewHost)
+	req.OldHost = strings.TrimSpace(req.OldHost)
+	req.NewHy2Host = strings.TrimSpace(req.NewHy2Host)
+	req.OldHy2Host = strings.TrimSpace(req.OldHy2Host)
+
+	if err := validate.Hostname(req.NewHost); err != nil {
+		return fmt.Errorf("new_host: %w", err)
+	}
+	for name, host := range map[string]string{
+		"old_host":     req.OldHost,
+		"new_hy2_host": req.NewHy2Host,
+		"old_hy2_host": req.OldHy2Host,
+	} {
+		if host == "" {
+			continue
+		}
+		if err := validate.Hostname(host); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	for name, id := range map[string]string{
+		"new_zone_id":     strings.TrimSpace(req.NewZoneID),
+		"old_zone_id":     strings.TrimSpace(req.OldZoneID),
+		"new_hy2_zone_id": strings.TrimSpace(req.NewHy2ZoneID),
+		"old_hy2_zone_id": strings.TrimSpace(req.OldHy2ZoneID),
+	} {
+		if id == "" {
+			continue
+		}
+		if err := validate.HexID32(id); err != nil {
+			return fmt.Errorf("%s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func handleSync(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "POST required")
@@ -300,9 +428,8 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
-	unlock, err := commands.AcquireConfigLock()
+	unlock, err := acquireLockOrFail(w, r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "lock_failed", err.Error())
 		return
 	}
 	defer unlock()
@@ -342,9 +469,8 @@ func handleUsers(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_user", err.Error())
 		return
 	}
-	unlock, err := commands.AcquireConfigLock()
+	unlock, err := acquireLockOrFail(w, r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "lock_failed", err.Error())
 		return
 	}
 	defer unlock()
@@ -392,9 +518,8 @@ func handleUser(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_user", err.Error())
 		return
 	}
-	unlock, err := commands.AcquireConfigLock()
+	unlock, err := acquireLockOrFail(w, r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "lock_failed", err.Error())
 		return
 	}
 	defer unlock()
@@ -500,10 +625,27 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	if err != nil {
 		return nil, commands.RotateDirectResult{}, err
 	}
-	if err := commands.WriteAtomicFile(paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
+	// H12: parse-check the candidate config, then keep the previous one so a
+	// failed restart can be undone. applyUsers had no rollback at all: a config
+	// xray refuses was published over the live one and the node was left with a
+	// broken file on disk and xray down.
+	//
+	// WriteXrayConfigChecked itself treats a post-rename DurabilityError as
+	// success (the config is already live; only its crash-durability is
+	// unproven) and warns to stderr, so there is nothing left to special-case
+	// here.
+	oldXray, oldXrayErr := os.ReadFile(paths.XrayConfigFile)
+	if err := commands.WriteXrayConfigChecked(ctx, paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
 	}
 	if err := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); err != nil {
+		if oldXrayErr == nil {
+			if rerr := commands.WriteAtomicFile(paths.XrayConfigFile, oldXray, 0o600); rerr != nil {
+				log.Printf("restore previous xray config failed: %v", rerr)
+			} else if rerr := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); rerr != nil {
+				log.Printf("restart xray on the restored config failed: %v", rerr)
+			}
+		}
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("restart xray: %w", err)
 	}
 	hy2Users := make([]hysteria.User, len(reqUsers))

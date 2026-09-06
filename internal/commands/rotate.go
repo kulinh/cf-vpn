@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/kulinh/cf-vpn/internal/cert"
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 	"github.com/kulinh/cf-vpn/internal/hysteria"
 	"github.com/kulinh/cf-vpn/internal/paths"
 	"github.com/kulinh/cf-vpn/internal/state"
@@ -65,6 +66,12 @@ func RunRotateCleanup(ctx context.Context, tunnelID string, deps RotateDeps, std
 // Callers must invoke this after any user-set or host change so panel-served
 // subscriptions stay in sync with the live xray state.
 func RegenerateSubscriptions(domain string) error {
+	return RegenerateSubscriptionsTo(domain, os.Stderr)
+}
+
+// RegenerateSubscriptionsTo is RegenerateSubscriptions with an explicit sink
+// for the "this node cannot serve a usable URI" warnings (see buildUserURIs).
+func RegenerateSubscriptionsTo(domain string, warn io.Writer) error {
 	cfg, err := xray.Load(xrayConfigPath)
 	if err != nil {
 		return fmt.Errorf("load xray config: %w", err)
@@ -75,23 +82,17 @@ func RegenerateSubscriptions(domain string) error {
 		return fmt.Errorf("load env: %w", err)
 	}
 
+	hy2PW, hy2Err := hy2PasswordsByName()
+	if hy2Err != nil {
+		warnf(warn, "warning: cannot read hysteria config (%v); subscriptions will have no HY2 line", hy2Err)
+	}
+
 	for _, name := range xray.ListUserNames(cfg) {
 		uuid, ok := xray.GetVLESSClient(cfg, name)
 		if !ok {
 			return fmt.Errorf("user %q has no vless client", name)
 		}
-		var uri string
-		if env["MODE"] == "direct" && env[state.KeyRealityPub] != "" && env[state.KeyRealityShortID] != "" {
-			uri = subscription.BuildVLESSRealityURI(
-				name, uuid, domain,
-				env[state.KeyRealitySNI],
-				env[state.KeyRealityPub],
-				env[state.KeyRealityShortID],
-			)
-		} else {
-			uri = subscription.BuildVLESSHTTPUpgradeURI(name, uuid, domain, templates.VLESSPath)
-		}
-		sub := subscription.BuildSubscriptionB64(uri)
+		sub := subscription.BuildSubscriptionB64(buildUserURIs(name, uuid, domain, hy2PW[name], env, warn)...)
 		if err := writeSubscriptionFile(name, sub+"\n"); err != nil {
 			return fmt.Errorf("write subscription for %s: %w", name, err)
 		}
@@ -135,34 +136,15 @@ func xrayDNSServersCSV(raw string) []string {
 	return out
 }
 
-func writeAtomicFile(path string, content []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(content); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
+// writeAtomicFile is the package-local alias for the one shared crash-atomic
+// writer (unique temp name + fsync of the parent directory).
+//
+// It is a var so tests can inject the failure modes the real writer reports but
+// cannot be provoked portably — notably fsutil.DurabilityError, which says the
+// rename already published the content and only its crash-durability is
+// unproven.
+var writeAtomicFile = func(path string, content []byte, mode os.FileMode) error {
+	return fsutil.WriteFile(path, content, mode)
 }
 
 type RotateDirectCF interface {
@@ -312,7 +294,8 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		hy2DnsCreated = true
 	}
 
-	if err := writeAtomicFile(xrayConfigPath, []byte(rendered), 0o600); err != nil {
+	// H12: refuse to publish a config xray cannot load; the live one stays.
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(rendered), 0o600); err != nil {
 		return rollbackDNS(fmt.Errorf("write xray config: %w", err))
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {
@@ -586,7 +569,7 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		hy2DnsCreated = true
 	}
 
-	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return rollbackDNS(fmt.Errorf("write xray config: %w", err))
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {

@@ -13,6 +13,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +28,7 @@ import (
 	"github.com/kulinh/cf-vpn/internal/subscription"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 	"github.com/kulinh/cf-vpn/internal/templates"
+	"github.com/kulinh/cf-vpn/internal/validate"
 	"github.com/kulinh/cf-vpn/internal/xray"
 	"github.com/kulinh/cf-vpn/internal/zones"
 )
@@ -141,6 +144,9 @@ func RunUpgradeCheck(ctx context.Context, in UpgradeInputs, deps InstallDeps, st
 	if deps.IP == nil {
 		deps.IP = netinfo.NewDefault()
 	}
+	if err := validateUpgradeIdentity(env); err != nil {
+		return err
+	}
 	if zoneOfDomain(env["DOMAIN"]) == "" {
 		return fmt.Errorf("resolve zone for %s: invalid domain", env["DOMAIN"])
 	}
@@ -173,6 +179,26 @@ func RunUpgradeCheck(ctx context.Context, in UpgradeInputs, deps InstallDeps, st
 }
 
 func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout, stderr io.Writer) (UpgradeResult, error) {
+	// Pre-flight the values the renderers require BEFORE anything with a side
+	// effect: the lock, the config backup, the binary (re)install and the sysctl
+	// tuning all happen below, and a malformed ADMIN_TUNNEL_UUID used to abort
+	// only once RenderCloudflared* rejected it — after all of that.
+	if preEnv, err := loadUpgradeEnv(); err != nil {
+		return UpgradeResult{}, err
+	} else if err := validateUpgradeIdentity(preEnv); err != nil {
+		return UpgradeResult{}, err
+	}
+
+	// H11: an upgrade rewrites xray, cloudflared, hysteria and cfvpn.env and
+	// restarts the services — exactly what the config lock protects. Without it
+	// a concurrent POST /admin/v1/sync interleaves its own read-modify-write and
+	// one of the two user sets is silently lost.
+	unlock, err := AcquireConfigLock(ctx)
+	if err != nil {
+		return UpgradeResult{}, fmt.Errorf("acquire config lock: %w", err)
+	}
+	defer unlock()
+
 	if in.Now == nil {
 		in.Now = time.Now
 	}
@@ -212,6 +238,10 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 	if err := ensureRuntimeBinaries(ctx, binRunner); err != nil {
 		return UpgradeResult{}, err
 	}
+
+	// Network tuning (BBR/fq/mtu-probing) is applied on every upgrade so a
+	// rolling re-deploy is all it takes to bring existing nodes in line.
+	tuneNetBestEffort(ctx, stdout, stderr)
 
 	env, err := loadUpgradeEnv()
 	if err != nil {
@@ -286,7 +316,13 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 		if name == userName && hy2PassUser1 != "" {
 			pass = hy2PassUser1
 		} else {
-			pass, _ = generatePasswordFrom(rng, 24)
+			// M-G6: this used to swallow the error. io.ReadFull failing returns
+			// ("", err), which would render `Password: ""` into auth.userpass —
+			// a credential anyone can guess.
+			pass, err = generatePasswordFrom(rng, 24)
+			if err != nil {
+				return UpgradeResult{}, fmt.Errorf("generate hy2 password for %s: %w", name, err)
+			}
 		}
 		hysteriaUsers = append(hysteriaUsers, templates.HysteriaUser{Name: name, Password: pass})
 	}
@@ -348,6 +384,14 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	if err := copyTree(cfgDir, backupDir); err != nil {
 		return UpgradeResult{}, fmt.Errorf("backup config: %w", err)
 	}
+	// M-G9: each upgrade copies the whole config dir — CF_API_TOKEN,
+	// AGENT_SHARED_SECRET, REALITY_PRIVATE_KEY, HY2_OBFS_PW and hysteria's
+	// key.pem — into /etc/cfvpn.backup-<unixtime>, and nothing ever removed
+	// them. The files stay 0600, but the number of copies of the node's secrets
+	// grew without bound.
+	if err := pruneConfigBackups(in.BackupRoot, keepConfigBackups); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: prune old config backups: %v\n", err)
+	}
 	runner := resolveRunner(deps.SystemdRunner)
 	rb := &rollbacker{cf: deps.CF, runner: runner, backupDir: backupDir, configDir: cfgDir}
 	fail := func(e error) (UpgradeResult, error) { rb.run(ctx, stderr); return UpgradeResult{}, e }
@@ -400,7 +444,8 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
 		}
 	}
-	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+	// H12: parse-check the candidate before it replaces the live config.
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return fail(fmt.Errorf("write xray config: %w", err))
 	}
 
@@ -572,7 +617,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 	}
 
 	runner := resolveRunner(deps.SystemdRunner)
-	xrayChanged, err := writeIfChanged(xrayConfigPath, []byte(xrayRendered), 0o600)
+	xrayChanged, err := writeXrayConfigIfChanged(ctx, xrayConfigPath, []byte(xrayRendered), 0o600)
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("write xray config: %w", err)
 	}
@@ -613,7 +658,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 	if reconcileOut == nil {
 		reconcileOut = io.Discard
 	}
-	if err := RunReconcileUnits(ctx, runner, reconcileOut); err != nil && stderr != nil {
+	if err := runReconcileUnitsLocked(ctx, runner, reconcileOut); err != nil && stderr != nil {
 		fmt.Fprintf(stderr, "warning: reconcile systemd units failed: %v\n", err)
 	}
 
@@ -652,6 +697,53 @@ func loadUpgradeEnv() (map[string]string, error) {
 		return nil, fmt.Errorf("ADMIN_TUNNEL_UUID or TUNNEL_UUID is required")
 	}
 	return env, nil
+}
+
+// adminHostForEnv resolves the admin hostname an upgrade will render into the
+// cloudflared ingress: derived from NODE_ID when present (runUpgradeCore
+// regenerates it), otherwise the stored ADMIN_HOST.
+func adminHostForEnv(env map[string]string) (string, error) {
+	if nodeID := strings.TrimSpace(env["NODE_ID"]); nodeID != "" {
+		return generateAdminHost(nodeID)
+	}
+	adminHost := strings.TrimSpace(env["ADMIN_HOST"])
+	if adminHost == "" {
+		return "", fmt.Errorf("NODE_ID or ADMIN_HOST is required")
+	}
+	return adminHost, nil
+}
+
+// validateUpgradeIdentity pre-flights the three values the cloudflared renderer
+// insists on. It performs no I/O and has no side effects.
+//
+// Without this an upgrade on a node whose ADMIN_TUNNEL_UUID is not canonical
+// (or whose ADMIN_HOST is malformed) fails inside RenderCloudflared* — i.e.
+// AFTER the config lock is taken, the config dir is backed up, the runtime
+// binaries are (re)installed and the sysctl tuning is applied. Failing here
+// instead makes the whole command a no-op, and says exactly which env key to
+// fix.
+func validateUpgradeIdentity(env map[string]string) error {
+	if err := validate.Hostname(strings.TrimSpace(env["DOMAIN"])); err != nil {
+		return fmt.Errorf("DOMAIN in %s is not a valid hostname (%w); fix it before upgrading", envFilePath, err)
+	}
+	tunnelUUID := strings.TrimSpace(env["ADMIN_TUNNEL_UUID"])
+	if tunnelUUID == "" {
+		tunnelUUID = strings.TrimSpace(env["TUNNEL_UUID"])
+	}
+	if err := validate.UUID(tunnelUUID); err != nil {
+		return fmt.Errorf("ADMIN_TUNNEL_UUID in %s is not a Cloudflare tunnel UUID (%w); "+
+			"the cloudflared config cannot be rendered from it — fix the env file before upgrading",
+			envFilePath, err)
+	}
+	adminHost, err := adminHostForEnv(env)
+	if err != nil {
+		return err
+	}
+	if err := validate.Hostname(adminHost); err != nil {
+		return fmt.Errorf("admin host %q (from NODE_ID/ADMIN_HOST in %s) is not a valid hostname: %w",
+			adminHost, envFilePath, err)
+	}
+	return nil
 }
 
 func validateIPv4(ip string) error {
@@ -741,6 +833,58 @@ func (r *rollbacker) run(ctx context.Context, stderr io.Writer) {
 	}
 }
 
+// keepConfigBackups is how many cfvpn.backup-<unixtime> directories survive a
+// prune, newest first. Three covers "the upgrade before last went wrong"
+// without keeping the node's secrets around indefinitely.
+const keepConfigBackups = 3
+
+// configBackupRE matches the backup directories RunUpgrade creates. Anything
+// else in the backup root is left alone.
+var configBackupRE = regexp.MustCompile(`^cfvpn\.backup-(\d+)$`)
+
+// pruneConfigBackups removes all but the `keep` newest cfvpn.backup-<unixtime>
+// directories under root. The timestamp in the name orders them (numerically,
+// not lexically — "cfvpn.backup-9" must not outrank "cfvpn.backup-10").
+func pruneConfigBackups(root string, keep int) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	type backup struct {
+		name string
+		ts   int64
+	}
+	var backups []backup
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		m := configBackupRE.FindStringSubmatch(e.Name())
+		if m == nil {
+			continue
+		}
+		ts, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		backups = append(backups, backup{name: e.Name(), ts: ts})
+	}
+	if len(backups) <= keep {
+		return nil
+	}
+	sort.Slice(backups, func(i, j int) bool { return backups[i].ts > backups[j].ts })
+	var firstErr error
+	for _, b := range backups[keep:] {
+		if err := os.RemoveAll(filepath.Join(root, b.name)); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
 func safeRollbackConfigDir(dir string) bool {
 	if dir == "" || dir == "." || dir == string(filepath.Separator) || dir == "/etc" {
 		return false
@@ -799,6 +943,15 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if in.CFAPIToken == "" || in.CFAccountID == "" || in.User1Name == "" || in.NodeID == "" {
 		return fmt.Errorf("CF_API_TOKEN, CF_ACCOUNT_ID, NODE_ID, and USER1_NAME are required")
 	}
+
+	// H11: install rewrites every config the lock protects (xray, hysteria,
+	// cloudflared, cfvpn.env) and restarts the services.
+	unlock, err := AcquireConfigLock(ctx)
+	if err != nil {
+		return fmt.Errorf("acquire config lock: %w", err)
+	}
+	defer unlock()
+
 	adminHost, err := generateAdminHost(in.NodeID)
 	if err != nil {
 		return err
@@ -887,6 +1040,9 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if err := ensureRuntimeBinaries(ctx, binRunner); err != nil {
 		return err
 	}
+
+	fmt.Fprintln(stdout, "tuning network stack...")
+	tuneNetBestEffort(ctx, stdout, stderr)
 	fmt.Fprintln(stdout, "issuing certificates...")
 	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
 	if err := deps.Cert.Issue(ctx, hy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {
@@ -994,7 +1150,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 			return fmt.Errorf("render xray cloudflare config: %w", err)
 		}
 	}
-	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return fmt.Errorf("write xray config: %w", err)
 	}
 	hyRendered, err := templates.RenderHysteriaConfig(templates.HysteriaInputs{Listen: ":" + hy2Port, TLSCert: hy2CertPath, TLSKey: hy2KeyPath, ObfsPW: hy2ObfsPW, UpMbps: 100, DownMbps: 100, Users: []templates.HysteriaUser{{Name: in.User1Name, Password: hy2PassUser1}}})
@@ -1224,8 +1380,13 @@ func CertPathsForHost(host string) (certPath, keyPath string) {
 	return filepath.Join("/etc/cfvpn/certs", host, "fullchain.pem"), filepath.Join("/etc/cfvpn/certs", host, "privkey.pem")
 }
 
+// hysteriaCertDir holds the Hysteria2 leaf + key. It is a var so tests can
+// redirect it: without that, anything exercising cert issue/renew would read
+// and write the real /etc/cfvpn/hysteria of the machine running `go test`.
+var hysteriaCertDir = "/etc/cfvpn/hysteria"
+
 func HysteriaCertPaths() (certPath, keyPath string) {
-	return "/etc/cfvpn/hysteria/cert.pem", "/etc/cfvpn/hysteria/key.pem"
+	return filepath.Join(hysteriaCertDir, "cert.pem"), filepath.Join(hysteriaCertDir, "key.pem")
 }
 
 func XrayCertPaths() (certPath, keyPath string) {

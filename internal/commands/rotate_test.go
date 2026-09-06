@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/templates"
 	"github.com/kulinh/cf-vpn/internal/xray"
@@ -149,6 +150,7 @@ func withRotateDirectTempPaths(t *testing.T) string {
 	xrayConfigPath = filepath.Join(dir, "xray.json")
 	subscriptionDir = filepath.Join(dir, "subs")
 	hysteriaConfigPath = filepath.Join(dir, "hysteria.yaml")
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, subscriptionDir, hysteriaConfigPath = oldEnv, oldXray, oldSub, oldHy
 	})
@@ -366,6 +368,55 @@ func TestRunRotateDirectRestartFailureRestoresXrayAndRollsBackARecord(t *testing
 	}
 }
 
+// A post-rename durability failure on the xray write means the new config IS
+// live. RunRotateDirect must not treat that as fatal: no DNS rollback, no
+// aborted rotation — writeXrayConfigChecked (the lower layer) already decided
+// the error is survivable and warned about it, so RunRotateDirect just carries
+// on and restarts onto the published config, same as any other successful
+// write.
+func TestRunRotateDirectContinuesAfterXrayDurabilityError(t *testing.T) {
+	withRotateDirectTempPaths(t)
+
+	oldWrite := writeAtomicFile
+	writeAtomicFile = func(path string, content []byte, mode os.FileMode) error {
+		if err := oldWrite(path, content, mode); err != nil {
+			return err
+		}
+		if path == xrayConfigPath {
+			// The real writer's post-rename failure: content published, directory
+			// entry not flushed.
+			return &fsutil.DurabilityError{Path: path, Err: errors.New("simulated fsync failure")}
+		}
+		return nil
+	}
+	t.Cleanup(func() { writeAtomicFile = oldWrite })
+
+	cf := &fakeRotateDirectCF{}
+	runner := &recordingRunner{}
+	var err error
+	stderrText := captureStderr(t, func() {
+		_, err = RunRotateDirect(context.Background(), RotateDirectInputs{
+			NewHost: "vpn.example.com", NewZone: "example.com", NewZoneID: "new-zone",
+			ExistingUsers: []ExistingUser{{Name: "alice", UUID: "uuid-a"}},
+		}, RotateDirectDeps{CF: cf, IP: fakeIPDetector{ip: "203.0.113.10"}, Cert: &fakeCertManager{cert: "/c", key: "/k"}, Runner: runner}, &bytes.Buffer{}, &bytes.Buffer{})
+	})
+	if err != nil {
+		t.Fatalf("RunRotateDirect aborted on a published-but-unflushed xray write: %v", err)
+	}
+	if len(cf.deleteA) != 0 {
+		t.Fatalf("rollback deleted the new A record despite the config being live: %#v", cf.deleteA)
+	}
+	if len(cf.upsertA) != 1 {
+		t.Fatalf("expected the new A record to still exist, got %#v", cf.upsertA)
+	}
+	if len(runner.calls) != 1 || strings.Join(runner.calls[0][1:], " ") != "restart cfvpn-xray.service" {
+		t.Fatalf("xray was not restarted onto the published config: %#v", runner.calls)
+	}
+	if !strings.Contains(stderrText, "durability") {
+		t.Errorf("expected the durability warning on stderr, got %q", stderrText)
+	}
+}
+
 func TestRunRotateDirectRejectsNonIPv4(t *testing.T) {
 	withRotateDirectTempPaths(t)
 	for _, ip := range []string{"not-an-ip", "2001:db8::1"} {
@@ -465,10 +516,11 @@ func TestRunRotateDirectHy2RotatesHostCertDNSService(t *testing.T) {
 		t.Errorf("result Hy2ObfsPW: got %q want obfs-test-pw", res.Hy2ObfsPW)
 	}
 
-	// hysteria config rewritten: must contain the fixed HysteriaCertPaths cert path
+	// hysteria config rewritten: must contain the HysteriaCertPaths cert path
 	// and must preserve the existing users (alice and bob from writeTestHysteriaConfig).
+	wantCert, _ := HysteriaCertPaths()
 	hyBody, _ := os.ReadFile(hysteriaConfigPath)
-	if !bytes.Contains(hyBody, []byte("/etc/cfvpn/hysteria/cert.pem")) {
+	if !bytes.Contains(hyBody, []byte(wantCert)) {
 		t.Errorf("hysteria config missing cert path; got: %s", hyBody)
 	}
 	if !bytes.Contains(hyBody, []byte("alice")) || !bytes.Contains(hyBody, []byte("bob")) {
@@ -751,6 +803,7 @@ func withRotateCloudflareTempPaths(t *testing.T) string {
 	subscriptionDir = filepath.Join(dir, "subs")
 	hysteriaConfigPath = filepath.Join(dir, "hysteria.yaml")
 	cloudflaredConfig = filepath.Join(dir, "cloudflared.yml")
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, subscriptionDir, hysteriaConfigPath, cloudflaredConfig = oldEnv, oldXray, oldSub, oldHy, oldCfd
 	})
@@ -765,7 +818,7 @@ func TestRunRotateCloudflareHappyPath(t *testing.T) {
 	if err := state.SaveAtomic(envFilePath, map[string]string{
 		"DOMAIN":            "old.example.com",
 		"MODE":              "cloudflare",
-		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_TUNNEL_UUID": "7b4d2e90-2222-4333-9444-0123456789ab",
 		"ADMIN_HOST":        "admin.example.com",
 		"PUBLIC_IP":         "203.0.113.10",
 		"HY2_PORT":          "45321",
@@ -810,7 +863,7 @@ func TestRunRotateCloudflareHappyPath(t *testing.T) {
 	if len(cf.upsertCNAME) != 1 ||
 		cf.upsertCNAME[0].zoneID != "vpn-zone" ||
 		cf.upsertCNAME[0].name != "vpn-new.example.com" ||
-		cf.upsertCNAME[0].target != "tunnel-uuid-1.cfargotunnel.com" {
+		cf.upsertCNAME[0].target != "7b4d2e90-2222-4333-9444-0123456789ab.cfargotunnel.com" {
 		t.Fatalf("unexpected CNAME upsert: %#v", cf.upsertCNAME)
 	}
 	// HY2 A record upserted with PUBLIC_IP from env.
@@ -880,7 +933,7 @@ func TestRunRotateCloudflareHappyPath(t *testing.T) {
 	if !bytes.Contains(cfdBytes, []byte("admin.example.com")) {
 		t.Errorf("cloudflared.yml missing admin host: %s", cfdBytes)
 	}
-	if !bytes.Contains(cfdBytes, []byte("tunnel-uuid-1")) {
+	if !bytes.Contains(cfdBytes, []byte("7b4d2e90-2222-4333-9444-0123456789ab")) {
 		t.Errorf("cloudflared.yml missing tunnel uuid: %s", cfdBytes)
 	}
 
@@ -916,7 +969,7 @@ func TestRunRotateCloudflareWithoutHy2(t *testing.T) {
 	if err := state.SaveAtomic(envFilePath, map[string]string{
 		"DOMAIN":            "old.example.com",
 		"MODE":              "cloudflare",
-		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_TUNNEL_UUID": "7b4d2e90-2222-4333-9444-0123456789ab",
 		"ADMIN_HOST":        "admin.example.com",
 		"PUBLIC_IP":         "203.0.113.10",
 	}, 0o600); err != nil {
@@ -952,7 +1005,7 @@ func TestRunRotateCloudflareRollsBackOnXrayRestartFailure(t *testing.T) {
 	if err := state.SaveAtomic(envFilePath, map[string]string{
 		"DOMAIN":            "old.example.com",
 		"MODE":              "cloudflare",
-		"ADMIN_TUNNEL_UUID": "tunnel-uuid-1",
+		"ADMIN_TUNNEL_UUID": "7b4d2e90-2222-4333-9444-0123456789ab",
 		"ADMIN_HOST":        "admin.example.com",
 		"PUBLIC_IP":         "203.0.113.10",
 	}, 0o600); err != nil {

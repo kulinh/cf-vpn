@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/xray"
 )
 
@@ -23,20 +24,46 @@ func withTempPaths(t *testing.T) (cfgPath, subDir string) {
 	dir := t.TempDir()
 	cfgPath = filepath.Join(dir, "config.json")
 	subDir = filepath.Join(dir, "subs")
-	oldC, oldS, oldH := xrayConfigPath, subscriptionDir, hysteriaConfigPath
+	oldC, oldS, oldH, oldE := xrayConfigPath, subscriptionDir, hysteriaConfigPath, envFilePath
 	xrayConfigPath = cfgPath
 	subscriptionDir = subDir
 	hysteriaConfigPath = filepath.Join(dir, "hy-cfg.yaml")
+	// Redirect the env file too: without this the tests read the real
+	// /etc/cfvpn/cfvpn.env of whatever machine runs them, so their result
+	// depends on that node's MODE and Reality params.
+	envFilePath = filepath.Join(dir, "cfvpn.env")
 	// Write a minimal hysteria config with alice so ListUsers/SetUsers work.
 	if err := os.WriteFile(hysteriaConfigPath, []byte("listen: :20515\ntls:\n  cert: cert.pem\n  key: key.pem\nobfs:\n  type: salamander\n  salamander:\n    password: pw\nbandwidth:\n  up: 100mbps\n  down: 100mbps\nauth:\n  type: userpass\n  userpass:\n    alice: alice-hy2pw\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		xrayConfigPath = oldC
 		subscriptionDir = oldS
 		hysteriaConfigPath = oldH
+		envFilePath = oldE
 	})
 	return
+}
+
+// stubXrayValidation replaces the `xray run -test` pre-flight for tests: the
+// fixture keys these tests render (privateKey "test-priv-x25519" and friends)
+// are deliberately rejected by the real xray, and most machines running the
+// suite have no xray binary at all. Tests that exercise the pre-flight itself
+// set their own stub.
+func stubXrayValidation(t *testing.T) {
+	t.Helper()
+	old := validateXrayConfig
+	validateXrayConfig = func(context.Context, []byte) error { return nil }
+	t.Cleanup(func() { validateXrayConfig = old })
+}
+
+// writeTestEnv writes the node env file the commands under test read.
+func writeTestEnv(t *testing.T, values map[string]string) {
+	t.Helper()
+	if err := state.SaveAtomic(envFilePath, values, 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestValidateAddUserRejectsInvalidName(t *testing.T) {
@@ -171,6 +198,9 @@ func TestRunGenSubSingleUser(t *testing.T) {
 	if err := xray.SaveAtomic(cfgPath, cfg, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// MODE must be set: a node with an unknown mode serves no transport, so
+	// buildUserURIs emits nothing for it (matching the Worker).
+	writeTestEnv(t, map[string]string{state.KeyMode: "cloudflare"})
 
 	var out, errBuf bytes.Buffer
 	err := RunGenSub(context.Background(), UserInputs{Name: "user1", Domain: "vpn.example.com"}, &out, &errBuf)
@@ -196,6 +226,7 @@ func TestRunGenSubAllUsers(t *testing.T) {
 	if err := xray.SaveAtomic(cfgPath, cfg, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeTestEnv(t, map[string]string{state.KeyMode: "cloudflare"})
 
 	var out, errBuf bytes.Buffer
 	err := RunGenSub(context.Background(), UserInputs{Name: "", Domain: "vpn.example.com"}, &out, &errBuf)

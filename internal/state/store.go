@@ -4,10 +4,17 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 )
+
+// envKeyRE is the shell-compatible env key shape. The file is consumed both by
+// Load below and by systemd's EnvironmentFile= (cfvpn-agent.service) and the
+// shell installer's `source`, so anything outside this shape is not a key.
+var envKeyRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func Load(path string) (map[string]string, error) {
 	f, err := os.Open(path)
@@ -32,40 +39,48 @@ func Load(path string) (map[string]string, error) {
 	return out, s.Err()
 }
 
-func SaveAtomic(path string, values map[string]string, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+// ValidateEnv rejects any key or value that could not survive a Load/Save round
+// trip as a single KEY=VALUE line.
+//
+// This is the line-injection guard. The file is parsed line by line with
+// last-wins semantics, so a value containing a newline lets its writer append
+// arbitrary further keys — e.g. a rotate that puts
+// "cdn.example.com\nAGENT_SHARED_SECRET=attacker" into DOMAIN silently replaces
+// the agent's auth secret at the next restart (systemd reads this same file via
+// EnvironmentFile=). Values are hex, UUIDs, hostnames, ports and URLs today, so
+// refusing CR/LF and NUL outright costs nothing and needs no escaping scheme
+// that `source` would have to understand.
+func ValidateEnv(values map[string]string) error {
+	for k, v := range values {
+		if !envKeyRE.MatchString(k) {
+			return fmt.Errorf("state: invalid env key %q", k)
+		}
+		if i := strings.IndexAny(v, "\n\r\x00"); i >= 0 {
+			return fmt.Errorf("state: value for %q contains a newline or NUL at byte %d", k, i)
+		}
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
-	if err != nil {
-		return err
-	}
+	return nil
+}
 
+// SaveAtomic writes the env map as sorted KEY=VALUE lines. It refuses to write
+// anything that would not round-trip through Load (see ValidateEnv) and leaves
+// the previous file untouched on any error.
+func SaveAtomic(path string, values map[string]string, mode os.FileMode) error {
+	if err := ValidateEnv(values); err != nil {
+		return err
+	}
 	keys := make([]string, 0, len(values))
 	for k := range values {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
+
+	var b strings.Builder
 	for _, k := range keys {
-		if _, err := fmt.Fprintf(f, "%s=%s\n", k, values[k]); err != nil {
-			f.Close()
-			os.Remove(tmp)
-			return err
-		}
+		b.WriteString(k)
+		b.WriteByte('=')
+		b.WriteString(values[k])
+		b.WriteByte('\n')
 	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
+	return fsutil.WriteFile(path, []byte(b.String()), mode)
 }

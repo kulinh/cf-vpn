@@ -22,7 +22,7 @@ func TestRunStatus(t *testing.T) {
 
 	if err := state.SaveAtomic(envFilePath, map[string]string{
 		"DOMAIN":      "127.0.0.1:1",
-		"TUNNEL_UUID": "tun-123",
+		"TUNNEL_UUID": "64f1b549-fe6c-4a02-8493-0ad58f0b2f3b",
 	}, 0o600); err != nil {
 		t.Fatal(err)
 	}

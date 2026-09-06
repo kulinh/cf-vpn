@@ -190,7 +190,7 @@ func TestRunInstallAutoPicksDomainFromDefaultPool(t *testing.T) {
 		zoneAlternates = append(zoneAlternates, regexp.QuoteMeta(z.Name))
 	}
 	cfZones[adminHostZone] = "admin-zone"
-	cf := &fakeInstallCF{zones: cfZones, tunnelID: "tun-auto", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: cfZones, tunnelID: "aa8cd0a4-844d-4844-86a3-f7f01a707237", creds: []byte(`{"k":"v"}`)}
 	var out, errBuf bytes.Buffer
 	in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", NodeID: "JPY-04", User1Name: "alice", Mode: "direct"}
 	if err := RunInstall(context.Background(), in, baseInstallDeps(cf), &out, &errBuf); err != nil {
@@ -217,7 +217,7 @@ func TestRunInstallAutoPicksDomainFromDefaultPool(t *testing.T) {
 	if cf.aRecords[1][2] != "203.0.113.42" {
 		t.Fatalf("HY2 A record ip = %q, want 203.0.113.42", cf.aRecords[1][2])
 	}
-	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "tun-auto.cfargotunnel.com"} {
+	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "aa8cd0a4-844d-4844-86a3-f7f01a707237.cfargotunnel.com"} {
 		t.Fatalf("CNAME upsert = %#v", cf.cnames)
 	}
 	if !strings.Contains(out.String(), "install complete: direct mode "+host) {
@@ -227,7 +227,7 @@ func TestRunInstallAutoPicksDomainFromDefaultPool(t *testing.T) {
 
 func TestRunInstallExplicitDomainUsesLookupZoneID(t *testing.T) {
 	withInstallSeams(t)
-	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-explicit", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "c24ee371-6309-41e8-874b-71d012ae710f", creds: []byte(`{"k":"v"}`)}
 	var out, errBuf bytes.Buffer
 	in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", Domain: "foo.example.com", NodeID: "JPY-04", User1Name: "alice", Mode: "direct"}
 	if err := RunInstall(context.Background(), in, baseInstallDeps(cf), &out, &errBuf); err != nil {
@@ -243,14 +243,14 @@ func TestRunInstallExplicitDomainUsesLookupZoneID(t *testing.T) {
 	if cf.aRecords[1][2] != "203.0.113.42" {
 		t.Fatalf("HY2 A record ip = %q, want 203.0.113.42", cf.aRecords[1][2])
 	}
-	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "tun-explicit.cfargotunnel.com"} {
+	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "c24ee371-6309-41e8-874b-71d012ae710f.cfargotunnel.com"} {
 		t.Fatalf("CNAME upsert = %#v", cf.cnames)
 	}
 }
 
 func TestRunInstallAutoPickZoneNotVisible(t *testing.T) {
 	withInstallSeams(t)
-	cf := &fakeInstallCF{zones: map[string]string{}, tunnelID: "tun-hidden", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: map[string]string{}, tunnelID: "932e18f2-d914-4112-8e21-343ace46a9ee", creds: []byte(`{"k":"v"}`)}
 	var out, errBuf bytes.Buffer
 	in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", NodeID: "JPY-04", User1Name: "alice", Mode: "direct"}
 	err := RunInstall(context.Background(), in, baseInstallDeps(cf), &out, &errBuf)
@@ -271,7 +271,7 @@ func TestRunInstallAutoPickZoneNotVisible(t *testing.T) {
 
 func TestRunInstallGeneratesHy2HostPortObfsAndPersistsEnv(t *testing.T) {
 	withInstallSeams(t)
-	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-hy2", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "936cc31b-febd-43c3-80f9-136a98afdc03", creds: []byte(`{"k":"v"}`)}
 	udp := &fakeUDPProber{}
 	deps := baseInstallDeps(cf)
 	deps.UDPProber = udp
@@ -305,7 +305,7 @@ func TestRunInstallGeneratesHy2HostPortObfsAndPersistsEnv(t *testing.T) {
 
 func TestRunInstallRetriesBusyHy2UDPPortAndPreservesExplicitHy2Inputs(t *testing.T) {
 	withInstallSeams(t)
-	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-hy2-explicit", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "1f0b8a77-3311-4522-8933-aabbccddeeff", creds: []byte(`{"k":"v"}`)}
 	udp := &fakeUDPProber{busy: map[int]bool{20000: true, 20001: true}}
 	deps := baseInstallDeps(cf)
 	deps.UDPProber = udp
@@ -334,7 +334,7 @@ func TestRunInstallRetriesBusyHy2UDPPortAndPreservesExplicitHy2Inputs(t *testing
 
 func TestRunInstallPreservesExplicitHy2PortWithoutProbingUDP(t *testing.T) {
 	withInstallSeams(t)
-	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-hy2-port", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "3c9e5d21-4411-4622-8a33-bbccddeeff00", creds: []byte(`{"k":"v"}`)}
 	udp := &fakeUDPProber{}
 	deps := baseInstallDeps(cf)
 	deps.UDPProber = udp
@@ -359,7 +359,7 @@ func TestRunInstallPreservesExplicitHy2PortWithoutProbingUDP(t *testing.T) {
 
 func TestRunInstallIssuesHy2AndDirectVPNCertsToServicePaths(t *testing.T) {
 	withInstallSeams(t)
-	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-certs", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "371c2605-2795-482a-80ac-fae36ea8b771", creds: []byte(`{"k":"v"}`)}
 	cert := &fakeInstallCert{}
 	deps := baseInstallDeps(cf)
 	deps.Cert = cert
@@ -370,8 +370,9 @@ func TestRunInstallIssuesHy2AndDirectVPNCertsToServicePaths(t *testing.T) {
 		t.Fatalf("RunInstall: %v", err)
 	}
 
+	wantCert, wantKey := HysteriaCertPaths()
 	want := []fakeCertIssue{
-		{host: "hy2.example.com", cert: "/etc/cfvpn/hysteria/cert.pem", key: "/etc/cfvpn/hysteria/key.pem", token: "cf-token"},
+		{host: "hy2.example.com", cert: wantCert, key: wantKey, token: "cf-token"},
 	}
 	if !reflect.DeepEqual(cert.issues, want) {
 		t.Fatalf("cert issues = %#v, want %#v", cert.issues, want)
@@ -382,7 +383,7 @@ func TestRunInstallRejectsInvalidExplicitHy2PortBeforeMutating(t *testing.T) {
 	for _, hy2Port := range []string{"abc", "0", "19999", "60001", "24444x"} {
 		t.Run(hy2Port, func(t *testing.T) {
 			withInstallSeams(t)
-			cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-hy2-port", creds: []byte(`{"k":"v"}`)}
+			cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "3c9e5d21-4411-4622-8a33-bbccddeeff00", creds: []byte(`{"k":"v"}`)}
 			udp := &fakeUDPProber{}
 			deps := baseInstallDeps(cf)
 			deps.UDPProber = udp
@@ -497,7 +498,7 @@ func TestRunInstallCloudflareModeRendersTunnelIngressAndLoopbackXray(t *testing.
 
 	cf := &fakeInstallCF{
 		zones:    map[string]string{"vpn.example.com": "zone-1", "example.com": "zone-1", adminHostZone: "admin-zone"},
-		tunnelID: "tun-abc",
+		tunnelID: "2a01dccc-22c1-45e9-8049-6cdacb0ab156",
 		creds:    []byte(`{"k":"v"}`),
 	}
 	cert := &fakeInstallCert{}
@@ -568,10 +569,10 @@ func TestRunInstallCloudflareModeRendersTunnelIngressAndLoopbackXray(t *testing.
 	if len(cf.cnames) != 2 {
 		t.Fatalf("cloudflare mode CNAME upserts = %#v, want vpn and admin CNAMEs", cf.cnames)
 	}
-	if cf.cnames[0] != [3]string{"zone-1", "vpn.example.com", "tun-abc.cfargotunnel.com"} {
+	if cf.cnames[0] != [3]string{"zone-1", "vpn.example.com", "2a01dccc-22c1-45e9-8049-6cdacb0ab156.cfargotunnel.com"} {
 		t.Fatalf("VPN CNAME upsert = %#v", cf.cnames[0])
 	}
-	if cf.cnames[1] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "tun-abc.cfargotunnel.com"} {
+	if cf.cnames[1] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "2a01dccc-22c1-45e9-8049-6cdacb0ab156.cfargotunnel.com"} {
 		t.Fatalf("admin CNAME upsert = %#v", cf.cnames[1])
 	}
 	if len(cert.issues) != 1 || cert.issues[0].host == "vpn.example.com" {
@@ -604,7 +605,7 @@ func TestRunInstallDirectModeWiresAllSteps(t *testing.T) {
 
 	cf := &fakeInstallCF{
 		zones:    map[string]string{"vpn.example.com": "zone-1", "example.com": "zone-1", adminHostZone: "admin-zone"},
-		tunnelID: "tun-abc",
+		tunnelID: "2a01dccc-22c1-45e9-8049-6cdacb0ab156",
 		creds:    []byte(`{"k":"v"}`),
 	}
 	binRunner := &installRecorder{}
@@ -659,12 +660,12 @@ func TestRunInstallDirectModeWiresAllSteps(t *testing.T) {
 	if cf.aRecords[1] != [3]string{"zone-1", "hy2.example.com", "203.0.113.42"} {
 		t.Fatalf("A upsert[1] = %#v, want hy2.example.com -> 203.0.113.42", cf.aRecords[1])
 	}
-	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "tun-abc.cfargotunnel.com"} {
+	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "2a01dccc-22c1-45e9-8049-6cdacb0ab156.cfargotunnel.com"} {
 		t.Fatalf("CNAME upsert = %#v", cf.cnames)
 	}
 
 	// Files on disk.
-	credPath := filepath.Join(cloudflaredCredDir, "tun-abc.json")
+	credPath := filepath.Join(cloudflaredCredDir, "2a01dccc-22c1-45e9-8049-6cdacb0ab156.json")
 	if _, err := os.Stat(credPath); err != nil {
 		t.Fatalf("creds file missing at %s: %v", credPath, err)
 	}
@@ -678,10 +679,11 @@ func TestRunInstallDirectModeWiresAllSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hysteria config missing: %v", err)
 	}
+	hyCert, hyKey := HysteriaCertPaths()
 	wantHy := `listen: ":24430"
 tls:
-  cert: "/etc/cfvpn/hysteria/cert.pem"
-  key: "/etc/cfvpn/hysteria/key.pem"
+  cert: "` + hyCert + `"
+  key: "` + hyKey + `"
 obfs:
   type: salamander
   salamander:
@@ -715,7 +717,7 @@ auth:
 		"MODE=direct",
 		"PUBLIC_IP=203.0.113.42",
 		"ADMIN_HOST=jpy-04.rwl247.dev",
-		"ADMIN_TUNNEL_UUID=tun-abc",
+		"ADMIN_TUNNEL_UUID=2a01dccc-22c1-45e9-8049-6cdacb0ab156",
 		"UUID_USER1=",
 		"HY2_HOST=hy2.example.com",
 		"HY2_PORT=24430",
@@ -810,7 +812,7 @@ auth:
 
 func TestRunInstallN7HysteriaServiceEnabled(t *testing.T) {
 	withInstallSeams(t)
-	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-n7", creds: []byte(`{"k":"v"}`)}
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "0d659b5a-ec12-4fcf-84e3-90893d1dd259", creds: []byte(`{"k":"v"}`)}
 	sys := &installRecorder{}
 	deps := baseInstallDeps(cf)
 	deps.SystemdRunner = sys
@@ -845,7 +847,7 @@ func TestRunInstallN7UFWHy2UDPAllowedBothModes(t *testing.T) {
 	for _, mode := range []string{"direct", "cloudflare"} {
 		t.Run(mode, func(t *testing.T) {
 			withInstallSeams(t)
-			cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-ufw", creds: []byte(`{"k":"v"}`)}
+			cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "cda50857-5970-4f2e-89bf-64a04f221ce1", creds: []byte(`{"k":"v"}`)}
 			ufw := &fakeUFW{}
 			deps := baseInstallDeps(cf)
 			deps.UFW = ufw
@@ -881,7 +883,7 @@ func TestRunInstallN7Hy2ARecordAlwaysWritten(t *testing.T) {
 	for _, mode := range []string{"direct", "cloudflare"} {
 		t.Run(mode, func(t *testing.T) {
 			withInstallSeams(t)
-			cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "tun-hy2dns", creds: []byte(`{"k":"v"}`)}
+			cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "2822a4fd-4c5f-4b69-8fed-a5e90f6db2dd", creds: []byte(`{"k":"v"}`)}
 			deps := baseInstallDeps(cf)
 			in := InstallInputs{CFAPIToken: "t", CFAccountID: "a", Domain: "vpn.example.com", NodeID: "JPY-04", User1Name: "alice", Mode: mode, Hy2Host: "hy2.example.com", Hy2Port: "31000"}
 			var out, errBuf bytes.Buffer
@@ -905,20 +907,29 @@ func withUpgradeSeams(t *testing.T) string {
 	dir := t.TempDir()
 	cfgDir := filepath.Join(dir, "etc", "cfvpn")
 	oldEnv, oldCfg, oldCloud, oldSub, oldSysd := envFilePath, xrayConfigPath, cloudflaredConfig, subscriptionDir, systemdUnitDir
+	// hysteriaConfigPath MUST be redirected too. Without it the HY2 backfill in
+	// RunUpgrade wrote /etc/cfvpn/hysteria/config.yaml for real, so running
+	// `go test` as root on a node replaced that node's live hysteria config
+	// (port, obfs password and user set) with test fixtures — the damage only
+	// surfacing at the next hysteria restart.
+	oldHy := hysteriaConfigPath
 	envFilePath = filepath.Join(cfgDir, "cfvpn.env")
 	xrayConfigPath = filepath.Join(cfgDir, "xray.json")
 	cloudflaredConfig = filepath.Join(cfgDir, "cloudflared.yml")
 	subscriptionDir = filepath.Join(cfgDir, "subscriptions")
 	systemdUnitDir = filepath.Join(dir, "units")
+	hysteriaConfigPath = filepath.Join(cfgDir, "hysteria.yaml")
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, cloudflaredConfig, subscriptionDir, systemdUnitDir = oldEnv, oldCfg, oldCloud, oldSub, oldSysd
+		hysteriaConfigPath = oldHy
 	})
 	return dir
 }
 
 func seedUpgradeConfig(t *testing.T) {
 	t.Helper()
-	if err := state.SaveAtomic(envFilePath, map[string]string{"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "DOMAIN": "proxied.example.com", "TUNNEL_UUID": "old-tun", "NODE_ID": "JPY-04", "USER1_NAME": "alice", "UUID_USER1": "u-1", "TROJAN_PASS_USER1": "p-1", "SUB_TOKEN_USER1": "subtok"}, 0o600); err != nil {
+	if err := state.SaveAtomic(envFilePath, map[string]string{"CF_API_TOKEN": "t", "CF_ACCOUNT_ID": "a", "DOMAIN": "proxied.example.com", "TUNNEL_UUID": "2f8a1c3e-1111-4222-8333-abcdefabcdef", "NODE_ID": "JPY-04", "USER1_NAME": "alice", "UUID_USER1": "u-1", "TROJAN_PASS_USER1": "p-1", "SUB_TOKEN_USER1": "subtok"}, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
@@ -965,7 +976,7 @@ func TestRunUpgradePreservesUsersAndSetsDirectEnv(t *testing.T) {
 	envS := string(envRaw)
 	// TROJAN_PASS_USER1 migrates to HY2_PASS_USER1 (P1 backfill).
 	// HY2 fields are added as part of the upgrade.
-	for _, want := range []string{"MODE=direct", "PUBLIC_IP=203.0.113.42", "DOMAIN=" + res.NewHost, "ADMIN_TUNNEL_UUID=old-tun", "ADMIN_HOST=jpy-04.rwl247.dev", "UUID_USER1=u-1", "HY2_PASS_USER1=p-1", "SUB_TOKEN_USER1=subtok", "HY2_HOST=", "HY2_PORT=", "HY2_OBFS_PW="} {
+	for _, want := range []string{"MODE=direct", "PUBLIC_IP=203.0.113.42", "DOMAIN=" + res.NewHost, "ADMIN_TUNNEL_UUID=2f8a1c3e-1111-4222-8333-abcdefabcdef", "ADMIN_HOST=jpy-04.rwl247.dev", "UUID_USER1=u-1", "HY2_PASS_USER1=p-1", "SUB_TOKEN_USER1=subtok", "HY2_HOST=", "HY2_PORT=", "HY2_OBFS_PW="} {
 		if !strings.Contains(envS, want) {
 			t.Fatalf("env missing %q:\n%s", want, envS)
 		}
@@ -995,7 +1006,7 @@ func TestRunUpgradePreservesUsersAndSetsDirectEnv(t *testing.T) {
 	if cf.aRecords[1][0] != "zone-1" || cf.aRecords[1][2] != "203.0.113.42" || hy2HostAfter == res.NewHost {
 		t.Fatalf("HY2 A record = %#v", cf.aRecords[1])
 	}
-	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "old-tun.cfargotunnel.com"} {
+	if len(cf.cnames) != 1 || cf.cnames[0] != [3]string{"admin-zone", "jpy-04.rwl247.dev", "2f8a1c3e-1111-4222-8333-abcdefabcdef.cfargotunnel.com"} {
 		t.Fatalf("CNAME records = %#v", cf.cnames)
 	}
 	if got := strings.Join(cf.events, ","); got != "a,a,cname" {
@@ -1158,7 +1169,7 @@ func seedUpgradeTrojanConfig(t *testing.T) {
 		"CF_API_TOKEN":      "t",
 		"CF_ACCOUNT_ID":     "a",
 		"DOMAIN":            "proxied.example.com",
-		"TUNNEL_UUID":       "old-tun",
+		"TUNNEL_UUID":       "2f8a1c3e-1111-4222-8333-abcdefabcdef",
 		"NODE_ID":           "JPY-04",
 		"USER1_NAME":        "alice",
 		"UUID_USER1":        "u-1",
@@ -1339,7 +1350,7 @@ func TestRunUpgradeWithExistingHY2IsIdempotent(t *testing.T) {
 		"HY2_PORT":       "21000",
 		"HY2_OBFS_PW":    "existing-obfs",
 		"HY2_PASS_USER1": "existing-hy2pw",
-		"TUNNEL_UUID":    "tun-existing",
+		"TUNNEL_UUID":    "2f8a1c3e-1111-4222-8333-abcdefabcdef",
 	}, 0o600); err != nil {
 		t.Fatal(err)
 	}

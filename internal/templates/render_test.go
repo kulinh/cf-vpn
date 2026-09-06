@@ -6,11 +6,11 @@ import (
 )
 
 func TestRenderCloudflaredAdmin(t *testing.T) {
-	out, err := RenderCloudflaredAdmin("uuid-1", "admin.example.com")
+	out, err := RenderCloudflaredAdmin(testTunnelUUID, "admin.example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, "tunnel: uuid-1") {
+	if !strings.Contains(out, "tunnel: "+testTunnelUUID) {
 		t.Fatalf("missing tunnel line: %s", out)
 	}
 	if !strings.Contains(out, "hostname: admin.example.com") {

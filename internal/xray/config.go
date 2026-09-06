@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 )
 
 // emailSuffix is the canonical xray email suffix written by AddUser and the
@@ -426,36 +427,17 @@ func Load(path string) (Config, error) {
 	return cfg, json.Unmarshal(raw, &cfg)
 }
 
+// Marshal renders the config exactly as SaveAtomic would write it. Callers that
+// must validate the candidate (with `xray run -test`) before it replaces the
+// live file need the bytes, not the write.
+func Marshal(cfg Config) ([]byte, error) {
+	return json.MarshalIndent(cfg, "", "  ")
+}
+
 func SaveAtomic(path string, cfg Config, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
+	raw, err := Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(raw); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return nil
+	return fsutil.WriteFile(path, raw, mode)
 }

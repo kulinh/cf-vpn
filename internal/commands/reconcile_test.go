@@ -74,6 +74,9 @@ func TestReconcileUnitsIdempotentWhenInSync(t *testing.T) {
 }
 
 func TestRunReconcileUnitsRestartsLongRunningNotOneshot(t *testing.T) {
+	// RunReconcileUnits takes the config lock, which lives next to
+	// xrayConfigPath: withTempPaths keeps it out of /etc/cfvpn/xray.
+	withTempPaths(t)
 	dir := withUnitDir(t)
 	seedCanonicalUnits(t, dir)
 	// Drift one long-running service, one oneshot service, one timer.
@@ -102,6 +105,7 @@ func TestRunReconcileUnitsRestartsLongRunningNotOneshot(t *testing.T) {
 }
 
 func TestRunReconcileUnitsNoDriftSkipsReload(t *testing.T) {
+	withTempPaths(t) // the config lock lives next to xrayConfigPath
 	withUnitDirSeeded(t)
 	rec := &installRecorder{}
 	var out bytes.Buffer
@@ -122,6 +126,9 @@ func TestReRenderInPlaceReconcilesDriftedUnit(t *testing.T) {
 		t.Fatal(err)
 	}
 	env["MODE"] = "direct"
+	// ADMIN_HOST is always set on a real node; the cloudflared renderer now
+	// rejects an empty ingress hostname instead of emitting "hostname: ".
+	env["ADMIN_HOST"] = "jpy-04.rwl247.dev"
 	env[state.KeyRealityPriv] = "test-priv-x25519"
 	env[state.KeyRealityPub] = "test-pub"
 	env[state.KeyRealityShortID] = "abcd1234"

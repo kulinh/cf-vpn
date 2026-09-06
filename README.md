@@ -80,6 +80,7 @@ Same-mode upgrades re-render xray + cloudflared configs against the EXISTING hos
 | Run healthcheck | `sudo cfvpnctl healthcheck run` |
 | Install healthcheck timer | `sudo cfvpnctl healthcheck install` |
 | Cleanup orphan rotation tunnel | `sudo cfvpnctl rotate-domain --cleanup <uuid> --yes` |
+| Apply network tuning (BBR/fq) | `sudo cfvpnctl tune-net` |
 | Xray logs | `journalctl -u cfvpn-xray -f` |
 | Hysteria2 logs | `journalctl -u cfvpn-hysteria -f` |
 | Admin tunnel logs | `journalctl -u cfvpn-cloudflared -f` |
@@ -87,6 +88,40 @@ Same-mode upgrades re-render xray + cloudflared configs against the EXISTING hos
 User mutations (add/remove/sync) re-render the xray config in-place using the active mode + Reality params; they do not trigger DNS work or cert reissue. Per-user subscription files are regenerated automatically after every mutation.
 
 `cfvpnctl rotate-domain <new-domain>` (without `--cleanup`) is **deprecated**; domain rotation is now driven from the panel (`POST /api/nodes/:id/rotate`) which calls the agent's `/admin/v1/rotate-domain`.
+
+## Network tuning (BBR)
+
+`cfvpnctl install` and `cfvpnctl upgrade` apply the node network tuning
+automatically; `cfvpnctl tune-net` runs just that step, which is how existing
+nodes get it without a full re-deploy:
+
+```bash
+sudo cfvpnctl tune-net          # idempotent, safe to re-run
+```
+
+It writes `/etc/sysctl.d/90-cfvpn.conf`:
+
+```text
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.ipv4.tcp_mtu_probing = 1
+```
+
+then `modprobe tcp_bbr` (a failure is fine — BBR is built into most kernels)
+and `sysctl --system`, and finally re-reads
+`net.ipv4.tcp_congestion_control` to confirm `bbr` is actually active. If it is
+not, the command warns and still exits 0: the node works, it is just slower.
+
+**Why:** on the VN ↔ APAC path this fleet serves, 25–30% packet loss at peak is
+normal. Cubic (the Linux default) reads that as congestion and collapses the
+window to under 1 KB/s — the "node is up but the VPN is dead" symptom. BBR
+models bandwidth and RTT instead of counting losses and keeps the pipe full
+through the same loss; `fq` is the qdisc BBR's pacing needs, and
+`tcp_mtu_probing` recovers from the black-holed ICMP "fragmentation needed"
+that tunnels on this path routinely hit.
+
+Note the drop-in sorts *before* any `99-*.conf` an operator has added, so an
+existing `99-network-perf.conf` still wins for keys it also sets.
 
 ## Healthcheck
 

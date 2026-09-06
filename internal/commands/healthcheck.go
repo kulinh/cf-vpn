@@ -23,12 +23,20 @@ var systemdUnitDir = "/etc/systemd/system"
 
 // IsHealthyCode reports whether a response code is considered healthy.
 //   - 101: WebSocket upgrade accepted (HTTPUpgrade probe with proper headers).
+//   - 426: the SYNTHETIC code the agent returns for a Reality node after a
+//     successful TCP open (cmd/cfvpn-agent: probeHealth). Reality nodes expose
+//     no real HTTP endpoint, so there is no status line to read.
 //
 // Anything else is unhealthy. Earlier xray versions returned 400/426 on a
 // plain GET, but xray 26.x's HTTPUpgrade transport closes the connection
 // without writing a status line, so a real upgrade handshake is the only
 // reliable signal — the operator-side probe sends one explicitly.
-func IsHealthyCode(code int) bool { return code == 101 }
+//
+// M-G4: 426 was missing here even though the agent's own comment said this
+// function would accept it, so a SUCCESSFUL probe on every Reality node (most
+// of the fleet) reported {"ok":false,"code":426} — the value that ends up in
+// the node.healthcheck.recover event body and on the panel.
+func IsHealthyCode(code int) bool { return code == 101 || code == 426 }
 
 // IsRealityMode reports whether the env describes a Reality direct node.
 // Reality nodes do not expose a real TLS endpoint on :443 (the handshake is

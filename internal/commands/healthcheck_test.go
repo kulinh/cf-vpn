@@ -13,10 +13,15 @@ func TestIsHealthyCode(t *testing.T) {
 	if !IsHealthyCode(101) {
 		t.Fatalf("101 (WebSocket Upgrade accepted) must be healthy")
 	}
+	// M-G4: 426 is the synthetic code cfvpn-agent returns after a successful
+	// TCP open against a Reality node — most of the fleet. Rejecting it made a
+	// successful probe report ok:false.
+	if !IsHealthyCode(426) {
+		t.Fatalf("426 (synthetic Reality TCP-open success) must be healthy")
+	}
 	// xray 26.x's HTTPUpgrade transport closes plain GETs without writing a
-	// status line, so 400/426 are no longer reachable from the new probe and
-	// shouldn't be treated as healthy. Anything other than 101 is unhealthy.
-	for _, code := range []int{0, 200, 400, 426, 502} {
+	// status line, so a real 400 from the wire is still unhealthy.
+	for _, code := range []int{0, 200, 400, 502} {
 		if IsHealthyCode(code) {
 			t.Fatalf("code %d must be unhealthy", code)
 		}
