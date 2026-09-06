@@ -1,18 +1,25 @@
 import { useEffect, useState } from 'react'
+import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { listEvents } from '../lib/api'
+import { describeLoadError } from '../lib/errors'
 import type { Event } from '../lib/types'
 
 export function EventsPage() {
   const [events, setEvents] = useState<Event[]>([])
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     let mounted = true
 
-    void listEvents().then((items) => {
-      if (mounted) {
-        setEvents(items)
-      }
-    })
+    listEvents()
+      .then((items) => {
+        if (mounted) {
+          setEvents(items)
+        }
+      })
+      .catch((error: unknown) => {
+        if (mounted) setLoadError(describeLoadError(error))
+      })
 
     return () => {
       mounted = false
@@ -22,6 +29,7 @@ export function EventsPage() {
   return (
     <section className="space-y-3">
       <h1 className="text-xl font-semibold">Events</h1>
+      <ErrorBanner message={loadError} />
       <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
         <table className="min-w-full text-left text-sm">
           <thead>
