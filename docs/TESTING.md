@@ -15,7 +15,10 @@ Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl u
 - [ ] `go build -o bin/cfvpnctl ./cmd/cfvpnctl` and `go build -o bin/cfvpn-agent ./cmd/cfvpn-agent` both succeed
 - [ ] `sudo install -m 0755 bin/cfvpnctl /usr/local/bin/cfvpnctl`
 - [ ] `sudo install -m 0755 bin/cfvpn-agent /usr/local/bin/cfvpn-agent`
+- [ ] `bash scripts/tests/run-tests.sh` reports `fail=0` (installer library unit tests, no network)
+- [ ] `shellcheck -x -S warning scripts/*.sh scripts/lib/*.sh scripts/tests/*.sh` is clean
 - [ ] Fresh deploy: `sudo -E CF_API_TOKEN=... CF_ACCOUNT_ID=... NODE_ID=... bash scripts/install-node.sh` completes without error
+- [ ] Re-run of `install-node.sh` on that node is REFUSED (exit 3) and leaves `/etc/cfvpn/cfvpn.env` byte-identical
 - [ ] `/etc/cfvpn/cfvpn.env` exists with Cloudflare credentials and node inputs, chmod 600
 - [ ] Existing deploy: `sudo cfvpnctl upgrade --mode direct` completes without error
 - [ ] Restricted VPS deploy: `sudo cfvpnctl upgrade --mode cloudflare` completes without error when TCP 443 cannot be exposed directly

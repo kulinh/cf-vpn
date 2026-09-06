@@ -2,13 +2,14 @@
 # install-node.sh — provision a fresh cf-vpn node end-to-end.
 #
 # This script:
+#   - refuses to run on an already-provisioned node (see FORCE_REINSTALL below)
 #   - validates every input the Go installer requires (MODE, NODE_ID, …)
 #   - pre-installs cloudflared (Cloudflare apt repo) and lego (go install)
 #   - builds AND installs both cfvpnctl and cfvpn-agent
 #   - writes the full /etc/cfvpn/cfvpn.env that RunInstall expects
 #   - falls back from direct → cloudflare if TCP/443 cannot be bound
 #   - upserts node + user into D1 and syncs via agent after install
-#   - verifies all systemd units are active before exiting
+#   - verifies all systemd units are healthy before exiting
 #
 # Usage:
 #   sudo -E CF_API_TOKEN=... CF_ACCOUNT_ID=... NODE_ID=us-01 \
@@ -18,6 +19,11 @@
 #
 # NODE_ID  : DNS label (case-insensitive); stored UPPERCASE in D1.
 # NODE_LABEL: human-readable name for the panel (defaults to uppercase NODE_ID).
+# FORCE_REINSTALL=1 : re-provision a node that already has credentials. This
+#   regenerates the Reality keypair and every user credential (breaking all
+#   existing clients); the old env file is backed up to
+#   /etc/cfvpn/cfvpn.env.bak-<unixtime> first. To upgrade in place use
+#   `cfvpnctl upgrade` instead.
 set -euo pipefail
 
 log()  { printf '[install-node] %s\n' "$*"; }
@@ -60,30 +66,44 @@ fi
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f "$PROJECT_ROOT/go.mod" ] || die "go.mod not found; run from inside the cf-vpn repository"
+LIB_DIR="$PROJECT_ROOT/scripts/lib"
+ENV_FILE_HELPER="$LIB_DIR/cfvpn-env-file.sh"
+[ -f "$ENV_FILE_HELPER" ] || die "missing $ENV_FILE_HELPER"
+
+# shellcheck source=lib/cfvpn-common.sh
+. "$LIB_DIR/cfvpn-common.sh"
+
+# ----- 0b. refuse to clobber an already-provisioned node ----------------------
+# Runs before apt/go/cfvpnctl touch anything: a second run of this script
+# regenerates the Reality keypair and every user credential.
+FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
+export FORCE_REINSTALL
+bash "$ENV_FILE_HELPER" check
+
+# Values are written to /etc/cfvpn/cfvpn.env unquoted (internal/state/store.go
+# keeps everything after the first '=' verbatim — it does not strip quotes),
+# and the same file is read by systemd EnvironmentFile=. Reject anything that
+# cannot survive that round-trip rather than writing a file nobody can parse.
+cfvpn_require_env_value CF_API_TOKEN  "$CF_API_TOKEN"
+cfvpn_require_env_value CF_ACCOUNT_ID "$CF_ACCOUNT_ID"
+[ -z "$DOMAIN" ] || cfvpn_require_env_value DOMAIN "$DOMAIN"
 
 # AGENT_SHARED_SECRET gates /admin/v1/* on the admin tunnel
 if [ -z "${AGENT_SHARED_SECRET:-}" ]; then
   AGENT_SHARED_SECRET="$(openssl rand -hex 32)"
 fi
+cfvpn_require_env_value AGENT_SHARED_SECRET "$AGENT_SHARED_SECRET"
 
+# shellcheck disable=SC2034  # read by d1_query() in scripts/lib/cfvpn-d1.sh
 D1_DB_ID="${CFVPN_D1_DATABASE_ID:-0649f07f-e2c0-47f3-b84a-273f7f67332e}"
 
-# d1_query <jq-built-json> — runs a D1 query; token stays out of argv via --config
-d1_query() {
-  local payload="$1"
-  local tmpf; tmpf="$(mktemp)"; chmod 600 "$tmpf"
-  printf '%s' "$payload" >"$tmpf"
-  local resp
-  resp=$(curl -sS --max-time 30 --config - <<EOF
-header = "Authorization: Bearer ${CF_API_TOKEN}"
-header = "Content-Type: application/json"
-url = "https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/d1/database/${D1_DB_ID}/query"
-data-binary = "@${tmpf}"
-EOF
-)
-  rm -f "$tmpf"
-  echo "$resp"
-}
+# d1_query / d1_zone_for_domain / node+user upserts / agent_sync
+# shellcheck source=lib/cfvpn-d1.sh
+. "$LIB_DIR/cfvpn-d1.sh"
+
+# Pin the ACME client so two nodes provisioned a week apart get the same lego.
+# Override with LEGO_VERSION=v4.x.y (or "latest") when you deliberately move it.
+LEGO_VERSION="${LEGO_VERSION:-latest}"
 
 # ----- 1. resolve MODE --------------------------------------------------------
 resolve_mode() {
@@ -96,7 +116,11 @@ resolve_mode() {
     warn "TCP/443 already accepting connections on this host; selecting MODE=cloudflare"
     MODE=cloudflare; return 0
   fi
-  if ss -tlnp 2>/dev/null | awk '{print $4}' | grep -qE '(^|:)443$'; then
+  # Capture first: `ss | awk | grep -q` under `set -o pipefail` reports the
+  # SIGPIPE of the left-hand side, not the match.
+  local listening
+  listening="$(ss -tlnp 2>/dev/null | awk '{print $4}' || true)"
+  if grep -qE '(^|:)443$' <<<"$listening"; then
     warn "Something is already listening on :443; selecting MODE=cloudflare"
     MODE=cloudflare; return 0
   fi
@@ -110,11 +134,16 @@ log "installing OS dependencies"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 
-PACKAGES=(curl wget jq openssl uuid-runtime qrencode ca-certificates git iproute2 golang-go ufw tar gzip coreutils bash systemd dnsutils rsync)
+PACKAGES=(curl jq openssl uuid-runtime qrencode ca-certificates git iproute2 golang-go ufw tar gzip coreutils bash systemd dnsutils rsync)
+# Capture the upgrade plan once. Piping it straight into `grep -q` closes the
+# pipe on the first match; with `set -o pipefail` the resulting SIGPIPE (141)
+# from apt-get became the status of the whole `if`, so every installed package
+# looked up-to-date and was never upgraded.
+UPGRADE_PLAN="$(apt-get --just-print upgrade 2>/dev/null || true)"
 TO_INSTALL=()
 for pkg in "${PACKAGES[@]}"; do
   if dpkg -s "$pkg" >/dev/null 2>&1; then
-    if apt-get --just-print upgrade 2>/dev/null | grep -q "^Inst $pkg "; then
+    if grep -q "^Inst $pkg " <<<"$UPGRADE_PLAN"; then
       TO_INSTALL+=("$pkg")
     fi
   else
@@ -131,6 +160,9 @@ fi
 
 command -v go >/dev/null || die "go toolchain not on PATH after apt-get install"
 
+# Persisted into cfvpn.env below when set: the cert-renew unit runs from
+# EnvironmentFile=, ~60 days later, with no shell environment to inherit.
+LEGO_FALLBACK_DNS=0
 if dig @173.245.59.111 cloudflare.com +time=3 +tries=1 >/dev/null 2>&1; then
   log "Cloudflare authoritative DNS reachable"
 else
@@ -138,6 +170,8 @@ else
   export LEGO_DISABLE_CP=1
   export LEGO_DNS_RESOLVERS="${LEGO_DNS_RESOLVERS:-1.1.1.1:53,8.8.8.8:53}"
   unset LEGO_PROPAGATION_WAIT
+  cfvpn_require_env_value LEGO_DNS_RESOLVERS "$LEGO_DNS_RESOLVERS"
+  LEGO_FALLBACK_DNS=1
 fi
 
 # ----- 2b. pre-install cloudflared via Cloudflare official apt repo -----------
@@ -145,8 +179,9 @@ fi
 # skip its GitHub download entirely.
 if ! command -v cloudflared >/dev/null 2>&1; then
   log "installing cloudflared via Cloudflare apt repo"
-  mkdir -p --mode=0755 /usr/share/keyrings
-  curl -fsSL https://pkg.cloudflare.com/cloudflare-public-v2.gpg \
+  install -d -m 0755 /usr/share/keyrings
+  curl -fsSL --proto '=https' --proto-redir '=https' --tlsv1.2 \
+    https://pkg.cloudflare.com/cloudflare-public-v2.gpg \
     | tee /usr/share/keyrings/cloudflare-public-v2.gpg >/dev/null
   echo 'deb [signed-by=/usr/share/keyrings/cloudflare-public-v2.gpg] https://pkg.cloudflare.com/cloudflared any main' \
     | tee /etc/apt/sources.list.d/cloudflared.list >/dev/null
@@ -160,8 +195,8 @@ fi
 # ----- 2c. pre-install lego via go install (no GitHub API) --------------------
 # GOBIN=/usr/local/bin places the binary directly where cfvpnctl expects it.
 if ! command -v lego >/dev/null 2>&1; then
-  log "installing lego via go install (latest)"
-  GOBIN=/usr/local/bin go install github.com/go-acme/lego/v4/cmd/lego@latest
+  log "installing lego via go install ($LEGO_VERSION)"
+  GOBIN=/usr/local/bin go install "github.com/go-acme/lego/v4/cmd/lego@${LEGO_VERSION}"
   log "lego installed: $(lego --version 2>&1 | head -1)"
 else
   log "lego already installed: $(lego --version 2>&1 | head -1)"
@@ -194,25 +229,31 @@ fi
 # ----- 5. write env file ------------------------------------------------------
 # cfvpnctl reads NODE_ID (lowercase) from env for DNS label use.
 # DB_NODE_ID (uppercase) is used only by this script for D1 writes.
+# Values are written unquoted on purpose — see cfvpn_require_env_value above.
 log "writing /etc/cfvpn/cfvpn.env"
-install -d -m 700 /etc/cfvpn
-tmp_env="$(mktemp)"
 {
-  printf 'CF_API_TOKEN=%s\n'       "$CF_API_TOKEN"
-  printf 'CF_ACCOUNT_ID=%s\n'      "$CF_ACCOUNT_ID"
-  printf 'NODE_ID=%s\n'            "$NODE_ID"
-  printf 'USER1_NAME=%s\n'         "$USER1_NAME"
-  printf 'MODE=%s\n'               "$MODE"
+  printf 'CF_API_TOKEN=%s\n'        "$CF_API_TOKEN"
+  printf 'CF_ACCOUNT_ID=%s\n'       "$CF_ACCOUNT_ID"
+  printf 'NODE_ID=%s\n'             "$NODE_ID"
+  printf 'USER1_NAME=%s\n'          "$USER1_NAME"
+  printf 'MODE=%s\n'                "$MODE"
   printf 'AGENT_SHARED_SECRET=%s\n' "$AGENT_SHARED_SECRET"
-  [ -n "$DOMAIN" ] && printf 'DOMAIN=%s\n' "$DOMAIN"
-} >"$tmp_env"
-install -m 600 "$tmp_env" /etc/cfvpn/cfvpn.env
-rm -f "$tmp_env"
+  if [ "$LEGO_FALLBACK_DNS" -eq 1 ]; then
+    printf 'LEGO_DNS_RESOLVERS=%s\n' "$LEGO_DNS_RESOLVERS"
+    printf 'LEGO_DISABLE_CP=%s\n'    "1"
+  fi
+  # `|| true`: this group is the left side of a pipe and `set -o pipefail` is
+  # on, so a false AND-list here would abort the whole script.
+  { [ -n "$DOMAIN" ] && printf 'DOMAIN=%s\n' "$DOMAIN"; } || true
+} | bash "$ENV_FILE_HELPER" write
 
 # ----- 6. firewall hygiene ----------------------------------------------------
-if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q 'Status: active'; then
-  log "ufw is active — ensuring SSH is allowed"
-  ufw allow OpenSSH || ufw allow 22/tcp || warn "could not whitelist SSH; verify manually"
+if command -v ufw >/dev/null 2>&1; then
+  UFW_STATUS="$(ufw status 2>/dev/null || true)"
+  if grep -q 'Status: active' <<<"$UFW_STATUS"; then
+    log "ufw is active — ensuring SSH is allowed"
+    ufw allow OpenSSH || ufw allow 22/tcp || warn "could not whitelist SSH; verify manually"
+  fi
 fi
 
 # ----- 7. run installer -------------------------------------------------------
@@ -237,8 +278,13 @@ else
   warn "could not list admin tunnels before install (CF API) — orphan detection disabled"
 fi
 
+_ORPHAN_CHECK_DONE=0
 cleanup_orphan_tunnels() {
   local rc=$?
+  # On Ctrl-C bash runs the INT trap and then, because this handler exits, the
+  # EXIT trap as well — without this guard the diff would run twice.
+  [ "$_ORPHAN_CHECK_DONE" -eq 1 ] && exit $rc
+  _ORPHAN_CHECK_DONE=1
   [ $rc -eq 0 ] && return 0
   warn "cfvpnctl install exited with status $rc — checking for orphan admin tunnels"
   if [ "${TUNNELS_SNAPSHOT_OK:-0}" -ne 1 ]; then
@@ -261,27 +307,45 @@ cleanup_orphan_tunnels() {
   fi
   exit $rc
 }
-trap cleanup_orphan_tunnels EXIT
+# INT/TERM too: a Ctrl-C during `cfvpnctl install` leaks a tunnel just as a
+# failure does.
+trap cleanup_orphan_tunnels EXIT INT TERM
 
 log "running cfvpnctl install (mode=$MODE)"
 cfvpnctl install
-trap - EXIT
+trap - EXIT INT TERM
+# Arm the re-install guard only now: everything irreplaceable (Reality keypair,
+# admin tunnel, user credentials) exists from this point on. A run that died
+# earlier — including at the systemd-unit gate below — stays retryable.
+bash "$ENV_FILE_HELPER" mark-installed
 
 log "installing healthcheck timer"
 cfvpnctl healthcheck install
 
 # ----- 8. verify systemd units ------------------------------------------------
+# `Restart=on-failure` + `RestartSec=3` means a crash-looping unit still reports
+# `active` a couple of seconds in — wait long enough for a restart to show up
+# and treat any restart as a failure.
 log "verifying systemd units"
 units=(cfvpn-xray cfvpn-hysteria cfvpn-cloudflared cfvpn-agent)
-sleep 2
+sleep 8
+unit_failures=0
 for u in "${units[@]}"; do
-  state=$(systemctl is-active "$u" || true)
-  if [ "$state" = active ]; then
-    log "  $u: active"
+  state=$(systemctl is-active "$u" 2>/dev/null || true)
+  restarts=$(systemctl show -p NRestarts --value "$u" 2>/dev/null || true)
+  [[ "$restarts" =~ ^[0-9]+$ ]] || restarts=0
+  if [ "$state" = active ] && [ "$restarts" -eq 0 ]; then
+    log "  $u: active (NRestarts=0)"
   else
-    warn "  $u: $state — check 'journalctl -u $u -n 80'"
+    warn "  $u: state=$state NRestarts=$restarts — check 'journalctl -u $u -n 80'"
+    unit_failures=$((unit_failures + 1))
   fi
 done
+if [ "$unit_failures" -gt 0 ]; then
+  die "$unit_failures systemd unit(s) unhealthy — refusing to publish this node to D1.
+  Inspect with: journalctl -u <unit> -n 80
+  Then repair in place with: sudo cfvpnctl upgrade"
+fi
 
 log "running healthcheck"
 cfvpnctl healthcheck run || warn "healthcheck reported failure (Cloudflare tunnel may still be registering — re-run in 60s)"
@@ -289,117 +353,35 @@ cfvpnctl healthcheck run || warn "healthcheck reported failure (Cloudflare tunne
 # ----- 9. sync node + user to D1 & control panel -----------------------------
 log "syncing $DB_NODE_ID + user $USER1_NAME to D1"
 
-# Load all runtime values written by cfvpnctl install into current shell
-# shellcheck source=/dev/null
-set -a; . /etc/cfvpn/cfvpn.env; set +a
+# Load the runtime values written by cfvpnctl install. Parsed the same way
+# internal/state/store.go parses them (split on the first '='), NOT sourced —
+# `. cfvpn.env` would execute any `$(...)` that ended up in a value.
+while IFS='=' read -r _k _v; do
+  case "$_k" in
+    DOMAIN|HY2_HOST|HY2_PORT|HY2_OBFS_PW|HY2_PASS_USER1|UUID_USER1| \
+    PUBLIC_IP|ADMIN_HOST|REALITY_PUBLIC_KEY|REALITY_SHORT_ID|REALITY_SNI|REALITY_DEST)
+      export "$_k=$_v" ;;
+  esac
+done < /etc/cfvpn/cfvpn.env
 
+for _k in DOMAIN HY2_HOST HY2_PORT HY2_OBFS_PW HY2_PASS_USER1 UUID_USER1 PUBLIC_IP ADMIN_HOST; do
+  [ -n "${!_k:-}" ] || die "$_k not populated by cfvpnctl install — refusing to write a half-empty node row to D1"
+done
+
+# shellcheck disable=SC2034  # read by the d1_* helpers in scripts/lib/cfvpn-d1.sh
 NOW_MS=$(date +%s%3N)
-ZONE="$(echo "$DOMAIN" | rev | cut -d'.' -f1,2 | rev)"
+ZONE="$(d1_zone_for_domain "$DOMAIN")"
 # A blank DOMAIN yields a blank ZONE, which would write the node to D1 with
 # zone='' and silently defeat the zone-collision check. Fail loudly instead.
 if [ -z "$DOMAIN" ] || [ -z "$ZONE" ]; then
   die "DOMAIN is empty after cfvpnctl install — cannot derive zone; refusing to upsert node with zone=''"
 fi
 
-# 9a. Upsert node with full config (INSERT OR REPLACE handles re-installs)
-NODE_RESP=$(d1_query "$(jq -n \
-  --arg id    "$DB_NODE_ID" \
-  --arg label "$NODE_LABEL" \
-  --arg ah    "$ADMIN_HOST" \
-  --arg vh    "$DOMAIN" \
-  --arg hh    "$HY2_HOST" \
-  --argjson hp "$HY2_PORT" \
-  --arg how   "$HY2_OBFS_PW" \
-  --arg ip    "$PUBLIC_IP" \
-  --arg zone  "$ZONE" \
-  --arg mode  "$MODE" \
-  --arg rpk   "$REALITY_PUBLIC_KEY" \
-  --arg rsid  "$REALITY_SHORT_ID" \
-  --arg rsni  "$REALITY_SNI" \
-  --arg rdest "$REALITY_DEST" \
-  --argjson ts "$NOW_MS" \
-  --arg sec   "$AGENT_SHARED_SECRET" \
-  '{
-    sql: "INSERT OR REPLACE INTO nodes (id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,reality_pubkey,reality_sid,reality_sni,reality_dest,last_seen_at,latency_ms,created_at,agent_secret) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,null,null,?,?)",
-    params: [$id,$label,$ah,$vh,$hh,$hp,$how,$ip,$zone,$mode,"active",$rpk,$rsid,$rsni,$rdest,$ts,$sec]
-  }')")
-NODE_OK=$(echo "$NODE_RESP" | jq -r '.success // false')
-NODE_CHANGES=$(echo "$NODE_RESP" | jq -r '.result[0].meta.changes // 0')
-if [ "$NODE_OK" = "true" ] && [ "$NODE_CHANGES" -ge 1 ]; then
-  log "node $DB_NODE_ID upserted in D1 (label=$NODE_LABEL, zone=$ZONE)"
-else
-  warn "node D1 upsert failed: $(echo "$NODE_RESP" | jq -r '.errors[0].message // "unknown"')"
-fi
-
-# 9b. Ensure user exists in D1; create with random sub_token if missing
-USER_RESP=$(d1_query "$(jq -n --arg uid "$USER1_NAME" \
-  '{sql:"SELECT id FROM users WHERE id=?", params:[$uid]}')")
-USER_OK=$(echo "$USER_RESP" | jq -r '.success // false')
-if [ "$USER_OK" != "true" ]; then
-  warn "user existence check failed (non-fatal): $(echo "$USER_RESP" | jq -r '.errors[0].message // "unknown"')"
-  USER_EXISTS=1  # treat as existing so INSERT OR IGNORE is skipped
-else
-  USER_EXISTS=$(echo "$USER_RESP" | jq -r '.result[0].results | length')
-fi
-if [ "$USER_EXISTS" -lt 1 ]; then
-  SUB_TOKEN="$(openssl rand -hex 16)"
-  CRE_RESP=$(d1_query "$(jq -n \
-    --arg uid "$USER1_NAME" \
-    --arg tok "$SUB_TOKEN" \
-    --argjson ts "$NOW_MS" \
-    '{sql:"INSERT OR IGNORE INTO users (id,name,sub_token,created_at) VALUES (?,?,?,?)", params:[$uid,$uid,$tok,$ts]}')")
-  CRE_OK=$(echo "$CRE_RESP" | jq -r '.success // false')
-  if [ "$CRE_OK" = "true" ]; then
-    log "user $USER1_NAME created in D1 (sub_token=${SUB_TOKEN:0:6}… stored in D1)"
-  else
-    warn "user create failed: $(echo "$CRE_RESP" | jq -r '.errors[0].message // "unknown"')"
-  fi
-else
-  log "user $USER1_NAME already in D1"
-fi
-
-# 9c. Upsert user_nodes (vless_uuid + hy2_pw from cfvpnctl-generated env)
-UN_RESP=$(d1_query "$(jq -n \
-  --arg uid   "$USER1_NAME" \
-  --arg nid   "$DB_NODE_ID" \
-  --arg uuid  "$UUID_USER1" \
-  --arg hy2pw "$HY2_PASS_USER1" \
-  --argjson ts "$NOW_MS" \
-  '{sql:"INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?,?,?,?,?)", params:[$uid,$nid,$uuid,$hy2pw,$ts]}')")
-UN_OK=$(echo "$UN_RESP" | jq -r '.success // false')
-if [ "$UN_OK" = "true" ]; then
-  log "user_nodes $USER1_NAME → $DB_NODE_ID upserted (uuid=$UUID_USER1)"
-else
-  warn "user_nodes upsert failed: $(echo "$UN_RESP" | jq -r '.errors[0].message // "unknown"')"
-fi
-
-# 9d. Confirm agent is live via admin tunnel sync.
-# The agent expects syncUser objects ({name,vless_uuid,hy2_pw}), not bare name
-# strings — sending strings fails with "cannot unmarshal string into syncUser".
+d1_upsert_node          # 9a. node row (INSERT OR REPLACE handles re-installs)
+d1_ensure_user          # 9b. user row, created with a random sub_token if new
+d1_upsert_user_nodes    # 9c. user_nodes binding (vless_uuid + hy2_pw)
 log "calling agent sync via $ADMIN_HOST"
-SYNC_BODY=$(jq -n \
-  --arg n "$USER1_NAME" \
-  --arg u "$UUID_USER1" \
-  --arg p "$HY2_PASS_USER1" \
-  '{users:[{name:$n, vless_uuid:$u, hy2_pw:$p}]}')
-# Keep the shared secret out of argv (visible in ps) via curl --config on stdin.
-sync_tmpf="$(mktemp)"; chmod 600 "$sync_tmpf"
-printf '%s' "$SYNC_BODY" >"$sync_tmpf"
-SYNC_RESP=$( { curl -sS --max-time 30 --config - <<EOF
-request = "POST"
-url = "https://$ADMIN_HOST/admin/v1/sync"
-header = "Authorization: Bearer $AGENT_SHARED_SECRET"
-header = "Content-Type: application/json"
-data-binary = "@$sync_tmpf"
-EOF
-} 2>&1 ) || SYNC_RESP=""
-rm -f "$sync_tmpf"
-SYNC_OK=$(echo "$SYNC_RESP" | jq -r '.ok // false' 2>/dev/null || echo false)
-if [ "$SYNC_OK" = "true" ]; then
-  log "agent sync OK — $(echo "$SYNC_RESP" | jq -r '.users') user(s) active on node"
-else
-  warn "agent sync non-OK: $SYNC_RESP"
-fi
+agent_sync              # 9d. confirm the agent is live via the admin tunnel
 
 log "node ready: $DB_NODE_ID ($NODE_LABEL)"
 log "next: sudo cfvpnctl status"
