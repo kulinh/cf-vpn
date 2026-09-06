@@ -23,12 +23,17 @@ vi.mock("../lib/cf-api", async (orig) => {
 import { AgentHttpError, callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
-import { deleteNode, nodeHealthcheck, nodeRotate, nodeSyncCore, sweepNodesHealth } from "./nodes";
+import { deleteNode, getNode, nodeHealthcheck, nodeRotate, nodeSyncCore, patchNode, sweepNodesHealth } from "./nodes";
 import type { Env, NodeRow } from "../types";
 
 type ZoneRow = { name: string; cf_zone_id: string; enabled?: number };
 
-function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
+function makeEnv(seed: {
+  node: NodeRow;
+  zones: ZoneRow[];
+  failRunSql?: RegExp;
+  batches?: unknown[][];
+}): Env {
   const node = { ...seed.node };
   const zones = seed.zones.slice();
 
@@ -62,6 +67,9 @@ function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
         return { results: [] } as never;
       },
       async run() {
+        if (seed.failRunSql?.test(sql)) {
+          throw new Error("D1_ERROR: database is locked");
+        }
         if (/UPDATE nodes SET vpn_host=\?, hy2_host=\?/.test(sql)) {
           const [vpn_host, hy2_host, hy2_port, hy2_obfs_pw, public_ip, zone] = state.args as [string, string, number, string, string, string];
           node.vpn_host = vpn_host;
@@ -86,8 +94,9 @@ function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
     prepare(sql: string) {
       return makePrepared(sql);
     },
-    async batch() {
-      return [] as never;
+    async batch(stmts: unknown[]) {
+      seed.batches?.push(stmts);
+      return stmts.map(() => ({ success: true })) as never;
     },
     async exec() {
       return { count: 0, duration: 0 } as never;
@@ -760,5 +769,183 @@ describe("sweepNodesHealth", () => {
 
     expect(errorSpy).toHaveBeenCalledWith("sweep failed for node", "a", expect.any(String));
     errorSpy.mockRestore();
+  });
+});
+
+describe("nodeRotate persistence split (M-W6)", () => {
+  const rotateNode: NodeRow = {
+    id: "rot-01",
+    label: "Rot 01",
+    admin_host: "rot-01.rwl247.dev",
+    vpn_host: "cdn-old.example.com",
+    zone: "example.com",
+    status: "active",
+    last_seen_at: null,
+    latency_ms: null,
+    created_at: 1,
+    public_ip: null,
+    mode: "direct",
+    hy2_host: "hy-old.example.com",
+    hy2_port: 22333,
+    hy2_obfs_pw: "old-obfs",
+    reality_pubkey: null,
+    reality_sid: null,
+    reality_sni: null,
+    reality_dest: null,
+    xhttp_path: null,
+    agent_secret: null,
+    tunnel_uuid: null
+  };
+  const zones: ZoneRow[] = [
+    { name: "example.com", cf_zone_id: "old-zone", enabled: 1 },
+    { name: "example.net", cf_zone_id: "new-zone", enabled: 1 }
+  ];
+
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("returns rotate_persist_failed (not rotate_failed) and logs the new host when the DB write fails", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      vpn_host: "cdn-new.example.net",
+      public_ip: "203.0.113.10",
+      hy2_host: "hy-new.example.net",
+      hy2_port: 23456,
+      hy2_obfs_pw: "obfs"
+    });
+    const env = makeEnv({ node: rotateNode, zones, failRunSql: /UPDATE nodes SET vpn_host=/ });
+
+    const res = await nodeRotate(
+      env,
+      "rot-01",
+      new Request("https://panel.test/api/nodes/rot-01/rotate", { method: "POST" }),
+      "operator@example.com"
+    );
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; vpn_host: string };
+    // Distinct from rotate_failed: the node HAS moved, so a retry would rotate
+    // it a second time and orphan every subscription already handed out.
+    expect(body.error).toBe("rotate_persist_failed");
+    expect(body.vpn_host).toBe("cdn-new.example.net");
+
+    const ev = vi.mocked(logEvent).mock.calls.find((c) => c[2] === "node.rotate");
+    expect(ev?.[3]).toBe("partial");
+    expect(JSON.stringify(ev?.[4])).toContain("cdn-new.example.net");
+  });
+
+  it("keeps the stored hy2 runtime when the agent reports hy2_port=0", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      vpn_host: "cdn-new.example.net",
+      public_ip: "203.0.113.10",
+      hy2_host: "hy-new.example.net",
+      hy2_port: 0,
+      hy2_obfs_pw: ""
+    });
+    const env = makeEnv({ node: rotateNode, zones });
+
+    const res = await nodeRotate(
+      env,
+      "rot-01",
+      new Request("https://panel.test/api/nodes/rot-01/rotate", { method: "POST" }),
+      "operator@example.com"
+    );
+
+    expect(res.status).toBe(200);
+    // Persisting 0 / "" makes buildSubscriptionURIs drop HY2 for this node
+    // entirely (falsy check), so rotate must merge like every other write path.
+    const written = await getNode(env, "rot-01");
+    const row = (await written.json()) as { hy2_port: number };
+    expect(row.hy2_port).toBe(22333);
+  });
+});
+
+describe("patchNode status whitelist", () => {
+  const patchNodeRow: NodeRow = {
+    id: "p-01",
+    label: "P 01",
+    admin_host: "p-01.rwl247.dev",
+    vpn_host: "p.example.com",
+    zone: "example.com",
+    status: "active",
+    last_seen_at: null,
+    latency_ms: null,
+    created_at: 1,
+    public_ip: null,
+    mode: "direct",
+    hy2_host: null,
+    hy2_port: null,
+    hy2_obfs_pw: null,
+    reality_pubkey: null,
+    reality_sid: null,
+    reality_sni: null,
+    reality_dest: null,
+    xhttp_path: null,
+    agent_secret: null,
+    tunnel_uuid: null
+  };
+
+  const patch = (env: Env, body: unknown) =>
+    patchNode(env, "p-01", new Request("https://panel.test/api/nodes/p-01", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    }), "operator@example.com");
+
+  it("rejects an unknown status instead of silently parking the node", async () => {
+    const env = makeEnv({ node: patchNodeRow, zones: [] });
+    const res = await patch(env, { status: "activ" });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_status");
+  });
+
+  it("accepts each allowed status", async () => {
+    for (const status of ["active", "disabled", "unreachable"]) {
+      const env = makeEnv({ node: patchNodeRow, zones: [] });
+      const res = await patch(env, { status });
+      expect(res.status).toBe(200);
+    }
+  });
+});
+
+describe("deleteNode row removal", () => {
+  it("removes membership and node rows in one batch", async () => {
+    vi.mocked(hasCfCredentials).mockReturnValue(false);
+    const batches: unknown[][] = [];
+    const env = makeEnv({
+      node: {
+        id: "batch-01",
+        label: "B",
+        admin_host: "b.rwl247.dev",
+        vpn_host: "b.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "direct",
+        hy2_host: null,
+        hy2_port: null,
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null,
+        agent_secret: null,
+        tunnel_uuid: null
+      },
+      zones: [],
+      batches
+    });
+
+    const res = await deleteNode(env, "batch-01");
+
+    expect(res.status).toBe(200);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(2);
   });
 });

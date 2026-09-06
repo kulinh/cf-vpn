@@ -19,6 +19,9 @@ import { generateHost, generateHy2Host, pickZone } from "../lib/host-gen";
 // sweep flapped nodes between active/unreachable every few hours.
 const HEALTHCHECK_TIMEOUT_MS = 15000;
 
+const NODE_STATUSES = ["active", "disabled", "unreachable"] as const;
+type NodeStatus = (typeof NODE_STATUSES)[number];
+
 type AgentCaller = typeof callAgent;
 type TestAgentCaller = (...args: Parameters<AgentCaller>) => Promise<unknown>;
 let callAgentForTests: TestAgentCaller | null = null;
@@ -209,6 +212,11 @@ export async function patchNode(env: Env, id: string, request: Request, actor = 
       return error(400, { error: "zone_not_found", detail: body.zone });
     }
   }
+  // status has no CHECK constraint in D1; a typo here silently drops the node
+  // out of `WHERE status='active'`, so new users are never provisioned to it.
+  if (body.status !== undefined && !NODE_STATUSES.includes(body.status as NodeStatus)) {
+    return error(400, { error: "invalid_status", detail: `status must be one of ${NODE_STATUSES.join(", ")}` });
+  }
   const updated = {
     label: body.label ?? existing.label,
     admin_host: body.admin_host ?? existing.admin_host,
@@ -371,12 +379,19 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
     }
   }
 
-  // Remove membership rows first so we don't orphan user_nodes pointing at a
-  // node id that no longer exists (mirrors deleteUser's cleanup for users).
-  await env.DB.prepare("DELETE FROM user_nodes WHERE node_id = ?").bind(id).run();
-
-  const result = await env.DB.prepare("DELETE FROM nodes WHERE id = ?").bind(id).run();
-  if (!result.success) {
+  // One transaction: as two separate statements, a failure of the second left
+  // the membership rows gone but the node row (and its agent credentials) in
+  // place — a state no retry converges out of.
+  let results: D1Result[];
+  try {
+    results = await env.DB.batch([
+      env.DB.prepare("DELETE FROM user_nodes WHERE node_id = ?").bind(id),
+      env.DB.prepare("DELETE FROM nodes WHERE id = ?").bind(id)
+    ]);
+  } catch (e) {
+    return error(500, { error: "delete_failed", detail: String(e) });
+  }
+  if (results.some((r) => !r.success)) {
     return error(500, { error: "delete_failed", detail: id });
   }
   await logEvent(env, actor, "node.delete", warnings.length > 0 ? "partial" : "ok", { node_id: id, warnings }, id);
@@ -700,9 +715,20 @@ export async function nodeRotateCore(
   }
 
   const newHy2Host = generateHy2Host(rng, newZoneName);
+  // host-gen draws 4 random bytes and never checks for a collision, but vpn_host
+  // carries a UNIQUE index — catch that here rather than after the agent has
+  // already moved the node.
+  const hostTaken = await one<{ id: string }>(
+    env.DB.prepare("SELECT id FROM nodes WHERE vpn_host = ? AND id != ?").bind(newHost, id)
+  );
+  if (hostTaken) {
+    return error(409, { error: "vpn_host_exists", detail: newHost });
+  }
   const oldZone = await one<ZoneRow>(env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE name = ?").bind(row.zone));
+
+  let out: AgentRotateResponse;
   try {
-    const out = await agentCall<AgentRotateResponse>(
+    out = await agentCall<AgentRotateResponse>(
       env,
       { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/rotate-domain",
@@ -722,15 +748,48 @@ export async function nodeRotateCore(
       },
       MAX_TIMEOUT_MS
     );
-    await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=?")
-      .bind(out.vpn_host, out.hy2_host, out.hy2_port, out.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
-      .run();
-    await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host, public_ip: out.public_ip }, id);
-    return json({ vpn_host: out.vpn_host, hy2_host: out.hy2_host, public_ip: out.public_ip });
   } catch (e) {
     await logEvent(env, actor, "node.rotate", "error", { message: String(e) }, id);
     return error(502, { error: "rotate_failed", detail: String(e) });
   }
+
+  // The agent has already moved the node at this point. A failed write here is
+  // NOT "rotate failed": reporting it as such invites the operator to retry,
+  // which rotates a second time and invalidates every subscription that still
+  // pointed at the first new host. Log the new host so the row can be
+  // reconciled by hand, and return a distinct error.
+  const hy2 = mergeHy2Runtime(row, out);
+  try {
+    await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=?")
+      .bind(out.vpn_host, hy2.hy2_host, hy2.hy2_port, hy2.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
+      .run();
+  } catch (e) {
+    await logEvent(
+      env,
+      actor,
+      "node.rotate",
+      "partial",
+      {
+        old_host: row.vpn_host,
+        new_host: out.vpn_host,
+        new_hy2_host: hy2.hy2_host,
+        public_ip: out.public_ip,
+        zone: newZoneName,
+        persist_error: String(e)
+      },
+      id
+    );
+    return error(500, {
+      error: "rotate_persist_failed",
+      detail: "node rotated but D1 was not updated — do NOT retry, reconcile the row",
+      vpn_host: out.vpn_host,
+      hy2_host: hy2.hy2_host,
+      public_ip: out.public_ip,
+      zone: newZoneName
+    });
+  }
+  await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host, public_ip: out.public_ip }, id);
+  return json({ vpn_host: out.vpn_host, hy2_host: hy2.hy2_host, public_ip: out.public_ip });
 }
 
 export async function nodeSync(env: Env, id: string, request: Request, actor: string): Promise<Response> {

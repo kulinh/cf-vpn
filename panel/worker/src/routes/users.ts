@@ -140,7 +140,9 @@ export async function deleteUser(env: Env, id: string, actor: string): Promise<R
           throw e;
         }
       }
-      await env.DB.prepare("DELETE FROM user_nodes WHERE user_id = ? AND node_id = ?").bind(id, node.id).run();
+      // No per-node DELETE here: the user row is removed below and
+      // user_nodes.user_id is ON DELETE CASCADE (PRAGMA foreign_keys = 1 on
+      // prod), so these N statements only added write amplification.
       return { node_id: node.id, ok: true };
     })
   );
