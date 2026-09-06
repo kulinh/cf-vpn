@@ -4,6 +4,9 @@ import { buildSubscriptionURIs, encodeSubscriptionBody, type SubscriptionRow } f
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
 
+// Profile name shown by clients; also the REMARKS= line inside the body.
+const PROFILE_TITLE = "RWL8899";
+
 function notFoundText(): Response {
   return new Response("not found", {
     status: 404,
@@ -29,14 +32,20 @@ export async function publicSubscription(env: Env, token: string): Promise<Respo
     ).bind(user.id)
   );
 
-  const body = encodeSubscriptionBody(buildSubscriptionURIs(user.id, rows), "RWL8899");
+  const body = encodeSubscriptionBody(buildSubscriptionURIs(user.id, rows), PROFILE_TITLE);
   return new Response(body, {
     status: 200,
     headers: {
       "content-type": "text/plain; charset=utf-8",
       "cache-control": "no-store, private",
       "profile-update-interval": "24",
-      "subscription-userinfo": ""
+      // No `subscription-userinfo`: an EMPTY value is not the same as an absent
+      // one — Shadowrocket / v2rayN parse it as upload=0, download=0, total=0
+      // ("0 B of 0 B"), and some builds read that as an exhausted quota and
+      // refuse to auto-update. We have no traffic accounting to report anyway.
+      // profile-title names the profile in clients that ignore the REMARKS=
+      // line (a Shadowrocket-only convention).
+      "profile-title": `base64:${btoa(PROFILE_TITLE)}`
     }
   });
 }
