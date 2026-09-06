@@ -28,8 +28,8 @@ expects, and verifies systemd units after install.
 
 ```bash
 apt-get install -y \
-  curl jq openssl uuid-runtime qrencode ca-certificates git iproute2 \
-  golang-go ufw tar gzip coreutils bash systemd dnsutils
+  curl wget jq openssl uuid-runtime qrencode ca-certificates git iproute2 \
+  golang-go ufw tar gzip coreutils bash systemd dnsutils rsync
 ```
 
 The Go installer then downloads and installs these runtime binaries when missing:
@@ -107,8 +107,12 @@ cfvpn-cloudflared
 cfvpn-agent
 ```
 
-All four must be `active`. The first `healthcheck run` may report failure
-for ~60s while the Cloudflare Tunnel registers — re-run after a minute.
+All four must be `active` with `NRestarts=0`. The bootstrap waits 8s, checks
+both, and **aborts before touching D1** if any unit is unhealthy — a
+crash-looping unit still reports `active` a second or two after start, so a
+node that fails here must never be published to the panel as `active`.
+The first `healthcheck run` may report failure for ~60s while the Cloudflare
+Tunnel registers — re-run after a minute.
 
 ## 6) Troubleshooting
 
@@ -129,11 +133,44 @@ for ~60s while the Cloudflare Tunnel registers — re-run after a minute.
 
 ## 7) Re-running / upgrading
 
-The bootstrap is idempotent for users and config, but to upgrade an existing
-node prefer:
+`install-node.sh` is for **fresh provisioning only**. It refuses to run when
+`/etc/cfvpn/cfvpn.env` already contains `REALITY_PRIVATE_KEY` or
+`AGENT_SHARED_SECRET`, and prints exactly what a re-run would regenerate:
 
-```bash
-sudo cfvpnctl install --upgrade
+```
+[cfvpn-env] ERROR: /etc/cfvpn/cfvpn.env already exists and holds this node's secrets.
+  ...It would replace:
+    - REALITY_PRIVATE_KEY
+    - UUID_USER1
+    ...
 ```
 
-Use `install-node.sh` for fresh provisioning only.
+Re-running would mint a new Reality keypair, a new `UUID_USER1`, new Hysteria2
+passwords and a new agent secret — every client already configured for the
+node stops working, and the D1 rows for other users still point at credentials
+the node no longer has.
+
+To upgrade an existing node:
+
+```bash
+sudo cfvpnctl upgrade          # keeps every credential
+sudo cfvpnctl rotate-domain    # new domain, same credentials
+```
+
+If you really do want to re-provision from scratch:
+
+```bash
+sudo -E FORCE_REINSTALL=1 ... bash scripts/install-node.sh
+```
+
+That backs the current env file up to `/etc/cfvpn/cfvpn.env.bak-<unixtime>`
+(mode 0600) before writing a fresh one. Afterwards you must re-issue every
+user's config for this node.
+
+Without `FORCE_REINSTALL`, a re-run over a *partial* env file (one with no node
+secrets yet) is safe: the installer rewrites only the bootstrap keys it owns
+(`CF_API_TOKEN`, `CF_ACCOUNT_ID`, `NODE_ID`, `USER1_NAME`, `MODE`,
+`AGENT_SHARED_SECRET`, `DOMAIN`, `LEGO_*`) and preserves everything else.
+
+`scripts/install-node-CN.sh` enforces the same rule on its remote target — both
+installers share `scripts/lib/cfvpn-env-file.sh`.

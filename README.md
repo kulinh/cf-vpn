@@ -30,7 +30,9 @@ Hysteria2 runs in both modes on a random UDP port (20000–60000) with a salaman
 - Admin tunnel `<NODE_ID>.rwl247.dev` is publicly resolvable. The agent **refuses to start** if `AGENT_SHARED_SECRET` is empty; every `/admin/v1/*` request requires `Authorization: Bearer <secret>` (constant-time compare).
 - `install-node.sh` auto-generates `AGENT_SHARED_SECRET` if not provided and persists it in `/etc/cfvpn/cfvpn.env` (mode 600). The script prints the generated secret + the SQL needed to mirror it into the Worker's D1 `nodes` row.
 - `CF_API_TOKEN` is never passed on `argv`. The installer routes it via curl `--config -` heredoc to keep it out of `/proc/<pid>/cmdline`.
-- If install fails partway through, the EXIT trap diffs the Cloudflare tunnel list and prints `cfvpnctl rotate-domain --cleanup <uuid>` for each orphan tunnel created during the run.
+- If install fails partway through, the EXIT/INT/TERM trap diffs the Cloudflare tunnel list and prints `cfvpnctl rotate-domain --cleanup <uuid>` for each orphan tunnel created during the run.
+- Both installers refuse to run on a node whose `/etc/cfvpn/cfvpn.env` already holds `REALITY_PRIVATE_KEY` or `AGENT_SHARED_SECRET` — a re-run regenerates every credential and breaks every configured client. Use `cfvpnctl upgrade`, or `FORCE_REINSTALL=1` to re-provision deliberately (the old env file is backed up to `/etc/cfvpn/cfvpn.env.bak-<unixtime>`, mode 0600). See `docs/INSTALL_MINIMAL.md` §7.
+- `scripts/install-node-CN.sh` verifies the sha256 of every binary it stages for the China target against the upstream checksum, and never interpolates a value into the remote root shell: the env file is built locally and streamed over ssh's stdin.
 
 ## Build
 
