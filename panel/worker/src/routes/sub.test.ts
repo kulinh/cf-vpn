@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { publicSubscription } from "./sub";
 import { buildSubscriptionURIs, buildVLESSRealityURI, buildVLESSHTTPUpgradeURI, encodeSubscriptionBody } from "../lib/subscription";
+import { buildClashConfig } from "../lib/clash";
 import type { Env } from "../types";
 
 type FirstResult = Record<string, unknown> | null;
@@ -166,6 +167,73 @@ describe("publicSubscription", () => {
     expect(secondBody).toBe(firstBody);
     expect(warn.mock.calls.filter((c) => String(c[1]).includes("NO-OBFS"))).toHaveLength(1);
     warn.mockRestore();
+  });
+
+  it("serves mihomo YAML for ?format=clash", async () => {
+    const token = "1".repeat(32);
+    const row = {
+      vless_uuid: "u1",
+      hy2_pw: "p1",
+      vpn_host: "sg.example.com",
+      node_id: "SG",
+      hy2_host: "udp-sg.example.com",
+      hy2_port: 30000,
+      hy2_obfs_pw: "obfs1",
+      mode: "direct",
+      reality_pubkey: "pk",
+      reality_sid: "sid",
+      reality_sni: "www.apple.com",
+      xhttp_path: null
+    };
+    const env = makeEnv(makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [row] } }));
+
+    const res = await publicSubscription(env, token, "clash");
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("text/yaml; charset=utf-8");
+    const body = await res.text();
+    expect(body).toBe(buildClashConfig("kulinh", [row]));
+    expect(body).toContain('type: "url-test"');
+  });
+
+  it("rejects an unknown ?format= with 400 instead of serving base64", async () => {
+    const token = "2".repeat(32);
+    const env = makeEnv(makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] } }));
+
+    const res = await publicSubscription(env, token, "singbox");
+
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_format");
+  });
+
+  it("keeps the default (no format) body byte-identical", async () => {
+    const token = "3".repeat(32);
+    const rows = [
+      {
+        vless_uuid: "u1",
+        hy2_pw: "p1",
+        vpn_host: "sg.example.com",
+        node_id: "SG",
+        hy2_host: "udp-sg.example.com",
+        hy2_port: 30000,
+        hy2_obfs_pw: "obfs1",
+        mode: "direct",
+        reality_pubkey: "pk",
+        reality_sid: "sid",
+        reality_sni: "www.apple.com",
+        xhttp_path: null
+      }
+    ];
+    const spec = { userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: rows } };
+
+    const bare = await publicSubscription(makeEnv(makeDB(spec)), token);
+    const empty = await publicSubscription(makeEnv(makeDB(spec)), token, "");
+    const nulled = await publicSubscription(makeEnv(makeDB(spec)), token, null);
+    const expected = encodeSubscriptionBody(buildSubscriptionURIs("kulinh", rows), "RWL8899");
+
+    expect(await bare.text()).toBe(expected);
+    expect(await empty.text()).toBe(expected);
+    expect(await nulled.text()).toBe(expected);
   });
 
   it("emits only the REMARKS line when user has no nodes", async () => {

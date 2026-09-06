@@ -151,13 +151,31 @@ npm --prefix panel/web run dev
 npm --prefix panel/web run test:run
 npm --prefix panel/web run build
 
-# Worker (Hono + D1)
+# Worker (plain fetch handler + D1, no framework)
 npm --prefix panel/worker install
 npm --prefix panel/worker run check
 npm --prefix panel/worker test
 ```
 
 Public subscription URL per user is `https://<panel-host>/sub/<32-hex-token>`. Cloudflare Access **must** allow `/sub/*` and `/telegram/webhook` unauthenticated (Telegram cannot send Access headers; the webhook is protected by its own secret-token + group-id check); `/api/*` should remain protected.
+
+### Subscription formats
+
+The same token serves two formats; both list exactly the same nodes with the same names.
+
+| URL | Format | Clients |
+|---|---|---|
+| `https://<panel-host>/sub/<token>` | base64 URI list (default) | Shadowrocket, v2rayN, v2rayNG, Nekobox |
+| `https://<panel-host>/sub/<token>?format=clash` | mihomo/Clash YAML | Clash Verge (Rev), mihomo, Stash, Shadowrocket's Clash import |
+
+Any other `?format=` value returns `400 invalid_format` rather than silently serving base64.
+
+The Clash config ships two proxy groups:
+
+- **`Auto`** — `url-test` against `http://www.gstatic.com/generate_204` every 300s with a 100ms tolerance, so it **picks the lowest-latency node automatically** and re-picks as latency changes.
+- **`Proxy`** — a `select` group listing `Auto` first, then every node, for pinning one node by hand.
+
+The single rule is `MATCH,Proxy`, i.e. all traffic goes through the `Proxy` group (which defaults to `Auto`). Proxy names match the fragment of the corresponding base64 URI: `<user>@<NODE>-Reality`, `<user>@<NODE>-HTTPUpgrade`, `<user>@<NODE>-HY2`.
 
 ## Telegram bot
 
