@@ -32,6 +32,25 @@ export type RotateNodeResponse = {
   publicIp?: string | null
 }
 
+// Cloudflare Access redirects an expired session to a 200 OK HTML login page
+// rather than a 401/302 the app can branch on via `!response.ok`. Any caller
+// that expects JSON must funnel through here (or call `isSessionExpired`
+// directly) so that case surfaces as a distinct, recognizable error instead
+// of a raw `SyntaxError` from parsing HTML as JSON.
+function isSessionExpired(response: Response): boolean {
+  const contentType = response.headers.get('content-type') ?? ''
+  return response.redirected || contentType.includes('text/html')
+}
+
+async function parseJsonOrThrow<T>(response: Response, label: string): Promise<T> {
+  const contentType = response.headers.get('content-type') ?? ''
+  if (!response.ok || !contentType.includes('application/json')) {
+    if (isSessionExpired(response)) throw new Error('session-expired')
+    throw new Error(`${label} failed`)
+  }
+  return (await response.json()) as T
+}
+
 function parseRotateNodeResponse(raw: RotateNodeApiResponse): RotateNodeResponse {
   const vpnHost = raw.vpn_host
 
@@ -72,54 +91,31 @@ export async function rotateNode(nodeId: string): Promise<RotateNodeResponse> {
     method: 'POST',
   })
 
-  if (!response.ok) {
-    throw new Error('rotate failed')
-  }
-
-  return parseRotateNodeResponse((await response.json()) as RotateNodeApiResponse)
+  const raw = await parseJsonOrThrow<RotateNodeApiResponse>(response, 'rotate')
+  return parseRotateNodeResponse(raw)
 }
 
 export async function listUsers(): Promise<User[]> {
   const response = await fetch('/api/users')
-
-  if (!response.ok) {
-    throw new Error('users failed')
-  }
-
-  return (await response.json()) as User[]
+  return parseJsonOrThrow<User[]>(response, 'users')
 }
 
 export async function listNodes(): Promise<Node[]> {
   const response = await fetch('/api/nodes')
-
-  if (!response.ok) {
-    throw new Error('nodes failed')
-  }
-
-  const rows = (await response.json()) as NodeApiResponse[]
+  const rows = await parseJsonOrThrow<NodeApiResponse[]>(response, 'nodes')
   return rows.map(parseNode)
 }
 
 export async function listEvents(): Promise<Event[]> {
   const response = await fetch('/api/events?limit=200')
-
-  if (!response.ok) {
-    throw new Error('events failed')
-  }
-
-  return (await response.json()) as Event[]
+  return parseJsonOrThrow<Event[]>(response, 'events')
 }
 
 export async function upgradeUserNodes(userId: string): Promise<UpgradeUserNodesResponse> {
   const response = await fetch(`/api/users/${encodeURIComponent(userId)}/upgrade-nodes`, {
     method: 'POST',
   })
-
-  if (!response.ok) {
-    throw new Error('upgrade user nodes failed')
-  }
-
-  return (await response.json()) as UpgradeUserNodesResponse
+  return parseJsonOrThrow<UpgradeUserNodesResponse>(response, 'upgrade user nodes')
 }
 
 export type UserSubscription = {
@@ -130,12 +126,10 @@ export type UserSubscription = {
 
 export async function getUserSubscription(userId: string): Promise<UserSubscription> {
   const response = await fetch(`/api/users/${encodeURIComponent(userId)}/subscription`)
-
-  if (!response.ok) {
-    throw new Error('subscription failed')
-  }
-
-  const data = (await response.json()) as { subscription_url: string; sub_token: string }
+  const data = await parseJsonOrThrow<{ subscription_url: string; sub_token: string }>(
+    response,
+    'subscription',
+  )
   return {
     urls: data.subscription_url,
     token: data.sub_token,
@@ -147,13 +141,7 @@ export async function healthcheckNode(nodeId: string): Promise<{ latency_ms: num
   const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/healthcheck`, {
     method: 'POST',
   })
-
-  if (!response.ok) {
-    const err = await response.text()
-    throw new Error(`healthcheck failed: ${response.status} ${err}`)
-  }
-
-  return (await response.json()) as { latency_ms: number }
+  return parseJsonOrThrow<{ latency_ms: number }>(response, 'healthcheck')
 }
 
 export type NodeInput = {
@@ -174,6 +162,10 @@ export async function createNode(input: NodeInput): Promise<void> {
     body: JSON.stringify(input),
   })
 
+  if (isSessionExpired(response)) {
+    throw new Error('session-expired')
+  }
+
   if (!response.ok) {
     const err = (await response.json().catch(() => ({}))) as { error?: string; detail?: string }
     throw new Error(err.detail ?? err.error ?? 'create node failed')
@@ -190,6 +182,10 @@ export async function patchNode(
     body: JSON.stringify(input),
   })
 
+  if (isSessionExpired(response)) {
+    throw new Error('session-expired')
+  }
+
   if (!response.ok) {
     throw new Error('patch node failed')
   }
@@ -203,6 +199,10 @@ export async function deleteNode(nodeId: string): Promise<DeleteNodeResponse> {
   const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}`, {
     method: 'DELETE',
   })
+
+  if (isSessionExpired(response)) {
+    throw new Error('session-expired')
+  }
 
   if (!response.ok) {
     throw new Error('delete node failed')
@@ -222,6 +222,10 @@ export async function createUser(input: UserInput): Promise<void> {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
   })
+
+  if (isSessionExpired(response)) {
+    throw new Error('session-expired')
+  }
 
   // 207 = partial success (one or more nodes failed). Treat as success since
   // the user row exists and the panel can re-run upgrade-nodes for the

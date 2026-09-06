@@ -1,20 +1,31 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { healthcheckNode, listNodes } from '../lib/api'
+import { describeLoadError } from '../lib/errors'
 import type { Node } from '../lib/types'
 
 export function CommandCenterPage() {
   const [nodes, setNodes] = useState<Node[]>([])
   const [checkingAll, setCheckingAll] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
-
-  const loadNodes = async () => {
-    const items = await listNodes()
-    setNodes(items)
-  }
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const isMountedRef = useRef(true)
 
   useEffect(() => {
-    void loadNodes()
+    isMountedRef.current = true
+
+    listNodes()
+      .then((items) => {
+        if (isMountedRef.current) setNodes(items)
+      })
+      .catch((error: unknown) => {
+        if (isMountedRef.current) setLoadError(describeLoadError(error))
+      })
+
+    return () => {
+      isMountedRef.current = false
+    }
   }, [])
 
   const handleRefreshAll = async () => {
@@ -34,6 +45,7 @@ export function CommandCenterPage() {
           }
         }),
       )
+      if (!isMountedRef.current) return
       setNodes((prevNodes) =>
         prevNodes.map((node) => {
           const result = results.find((r) => r.status === 'fulfilled' && r.value.id === node.id)
@@ -47,9 +59,9 @@ export function CommandCenterPage() {
       const alive = results.filter((r) => r.status === 'fulfilled' && r.value.status === 'active').length
       setToastMessage(`Checked ${checked} nodes, ${alive} alive`)
     } catch {
-      setToastMessage('Check failed')
+      if (isMountedRef.current) setToastMessage('Check failed')
     } finally {
-      setCheckingAll(false)
+      if (isMountedRef.current) setCheckingAll(false)
     }
   }
 
@@ -85,6 +97,8 @@ export function CommandCenterPage() {
             {checkingAll ? 'Checking...' : 'Refresh All'}
           </button>
         </div>
+
+        <ErrorBanner message={loadError} />
 
         <div className="overflow-hidden rounded-lg border border-slate-800">
           <table className="w-full text-sm">

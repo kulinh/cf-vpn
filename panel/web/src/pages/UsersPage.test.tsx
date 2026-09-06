@@ -34,6 +34,15 @@ test('renders users with copy and qr actions', async () => {
   expect(screen.getByRole('button', { name: /show qr/i })).toBeInTheDocument()
 })
 
+test('shows a load-failure banner instead of a silently empty list when the initial load rejects', async () => {
+  vi.spyOn(api, 'listUsers').mockRejectedValue(new Error('users failed'))
+  vi.spyOn(api, 'listNodes').mockResolvedValue([])
+
+  render(<UsersPage />)
+
+  expect(await screen.findByText(/failed to load — users failed\. reload\./i)).toBeInTheDocument()
+})
+
 test('shows Sync (+N) and Up-to-date states per user', async () => {
   vi.spyOn(api, 'listUsers').mockResolvedValue([
     { id: 'kulinh', name: 'kulinh', nodes: ['HK', 'JP1', 'JP2', 'SG'] },
@@ -158,7 +167,7 @@ test('copy subscription writes sub URL to clipboard', async () => {
   expect(writeText).toHaveBeenCalledWith(testSubscription.subUrl)
 })
 
-test('Shadowrocket button navigates to shadowrocket deep link with base64 sub URL', async () => {
+test('Shadowrocket button opens a shadowrocket sub:// deep link via a synthetic anchor click, not location.href', async () => {
   vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
   vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
   const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
@@ -177,6 +186,8 @@ test('Shadowrocket button navigates to shadowrocket deep link with base64 sub UR
       },
     },
   })
+
+  const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
 
   try {
     render(<UsersPage />)
@@ -186,14 +197,19 @@ test('Shadowrocket button navigates to shadowrocket deep link with base64 sub UR
 
     fireEvent.click(screen.getByRole('button', { name: /shadowrocket/i }))
 
-    const encoded = btoa(testSubscription.subUrl).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '')
-    expect(hrefSetter).toHaveBeenCalledWith(`shadowrocket://add/sub/${encoded}`)
+    expect(hrefSetter).not.toHaveBeenCalled()
+    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
+    const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
+    expect(anchor.href).toBe(
+      `shadowrocket://add/sub://${btoa(testSubscription.subUrl)}?remark=${encodeURIComponent('RWL8899')}`,
+    )
   } finally {
+    anchorClickSpy.mockRestore()
     Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
   }
 })
 
-test('V2rayNG button navigates to v2rayng deep link with URL-encoded sub URL', async () => {
+test('V2rayNG button opens a v2rayng deep link with a name query param via a synthetic anchor click', async () => {
   vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
   vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
   const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
@@ -213,6 +229,8 @@ test('V2rayNG button navigates to v2rayng deep link with URL-encoded sub URL', a
     },
   })
 
+  const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
   try {
     render(<UsersPage />)
 
@@ -221,10 +239,14 @@ test('V2rayNG button navigates to v2rayng deep link with URL-encoded sub URL', a
 
     fireEvent.click(screen.getByRole('button', { name: /v2rayng/i }))
 
-    expect(hrefSetter).toHaveBeenCalledWith(
-      `v2rayng://install-sub?url=${encodeURIComponent(testSubscription.subUrl)}#${encodeURIComponent('RWL8899')}`,
+    expect(hrefSetter).not.toHaveBeenCalled()
+    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
+    const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
+    expect(anchor.href).toBe(
+      `v2rayng://install-sub?url=${encodeURIComponent(testSubscription.subUrl)}&name=${encodeURIComponent('RWL8899')}`,
     )
   } finally {
+    anchorClickSpy.mockRestore()
     Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
   }
 })

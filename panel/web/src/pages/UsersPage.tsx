@@ -1,13 +1,27 @@
 import { useEffect, useMemo, useState } from 'react'
 import { QrModal } from '../components/users/QrModal'
+import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { getUserSubscription, listNodes, listUsers, upgradeUserNodes } from '../lib/api'
+import { describeLoadError } from '../lib/errors'
 import { buildShadowrocketDeepLink, buildV2rayNgDeepLink } from '../lib/subscriptionLinks'
 import type { UserSubscription } from '../lib/api'
 import type { Node, User } from '../lib/types'
 
 function normalizeNodeId(id: string): string {
   return id.trim().toLowerCase()
+}
+
+// Navigates to a custom-scheme deep link (shadowrocket://, v2rayng://) via a
+// synthetic <a> click rather than `location.href = ...`. Assigning
+// `location.href` performs a real navigation that can leave the bearer sub
+// token sitting in history / session-restore; a detached anchor click still
+// hands the URL to the OS for scheme dispatch without navigating this tab.
+function openDeepLink(url: string): void {
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.rel = 'noopener'
+  anchor.click()
 }
 
 export function UsersPage() {
@@ -19,28 +33,33 @@ export function UsersPage() {
   const [qrSubscriptionUrl, setQrSubscriptionUrl] = useState<string | null>(null)
   const [qrLoading, setQrLoading] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
     let mounted = true
 
-    void Promise.all([listUsers(), listNodes()]).then(async ([userItems, nodeItems]) => {
-      if (!mounted) return
-      setUsers(userItems)
-      setNodes(nodeItems)
+    Promise.all([listUsers(), listNodes()])
+      .then(async ([userItems, nodeItems]) => {
+        if (!mounted) return
+        setUsers(userItems)
+        setNodes(nodeItems)
 
-      const entries = await Promise.all(
-        userItems.map(async (user) => {
-          try {
-            const sub = await getUserSubscription(user.id)
-            return [user.id, sub] as const
-          } catch {
-            return null
-          }
-        }),
-      )
-      if (!mounted) return
-      setSubs(Object.fromEntries(entries.filter((e): e is NonNullable<typeof e> => e !== null)))
-    })
+        const entries = await Promise.all(
+          userItems.map(async (user) => {
+            try {
+              const sub = await getUserSubscription(user.id)
+              return [user.id, sub] as const
+            } catch {
+              return null
+            }
+          }),
+        )
+        if (!mounted) return
+        setSubs(Object.fromEntries(entries.filter((e): e is NonNullable<typeof e> => e !== null)))
+      })
+      .catch((error: unknown) => {
+        if (mounted) setLoadError(describeLoadError(error))
+      })
 
     return () => {
       mounted = false
@@ -122,7 +141,7 @@ export function UsersPage() {
       setToastMessage('Subscription not ready yet, please retry')
       return
     }
-    window.location.href = buildShadowrocketDeepLink(sub.subUrl)
+    openDeepLink(buildShadowrocketDeepLink(sub.subUrl))
   }
 
   const handleV2rayNG = (userId: string) => {
@@ -131,12 +150,14 @@ export function UsersPage() {
       setToastMessage('Subscription not ready yet, please retry')
       return
     }
-    window.location.href = buildV2rayNgDeepLink(sub.subUrl, 'RWL8899')  }
+    openDeepLink(buildV2rayNgDeepLink(sub.subUrl, 'RWL8899'))
+  }
 
   return (
     <>
       <section className="space-y-3">
         <h1 className="text-xl font-semibold">Users</h1>
+        <ErrorBanner message={loadError} />
         {users.map((user) => {
           const missingCount = missingByUser[user.id] ?? 0
           const isSyncing = syncingUserId === user.id
