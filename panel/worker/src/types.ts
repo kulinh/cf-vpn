@@ -11,6 +11,10 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_GROUP_ID?: string;
+  // Public origin of the Access-fronted custom domain. The Telegram webhook is
+  // served on *.workers.dev, where /sub/* is 404 by design, so subscription
+  // links must be built from this rather than from the request origin.
+  PANEL_PUBLIC_ORIGIN?: string;
   // Optional Cloudflare Access JWKS verification gate (see lib/auth.ts NOTE).
   // When both are set (and a JWKS-capable JWT library is available), the Worker
   // should verify the CF-Access-Jwt-Assertion signature instead of only

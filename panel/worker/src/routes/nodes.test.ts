@@ -1,28 +1,39 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/agent-client", () => ({
-  callAgent: vi.fn()
-}));
+vi.mock("../lib/agent-client", async (orig) => {
+  const actual = await orig<typeof import("../lib/agent-client")>();
+  return { ...actual, callAgent: vi.fn() };
+});
 
-vi.mock("../lib/events", () => ({
-  logEvent: vi.fn().mockResolvedValue(undefined)
-}));
+vi.mock("../lib/events", async (orig) => {
+  const actual = await orig<typeof import("../lib/events")>();
+  return { ...actual, logEvent: vi.fn().mockResolvedValue(undefined) };
+});
 
-vi.mock("../lib/cf-api", () => ({
-  deleteDnsRecordByName: vi.fn().mockResolvedValue(true),
-  deleteTunnel: vi.fn().mockResolvedValue(undefined),
-  hasCfCredentials: vi.fn().mockReturnValue(true)
-}));
+vi.mock("../lib/cf-api", async (orig) => {
+  const actual = await orig<typeof import("../lib/cf-api")>();
+  return {
+    ...actual,
+    deleteDnsRecordByName: vi.fn().mockResolvedValue(true),
+    deleteTunnel: vi.fn().mockResolvedValue(undefined),
+    hasCfCredentials: vi.fn().mockReturnValue(true)
+  };
+});
 
-import { callAgent } from "../lib/agent-client";
+import { AgentHttpError, callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
-import { deleteNode, nodeHealthcheck, nodeRotate, nodeSyncCore, sweepNodesHealth } from "./nodes";
+import { deleteNode, getNode, nodeHealthcheck, nodeRotate, nodeSyncCore, patchNode, sweepNodesHealth } from "./nodes";
 import type { Env, NodeRow } from "../types";
 
 type ZoneRow = { name: string; cf_zone_id: string; enabled?: number };
 
-function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
+function makeEnv(seed: {
+  node: NodeRow;
+  zones: ZoneRow[];
+  failRunSql?: RegExp;
+  batches?: unknown[][];
+}): Env {
   const node = { ...seed.node };
   const zones = seed.zones.slice();
 
@@ -56,6 +67,9 @@ function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
         return { results: [] } as never;
       },
       async run() {
+        if (seed.failRunSql?.test(sql)) {
+          throw new Error("D1_ERROR: database is locked");
+        }
         if (/UPDATE nodes SET vpn_host=\?, hy2_host=\?/.test(sql)) {
           const [vpn_host, hy2_host, hy2_port, hy2_obfs_pw, public_ip, zone] = state.args as [string, string, number, string, string, string];
           node.vpn_host = vpn_host;
@@ -80,8 +94,9 @@ function makeEnv(seed: { node: NodeRow; zones: ZoneRow[] }): Env {
     prepare(sql: string) {
       return makePrepared(sql);
     },
-    async batch() {
-      return [] as never;
+    async batch(stmts: unknown[]) {
+      seed.batches?.push(stmts);
+      return stmts.map(() => ({ success: true })) as never;
     },
     async exec() {
       return { count: 0, duration: 0 } as never;
@@ -235,7 +250,7 @@ describe("deleteNode", () => {
           cloudflared: "ok",
           hysteria: "ok",
           vpn_host: "edge-old.example.com",
-          tunnel_uuid: "tunnel-abc",
+          tunnel_uuid: "f70ff985-a4ef-4643-bbbc-4a0ed4fc8415",
           last_rotate_at: 0
         } as never;
       }
@@ -286,7 +301,60 @@ describe("deleteNode", () => {
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-com", "edge-old.example.com", "A");
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-net", "hy-old.example.net", "A");
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-admin", "del-01.rwl247.dev", "CNAME");
-    expect(vi.mocked(deleteTunnel)).toHaveBeenCalledWith(env, "tunnel-abc");
+    expect(vi.mocked(deleteTunnel)).toHaveBeenCalledWith(env, "f70ff985-a4ef-4643-bbbc-4a0ed4fc8415");
+  });
+
+  it("ignores a path-traversal tunnel_uuid reported by a compromised agent", async () => {
+    vi.mocked(callAgent).mockImplementation(async (_env, _host, path) => {
+      if (path === "/admin/v1/status") {
+        return {
+          xray: "ok",
+          cloudflared: "ok",
+          hysteria: "ok",
+          vpn_host: "edge-old.example.com",
+          tunnel_uuid: "../../../zones/VICTIMZONE",
+          last_rotate_at: 0
+        } as never;
+      }
+      return { ok: true } as never;
+    });
+
+    const env = makeEnv({
+      node: {
+        id: "del-05",
+        label: "Del 05",
+        admin_host: "del-05.rwl247.dev",
+        vpn_host: "edge-old.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "direct",
+        hy2_host: null,
+        hy2_port: null,
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null,
+        agent_secret: null,
+        tunnel_uuid: null
+      },
+      zones: [
+        { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
+        { name: "rwl247.dev", cf_zone_id: "zone-admin", enabled: 1 }
+      ]
+    });
+
+    const res = await deleteNode(env, "del-05");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { warnings: string[] };
+    expect(vi.mocked(deleteTunnel)).not.toHaveBeenCalled();
+    expect(body.warnings.some((w) => /malformed tunnel_uuid/i.test(w))).toBe(true);
   });
 
   it("still deletes the row when agent is unreachable, surfacing a warning", async () => {
@@ -511,83 +579,493 @@ describe("sweepNodesHealth", () => {
     vi.mocked(logEvent).mockClear();
   });
 
-  type SweepNode = { id: string; admin_host: string; agent_secret: string; status: string };
+  type SweepNode = {
+    id: string;
+    admin_host: string;
+    agent_secret: string;
+    status: string;
+    consecutive_failures?: number;
+    last_sweep_outcome?: string | null;
+  };
+  type Write = { sql: string; args: unknown[] };
 
-  function makeSweepEnv(nodes: SweepNode[]): { env: Env; updates: { sql: string; args: unknown[] }[] } {
-    const updates: { sql: string; args: unknown[] }[] = [];
+  // The sweep now folds every per-node UPDATE and event INSERT into one
+  // env.DB.batch(), so the stub records what the batch received.
+  function makeSweepEnv(nodes: SweepNode[]): { env: Env; writes: Write[]; batches: number } {
+    const writes: Write[] = [];
+    const state = { batches: 0 };
     const db = {
       prepare(sql: string) {
-        const state: { args: unknown[] } = { args: [] };
+        const bound: { args: unknown[] } = { args: [] };
         const stmt = {
+          sql,
+          get args() {
+            return bound.args;
+          },
           bind(...args: unknown[]) {
-            state.args = args;
+            bound.args = args;
             return stmt;
           },
           async all() {
-            return { results: nodes };
+            // Emulate the SELECT's own filter so a disabled node is genuinely
+            // never handed to the sweep.
+            const visible = /status != 'disabled'/.test(sql)
+              ? nodes.filter((n) => n.status !== "disabled")
+              : nodes;
+            return { results: visible.map((n) => ({ consecutive_failures: 0, last_sweep_outcome: null, ...n })) };
           },
           async run() {
-            updates.push({ sql, args: state.args });
+            writes.push({ sql, args: bound.args });
             return { success: true };
           }
         };
         return stmt;
+      },
+      async batch(stmts: Array<{ sql: string; args: unknown[] }>) {
+        state.batches += 1;
+        for (const st of stmts) writes.push({ sql: st.sql, args: st.args });
+        return [];
       }
     };
-    return { env: { DB: db } as unknown as Env, updates };
+    const env = { DB: db } as unknown as Env;
+    return {
+      env,
+      writes,
+      get batches() {
+        return state.batches;
+      }
+    };
   }
 
-  it("refreshes last_seen and latency for reachable nodes without logging", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
+  const eventInserts = (writes: Write[]) => writes.filter((w) => /INSERT INTO events/.test(w.sql));
+  const eventAction = (w: Write) => w.args[2];
+  const eventDetail = (w: Write) => String(w.args[6]);
+
+  it("refreshes last_seen, latency and resets the failure counter for reachable nodes", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1 }
+    ]);
     vi.mocked(callAgent).mockResolvedValue({ ok: true });
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    expect(updates).toHaveLength(1);
-    expect(updates[0].sql).toContain("status='active', last_seen_at=?, latency_ms=?");
-    expect(updates[0].args[2]).toBe("a");
-    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+    expect(env.writes).toHaveLength(1);
+    expect(env.writes[0].sql).toContain("status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0, last_sweep_outcome='ok'");
+    expect(env.writes[0].sql).toContain("AND status != 'disabled'");
+    expect(env.writes[0].args[2]).toBe("a");
+    expect(eventInserts(env.writes)).toHaveLength(0);
+  });
+
+  it("uses a single batch for the whole fleet", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" },
+      { id: "b", admin_host: "b.example.com", agent_secret: "s", status: "active" },
+      { id: "c", admin_host: "c.example.com", agent_secret: "s", status: "active" }
+    ]);
+    vi.mocked(callAgent).mockResolvedValue({ ok: true });
+
+    await sweepNodesHealth(env.env);
+
+    expect(env.batches).toBe(1);
+    expect(env.writes).toHaveLength(3);
   });
 
   it("logs a recover event when a previously unreachable node answers", async () => {
-    const { env } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable" }]);
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable", consecutive_failures: 4, last_sweep_outcome: "transport" }
+    ]);
     vi.mocked(callAgent).mockResolvedValue({ ok: true });
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    const recover = vi.mocked(logEvent).mock.calls.find((c) => c[2] === "node.healthcheck.recover");
-    expect(recover).toBeDefined();
-    expect(recover?.[1]).toBe("cron");
+    const events = eventInserts(env.writes);
+    expect(events).toHaveLength(1);
+    expect(eventAction(events[0])).toBe("node.healthcheck.recover");
+    expect(events[0].args[1]).toBe("cron");
   });
 
-  it("marks a node unreachable on transport error and logs once", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
+  it("does not flip status on the first transport failure — only counts it", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 0 }
+    ]);
+    vi.mocked(callAgent).mockRejectedValue(new Error("AbortError: The operation was aborted"));
+
+    await sweepNodesHealth(env.env);
+
+    expect(env.writes).toHaveLength(1);
+    expect(env.writes[0].sql).toBe(
+      "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+    );
+    expect(env.writes[0].args).toEqual([1, "a"]);
+    expect(eventInserts(env.writes)).toHaveLength(0);
+  });
+
+  it("marks a node unreachable on the second consecutive transport failure and logs once", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1, last_sweep_outcome: "transport" }
+    ]);
     vi.mocked(callAgent).mockRejectedValue(new Error("fetch failed"));
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    expect(updates).toHaveLength(1);
-    expect(updates[0].sql).toContain("status='unreachable'");
-    expect(vi.mocked(logEvent)).toHaveBeenCalledTimes(1);
+    const update = env.writes.find((w) => /UPDATE nodes/.test(w.sql))!;
+    expect(update.sql).toContain("status='unreachable', consecutive_failures=?, last_sweep_outcome='transport'");
+    expect(update.args).toEqual([2, "a"]);
+    const events = eventInserts(env.writes);
+    expect(events).toHaveLength(1);
+    expect(eventAction(events[0])).toBe("node.healthcheck");
   });
 
   it("does not re-mark or re-log an already-unreachable node", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable" }]);
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "unreachable", consecutive_failures: 5, last_sweep_outcome: "transport" }
+    ]);
     vi.mocked(callAgent).mockRejectedValue(new Error("fetch failed"));
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(env.env);
 
-    expect(updates).toHaveLength(0);
-    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+    expect(env.writes).toHaveLength(1);
+    expect(env.writes[0].sql).toBe(
+      "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+    );
+    expect(eventInserts(env.writes)).toHaveLength(0);
   });
 
-  it("leaves status alone on agent_http_4xx config errors", async () => {
-    const { env, updates } = makeSweepEnv([{ id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }]);
-    vi.mocked(callAgent).mockRejectedValue(new Error("agent_http_403"));
+  it("leaves status alone on a 4xx config error and logs on the outcome change", async () => {
+    const first = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 0, last_sweep_outcome: "ok" }
+    ]);
+    vi.mocked(callAgent).mockRejectedValue(new AgentHttpError(403, "agent_http_403: forbidden"));
 
-    await sweepNodesHealth(env);
+    await sweepNodesHealth(first.env);
 
-    expect(updates).toHaveLength(0);
-    expect(vi.mocked(logEvent)).not.toHaveBeenCalled();
+    expect(first.writes.some((w) => /status=/.test(w.sql))).toBe(false);
+    const events = eventInserts(first.writes);
+    expect(events).toHaveLength(1);
+    expect(eventDetail(events[0])).toContain("config_error");
+
+    // Still a config error next tick: counted, but silent.
+    const second = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1, last_sweep_outcome: "config" }
+    ]);
+    await sweepNodesHealth(second.env);
+
+    expect(second.writes.some((w) => /status=/.test(w.sql))).toBe(false);
+    expect(eventInserts(second.writes)).toHaveLength(0);
+  });
+
+  it("logs the config error after a preceding transport miss (counter would have been 1)", async () => {
+    // Regression: keying "log once" on consecutive_failures === 1 logged NOTHING
+    // here, because the transport miss on the previous tick already set it to 1.
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1, last_sweep_outcome: "transport" }
+    ]);
+    vi.mocked(callAgent).mockRejectedValue(new AgentHttpError(401, "agent_http_401: unauthorized"));
+
+    await sweepNodesHealth(env.env);
+
+    const events = eventInserts(env.writes);
+    expect(events).toHaveLength(1);
+    expect(eventDetail(events[0])).toContain("config_error");
+    expect(env.writes.some((w) => /status=/.test(w.sql))).toBe(false);
+  });
+
+  it("logs a recover when a config error clears, and stays silent after an unannounced transport miss", async () => {
+    vi.mocked(callAgent).mockResolvedValue({ ok: true });
+
+    const afterConfig = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 3, last_sweep_outcome: "config" }
+    ]);
+    await sweepNodesHealth(afterConfig.env);
+    const recovered = eventInserts(afterConfig.writes);
+    expect(recovered).toHaveLength(1);
+    expect(eventAction(recovered[0])).toBe("node.healthcheck.recover");
+
+    // One transport miss that never reached the flip threshold was never
+    // announced, so its recovery must not be announced either.
+    const afterQuietMiss = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1, last_sweep_outcome: "transport" }
+    ]);
+    await sweepNodesHealth(afterQuietMiss.env);
+    expect(eventInserts(afterQuietMiss.writes)).toHaveLength(0);
+  });
+
+  it("never probes or rewrites a disabled node", async () => {
+    const disabled: SweepNode = {
+      id: "off",
+      admin_host: "off.example.com",
+      agent_secret: "s",
+      status: "disabled",
+      consecutive_failures: 0,
+      last_sweep_outcome: "ok"
+    };
+
+    // Successful sweep.
+    vi.mocked(callAgent).mockResolvedValue({ ok: true });
+    const onSuccess = makeSweepEnv([disabled]);
+    await sweepNodesHealth(onSuccess.env);
+    expect(vi.mocked(callAgent)).not.toHaveBeenCalled();
+    expect(onSuccess.writes).toHaveLength(0);
+
+    // Failing sweep.
+    vi.mocked(callAgent).mockRejectedValue(new Error("fetch failed"));
+    const onFailure = makeSweepEnv([{ ...disabled, consecutive_failures: 5 }]);
+    await sweepNodesHealth(onFailure.env);
+    expect(onFailure.writes).toHaveLength(0);
+
+    // And every status write the sweep can emit carries the guard, so a node
+    // disabled mid-sweep is still not overwritten.
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(callAgent).mockResolvedValue({ ok: true });
+    const active = makeSweepEnv([{ ...disabled, id: "on", status: "active" }]);
+    await sweepNodesHealth(active.env);
+    expect(active.writes.every((w) => !/status=/.test(w.sql) || /AND status != 'disabled'/.test(w.sql))).toBe(true);
+  });
+
+  it("classifies a 4xx carrying a JSON body as a config error (H13 regression)", async () => {
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active", consecutive_failures: 1, last_sweep_outcome: "ok" }
+    ]);
+    // The agent answers 401 with {"error":"unauthorized"} — the old regex on the
+    // message text never saw a status and flipped the node to unreachable.
+    vi.mocked(callAgent).mockRejectedValue(new AgentHttpError(401, "agent_http_401: unauthorized"));
+
+    await sweepNodesHealth(env.env);
+
+    expect(env.writes.some((w) => /status='unreachable'/.test(w.sql))).toBe(false);
+  });
+
+  it("reports a rejected per-node task instead of discarding it", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const env = makeSweepEnv([
+      { id: "a", admin_host: "a.example.com", agent_secret: "s", status: "active" }
+    ]);
+    vi.mocked(callAgent).mockImplementation(() => {
+      throw { toString: () => { throw new Error("boom"); } };
+    });
+
+    await sweepNodesHealth(env.env);
+
+    expect(errorSpy).toHaveBeenCalledWith("sweep failed for node", "a", expect.any(String));
+    errorSpy.mockRestore();
+  });
+});
+
+describe("nodeRotate persistence split (M-W6)", () => {
+  const rotateNode: NodeRow = {
+    id: "rot-01",
+    label: "Rot 01",
+    admin_host: "rot-01.rwl247.dev",
+    vpn_host: "cdn-old.example.com",
+    zone: "example.com",
+    status: "active",
+    last_seen_at: null,
+    latency_ms: null,
+    created_at: 1,
+    public_ip: null,
+    mode: "direct",
+    hy2_host: "hy-old.example.com",
+    hy2_port: 22333,
+    hy2_obfs_pw: "old-obfs",
+    reality_pubkey: null,
+    reality_sid: null,
+    reality_sni: null,
+    reality_dest: null,
+    xhttp_path: null,
+    agent_secret: null,
+    tunnel_uuid: null
+  };
+  const zones: ZoneRow[] = [
+    { name: "example.com", cf_zone_id: "old-zone", enabled: 1 },
+    { name: "example.net", cf_zone_id: "new-zone", enabled: 1 }
+  ];
+
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("returns rotate_persist_failed (not rotate_failed) and logs the new host when the DB write fails", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      vpn_host: "cdn-new.example.net",
+      public_ip: "203.0.113.10",
+      hy2_host: "hy-new.example.net",
+      hy2_port: 23456,
+      hy2_obfs_pw: "obfs"
+    });
+    const env = makeEnv({ node: rotateNode, zones, failRunSql: /UPDATE nodes SET vpn_host=/ });
+
+    const res = await nodeRotate(
+      env,
+      "rot-01",
+      new Request("https://panel.test/api/nodes/rot-01/rotate", { method: "POST" }),
+      "operator@example.com"
+    );
+
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; vpn_host: string };
+    // Distinct from rotate_failed: the node HAS moved, so a retry would rotate
+    // it a second time and orphan every subscription already handed out.
+    expect(body.error).toBe("rotate_persist_failed");
+    expect(body.vpn_host).toBe("cdn-new.example.net");
+
+    const ev = vi.mocked(logEvent).mock.calls.find((c) => c[2] === "node.rotate");
+    expect(ev?.[3]).toBe("partial");
+    expect(JSON.stringify(ev?.[4])).toContain("cdn-new.example.net");
+  });
+
+  it("returns rotate_unknown_state (not rotate_failed) when the rotate call times out", async () => {
+    const abort = new Error("The operation was aborted");
+    abort.name = "AbortError";
+    vi.mocked(callAgent).mockRejectedValue(abort);
+    const env = makeEnv({ node: rotateNode, zones });
+
+    const res = await nodeRotate(
+      env,
+      "rot-01",
+      new Request("https://panel.test/api/nodes/rot-01/rotate", { method: "POST" }),
+      "operator@example.com"
+    );
+
+    // 55s can expire while the agent completes the rotation; a retryable
+    // rotate_failed here means a second rotation and orphaned subscriptions.
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; attempted_host: string; detail: string };
+    expect(body.error).toBe("rotate_unknown_state");
+    expect(body.attempted_host).toEqual(expect.stringMatching(/\.example\.net$/));
+    expect(body.detail).toContain("do NOT retry");
+
+    const ev = vi.mocked(logEvent).mock.calls.find((c) => c[2] === "node.rotate");
+    expect(ev?.[3]).toBe("partial");
+    expect(JSON.stringify(ev?.[4])).toContain("attempted_host");
+  });
+
+  it("still returns rotate_failed for a non-timeout agent error", async () => {
+    vi.mocked(callAgent).mockRejectedValue(new Error("connection refused"));
+    const env = makeEnv({ node: rotateNode, zones });
+
+    const res = await nodeRotate(
+      env,
+      "rot-01",
+      new Request("https://panel.test/api/nodes/rot-01/rotate", { method: "POST" }),
+      "operator@example.com"
+    );
+
+    expect(res.status).toBe(502);
+    expect((await res.json() as { error: string }).error).toBe("rotate_failed");
+  });
+
+  it("keeps the stored hy2 runtime when the agent reports hy2_port=0", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      vpn_host: "cdn-new.example.net",
+      public_ip: "203.0.113.10",
+      hy2_host: "hy-new.example.net",
+      hy2_port: 0,
+      hy2_obfs_pw: ""
+    });
+    const env = makeEnv({ node: rotateNode, zones });
+
+    const res = await nodeRotate(
+      env,
+      "rot-01",
+      new Request("https://panel.test/api/nodes/rot-01/rotate", { method: "POST" }),
+      "operator@example.com"
+    );
+
+    expect(res.status).toBe(200);
+    // Persisting 0 / "" makes buildSubscriptionURIs drop HY2 for this node
+    // entirely (falsy check), so rotate must merge like every other write path.
+    const written = await getNode(env, "rot-01");
+    const row = (await written.json()) as { hy2_port: number };
+    expect(row.hy2_port).toBe(22333);
+  });
+});
+
+describe("patchNode status whitelist", () => {
+  const patchNodeRow: NodeRow = {
+    id: "p-01",
+    label: "P 01",
+    admin_host: "p-01.rwl247.dev",
+    vpn_host: "p.example.com",
+    zone: "example.com",
+    status: "active",
+    last_seen_at: null,
+    latency_ms: null,
+    created_at: 1,
+    public_ip: null,
+    mode: "direct",
+    hy2_host: null,
+    hy2_port: null,
+    hy2_obfs_pw: null,
+    reality_pubkey: null,
+    reality_sid: null,
+    reality_sni: null,
+    reality_dest: null,
+    xhttp_path: null,
+    agent_secret: null,
+    tunnel_uuid: null
+  };
+
+  const patch = (env: Env, body: unknown) =>
+    patchNode(env, "p-01", new Request("https://panel.test/api/nodes/p-01", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    }), "operator@example.com");
+
+  it("rejects an unknown status instead of silently parking the node", async () => {
+    const env = makeEnv({ node: patchNodeRow, zones: [] });
+    const res = await patch(env, { status: "activ" });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_status");
+  });
+
+  it("accepts each allowed status", async () => {
+    for (const status of ["active", "disabled", "unreachable"]) {
+      const env = makeEnv({ node: patchNodeRow, zones: [] });
+      const res = await patch(env, { status });
+      expect(res.status).toBe(200);
+    }
+  });
+});
+
+describe("deleteNode row removal", () => {
+  it("removes membership and node rows in one batch", async () => {
+    vi.mocked(hasCfCredentials).mockReturnValue(false);
+    const batches: unknown[][] = [];
+    const env = makeEnv({
+      node: {
+        id: "batch-01",
+        label: "B",
+        admin_host: "b.rwl247.dev",
+        vpn_host: "b.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "direct",
+        hy2_host: null,
+        hy2_port: null,
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null,
+        agent_secret: null,
+        tunnel_uuid: null
+      },
+      zones: [],
+      batches
+    });
+
+    const res = await deleteNode(env, "batch-01");
+
+    expect(res.status).toBe(200);
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toHaveLength(2);
   });
 });

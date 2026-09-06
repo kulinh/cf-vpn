@@ -36,6 +36,16 @@ export function buildHy2URI(tag: string, username: string, password: string, hos
   return `hysteria2://${enc(username)}:${enc(password)}@${host}:${port}/?obfs=salamander&obfs-password=${enc(obfsPw)}&sni=${enc(host)}&insecure=0#${enc(tag)}-HY2`;
 }
 
+const warnedMissingObfs = new Set<string>();
+
+function warnMissingObfs(nodeId: string): void {
+  if (warnedMissingObfs.has(nodeId)) {
+    return;
+  }
+  warnedMissingObfs.add(nodeId);
+  console.warn("hy2 line dropped: node has hy2_host/hy2_port but no hy2_obfs_pw:", nodeId);
+}
+
 export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[]): string {
   const lines: string[] = [];
   for (const r of rows) {
@@ -55,6 +65,12 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
     lines.push(uri);
     if (r.hy2_host && r.hy2_port && r.hy2_obfs_pw) {
       lines.push(buildHy2URI(tag, username, r.hy2_pw, r.hy2_host, r.hy2_port, r.hy2_obfs_pw));
+    } else if (r.hy2_host && r.hy2_port) {
+      // The node has a Hysteria2 endpoint but no obfs password, so the line is
+      // dropped and the user silently loses HY2 on that node. Output is
+      // unchanged — this only makes the drop visible in the logs, once per node
+      // per isolate.
+      warnMissingObfs(r.node_id);
     }
   }
   return lines.join("\n");

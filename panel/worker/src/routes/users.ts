@@ -1,6 +1,6 @@
 import type { AgentAddUserResponse, Env } from "../types";
-import { all, nowTs, one, randomHex, userIDFromName } from "../lib/db";
-import { callAgent } from "../lib/agent-client";
+import { all, MAX_ENTITY_ID_LEN, nowTs, one, randomHex, userIDFromName } from "../lib/db";
+import { callAgent, MAX_TIMEOUT_MS } from "../lib/agent-client";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
 import { buildSubscriptionForClient } from "../lib/subscription";
@@ -58,9 +58,14 @@ export async function createUserByName(env: Env, rawName: string | undefined, ac
   if (!name) {
     return error(400, { error: "invalid_user", detail: "name is required" });
   }
+  // userIDFromName strips everything outside [a-z0-9-] and truncates to
+  // MAX_ENTITY_ID_LEN; a name made only of separators sanitises to "".
   const id = userIDFromName(name);
   if (!id) {
-    return error(400, { error: "invalid_user", detail: "name is invalid" });
+    return error(400, { error: "invalid_user", detail: "name has no usable [a-z0-9-] characters" });
+  }
+  if (id.length > MAX_ENTITY_ID_LEN) {
+    return error(400, { error: "invalid_user", detail: `id must be at most ${MAX_ENTITY_ID_LEN} characters` });
   }
 
   const existing = await one<{ id: string }>(env.DB.prepare("SELECT id FROM users WHERE id=?").bind(id));
@@ -80,10 +85,10 @@ export async function createUserByName(env: Env, rawName: string | undefined, ac
     nodes.map(async (node) => {
       const creds = await callAgent<AgentAddUserResponse>(
         env,
-        { adminHost: node.admin_host, agentSecret: node.agent_secret },
+        { adminHost: node.admin_host, agentSecret: node.agent_secret, nodeId: node.id },
         "/admin/v1/users",
         { method: "POST", body: JSON.stringify({ name: id }) },
-        120000
+        MAX_TIMEOUT_MS
       );
       await env.DB.prepare(
         "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
@@ -129,10 +134,10 @@ export async function deleteUser(env: Env, id: string, actor: string): Promise<R
       try {
         await callAgent(
           env,
-          { adminHost: node.admin_host, agentSecret: node.agent_secret },
+          { adminHost: node.admin_host, agentSecret: node.agent_secret, nodeId: node.id },
           `/admin/v1/users/${encodeURIComponent(id)}`,
           { method: "DELETE" },
-          120000
+          MAX_TIMEOUT_MS
         );
       } catch (e) {
         // Treat 404 as success — the user is already absent on that node.
@@ -140,7 +145,9 @@ export async function deleteUser(env: Env, id: string, actor: string): Promise<R
           throw e;
         }
       }
-      await env.DB.prepare("DELETE FROM user_nodes WHERE user_id = ? AND node_id = ?").bind(id, node.id).run();
+      // No per-node DELETE here: the user row is removed below and
+      // user_nodes.user_id is ON DELETE CASCADE (PRAGMA foreign_keys = 1 on
+      // prod), so these N statements only added write amplification.
       return { node_id: node.id, ok: true };
     })
   );
@@ -185,10 +192,10 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
     nodesToAdd.map(async (node) => {
       const creds = await callAgent<AgentAddUserResponse>(
         env,
-        { adminHost: node.admin_host, agentSecret: node.agent_secret },
+        { adminHost: node.admin_host, agentSecret: node.agent_secret, nodeId: node.id },
         "/admin/v1/users",
         { method: "POST", body: JSON.stringify({ name: id }) },
-        120000
+        MAX_TIMEOUT_MS
       );
       await env.DB.prepare(
         "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"

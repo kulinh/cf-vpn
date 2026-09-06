@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../lib/agent-client", () => ({
-  callAgent: vi.fn()
-}));
+vi.mock("../lib/agent-client", async (orig) => {
+  const actual = await orig<typeof import("../lib/agent-client")>();
+  return { ...actual, callAgent: vi.fn() };
+});
 
 vi.mock("../lib/events", () => ({
   logEvent: vi.fn().mockResolvedValue(undefined)
@@ -10,7 +11,7 @@ vi.mock("../lib/events", () => ({
 
 import { callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
-import { userUpgradeNodes } from "./users";
+import { deleteUser, userUpgradeNodes } from "./users";
 import type { Env } from "../types";
 
 type UserRow = { id: string; name: string };
@@ -21,6 +22,7 @@ function makeEnv(seed?: {
   users?: UserRow[];
   nodes?: NodeRow[];
   userNodes?: UserNodeRow[];
+  ran?: string[];
 }): Env {
   const users = new Map((seed?.users ?? []).map((u) => [u.id, u]));
   const nodes = (seed?.nodes ?? []).slice();
@@ -35,7 +37,7 @@ function makeEnv(seed?: {
         return stmt;
       },
       async first() {
-        if (/SELECT id,name FROM users WHERE id=\?/.test(sql)) {
+        if (/SELECT id,name,?\s*FROM users WHERE id=\?/.test(sql)) {
           const id = state.args[0] as string;
           return (users.get(id) ?? null) as never;
         }
@@ -58,6 +60,7 @@ function makeEnv(seed?: {
         return { results: [] } as never;
       },
       async run() {
+        seed?.ran?.push(sql);
         if (/INSERT OR REPLACE INTO user_nodes/.test(sql)) {
           const [user_id, node_id, vless_uuid, hy2_pw, created_at] = state.args as [string, string, string, string, number];
           const idx = userNodes.findIndex((r) => r.user_id === user_id && r.node_id === node_id);
@@ -156,5 +159,33 @@ describe("userUpgradeNodes", () => {
     expect(body.error).toBe("upgrade_failed");
     expect(body.failedCount).toBe(1);
     expect(vi.mocked(logEvent).mock.calls[0]?.[3]).toBe("error");
+  });
+});
+
+describe("deleteUser membership cleanup", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("relies on ON DELETE CASCADE instead of one DELETE per node", async () => {
+    vi.mocked(callAgent).mockResolvedValue({});
+    const ran: string[] = [];
+    const env = makeEnv({
+      users: [{ id: "kulinh", name: "kulinh" }],
+      nodes: [
+        { id: "JP1", admin_host: "admin-jp1.example.com", status: "active" },
+        { id: "SG", admin_host: "admin-sg.example.com", status: "active" }
+      ],
+      userNodes: [],
+      ran
+    });
+
+    const res = await deleteUser(env, "kulinh", "operator@example.com");
+
+    expect(res.status).toBe(200);
+    expect(ran.filter((sql) => /DELETE FROM user_nodes/.test(sql))).toHaveLength(0);
+    expect(ran.filter((sql) => /DELETE FROM users WHERE id = \?/.test(sql))).toHaveLength(1);
   });
 });

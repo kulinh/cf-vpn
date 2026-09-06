@@ -7,27 +7,21 @@ import type {
   NodeRow
 } from "../types";
 import { all, one, nowTs } from "../lib/db";
-import { callAgent } from "../lib/agent-client";
-import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
+import { callAgent, isConfigError, isTimeoutError, MAX_TIMEOUT_MS } from "../lib/agent-client";
+import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials, isCfTunnelId } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
-import { logEvent } from "../lib/events";
+import { eventStatement, logEvent } from "../lib/events";
 import { generateAdminHost, validateAdminHost } from "../lib/hosts";
 import { generateHost, generateHy2Host, pickZone } from "../lib/host-gen";
 
-type AgentCaller = typeof callAgent;
-type TestAgentCaller = (...args: Parameters<AgentCaller>) => Promise<unknown>;
-let callAgentForTests: TestAgentCaller | null = null;
+// A healthy sweep over the Cloudflare tunnel already measures 450–1700 ms, and
+// a tunnel hiccup costs far more than that; 5s was low enough that the cron
+// sweep flapped nodes between active/unreachable every few hours.
+const HEALTHCHECK_TIMEOUT_MS = 15000;
 
-export function setCallAgentForTests(fn: TestAgentCaller | null): void {
-  callAgentForTests = fn;
-}
+const NODE_STATUSES = ["active", "disabled", "unreachable"] as const;
+type NodeStatus = (typeof NODE_STATUSES)[number];
 
-async function agentCall<T>(...args: Parameters<AgentCaller>): Promise<T> {
-  if (callAgentForTests) {
-    return await callAgentForTests(...args) as T;
-  }
-  return callAgent<T>(...args);
-}
 interface NodeInput {
   id: string;
   label: string;
@@ -204,6 +198,11 @@ export async function patchNode(env: Env, id: string, request: Request, actor = 
       return error(400, { error: "zone_not_found", detail: body.zone });
     }
   }
+  // status has no CHECK constraint in D1; a typo here silently drops the node
+  // out of `WHERE status='active'`, so new users are never provisioned to it.
+  if (body.status !== undefined && !NODE_STATUSES.includes(body.status as NodeStatus)) {
+    return error(400, { error: "invalid_status", detail: `status must be one of ${NODE_STATUSES.join(", ")}` });
+  }
   const updated = {
     label: body.label ?? existing.label,
     admin_host: body.admin_host ?? existing.admin_host,
@@ -281,16 +280,22 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
     let tunnelUuid: string | null = row.tunnel_uuid && row.tunnel_uuid.length > 0 ? row.tunnel_uuid : null;
     let agentReachable = false;
     try {
-      const status = await agentCall<AgentStatusResponse>(
+      const status = await callAgent<AgentStatusResponse>(
         env,
-        { adminHost: row.admin_host, agentSecret: row.agent_secret },
+        { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
         "/admin/v1/status",
         { method: "GET" },
         5000
       );
       agentReachable = true;
       if (typeof status.tunnel_uuid === "string" && status.tunnel_uuid.length > 0) {
-        tunnelUuid = status.tunnel_uuid;
+        // Same rule as persistNodeRuntime: only a well-formed tunnel id may be
+        // interpolated into the Cloudflare API path (see lib/cf-api.ts).
+        if (isCfTunnelId(status.tunnel_uuid)) {
+          tunnelUuid = status.tunnel_uuid;
+        } else {
+          warnings.push("Agent reported a malformed tunnel_uuid; ignored");
+        }
       } else if (!tunnelUuid) {
         warnings.push("Agent did not report tunnel_uuid; tunnel not deleted");
       }
@@ -304,9 +309,9 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
 
     if (agentReachable) {
       try {
-        await agentCall<{ ok: boolean }>(
+        await callAgent<{ ok: boolean }>(
           env,
-          { adminHost: row.admin_host, agentSecret: row.agent_secret },
+          { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
           "/admin/v1/shutdown-tunnel",
           { method: "POST", body: "{}" },
           15000
@@ -360,12 +365,19 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
     }
   }
 
-  // Remove membership rows first so we don't orphan user_nodes pointing at a
-  // node id that no longer exists (mirrors deleteUser's cleanup for users).
-  await env.DB.prepare("DELETE FROM user_nodes WHERE node_id = ?").bind(id).run();
-
-  const result = await env.DB.prepare("DELETE FROM nodes WHERE id = ?").bind(id).run();
-  if (!result.success) {
+  // One transaction: as two separate statements, a failure of the second left
+  // the membership rows gone but the node row (and its agent credentials) in
+  // place — a state no retry converges out of.
+  let results: D1Result[];
+  try {
+    results = await env.DB.batch([
+      env.DB.prepare("DELETE FROM user_nodes WHERE node_id = ?").bind(id),
+      env.DB.prepare("DELETE FROM nodes WHERE id = ?").bind(id)
+    ]);
+  } catch (e) {
+    return error(500, { error: "delete_failed", detail: String(e) });
+  }
+  if (results.some((r) => !r.success)) {
     return error(500, { error: "delete_failed", detail: id });
   }
   await logEvent(env, actor, "node.delete", warnings.length > 0 ? "partial" : "ok", { node_id: id, warnings }, id);
@@ -422,7 +434,7 @@ async function persistNodeRuntime(
   }
 ): Promise<void> {
   await env.DB.prepare(
-    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, tunnel_uuid=? WHERE id=?"
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
   )
     .bind(
       fields.vpn_host,
@@ -451,7 +463,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     return row;
   }
   try {
-    const status = await agentCall<AgentStatusResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/status", { method: "GET" }, 5000);
+    const status = await callAgent<AgentStatusResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/status", { method: "GET" }, 5000);
     const mode = typeof status.mode === "string" && status.mode.length > 0 ? status.mode : row.mode ?? null;
     const syncRuntimeFields = mode === "direct";
     const syncCloudflareFields = mode === "cloudflare";
@@ -470,7 +482,11 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       reality_sni: syncRuntimeFields ? status.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp_path: syncCloudflareFields ? status.xhttp_path ?? row.xhttp_path : row.xhttp_path,
-      tunnel_uuid: status.tunnel_uuid || row.tunnel_uuid,
+      // The agent is only as trustworthy as the VPS it runs on: a compromised
+      // node could report a tunnel_uuid crafted to escape the Cloudflare API
+      // path template on the next deleteNode. Persist it only if it looks like
+      // a tunnel id; otherwise keep whatever we already had.
+      tunnel_uuid: isCfTunnelId(status.tunnel_uuid) ? status.tunnel_uuid : row.tunnel_uuid,
     });
     return json(status);
   } catch (e) {
@@ -479,9 +495,9 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     // not erase a previously-good "active" status — they signal a config
     // problem, not a node outage.
     const msg = String(e);
-    const looksTransportError = !/agent_http_4\d\d/.test(msg);
+    const looksTransportError = !isConfigError(e);
     if (looksTransportError) {
-      await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(id).run();
+      await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=? AND status != 'disabled'").bind(id).run();
     }
     await logEvent(env, actor, "node.status", "error", { node_id: id, message: msg }, id);
     return error(502, { error: "agent_unreachable", detail: msg });
@@ -495,12 +511,14 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
   }
   try {
     const startedAt = Date.now();
-    const out = await callAgent<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+    const out = await callAgent<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, HEALTHCHECK_TIMEOUT_MS);
     const latencyMs = Math.max(1, Date.now() - startedAt);
     const now = nowTs();
     const measured = { ...out, latency_ms: latencyMs };
     const wasUnreachable = row.status === "unreachable";
-    await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
+    await env.DB.prepare(
+      "UPDATE nodes SET status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0, last_sweep_outcome='ok' WHERE id=? AND status != 'disabled'"
+    )
       .bind(now, latencyMs, id)
       .run();
     if (wasUnreachable) {
@@ -520,31 +538,127 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
 // (agent_http_4xx signals a config problem, not an outage, and leaves status
 // alone). Events are logged only on status transitions so a dead node doesn't
 // emit a log line every sweep.
+interface SweepRow {
+  id: string;
+  admin_host: string;
+  agent_secret: string | null;
+  status: string;
+  consecutive_failures: number | null;
+  last_sweep_outcome: string | null;
+}
+
+// A node must miss two consecutive sweeps before it is called unreachable: a
+// single tunnel hiccup (agent_http_520/502, one slow round-trip) produced 79
+// error→recover pairs in 29 days of prod events, i.e. ~99% noise.
+const UNREACHABLE_AFTER_FAILURES = 2;
+
+type SweepOutcome = "ok" | "transport" | "config";
+
 export async function sweepNodesHealth(env: Env): Promise<void> {
-  const { results } = await env.DB.prepare("SELECT id, admin_host, agent_secret, status FROM nodes")
-    .all<Pick<NodeRow, "id" | "admin_host" | "agent_secret" | "status">>();
-  await Promise.allSettled(
-    (results ?? []).map(async (row) => {
+  // 'disabled' is an operator decision; the sweep must neither probe those
+  // nodes nor overwrite the status they were deliberately parked in.
+  const { results } = await env.DB.prepare(
+    "SELECT id, admin_host, agent_secret, status, consecutive_failures, last_sweep_outcome FROM nodes WHERE status != 'disabled'"
+  ).all<SweepRow>();
+  const rows = results ?? [];
+
+  const settled = await Promise.allSettled(
+    rows.map(async (row): Promise<D1PreparedStatement[]> => {
+      const writes: D1PreparedStatement[] = [];
+      const failures = (row.consecutive_failures ?? 0) + 1;
+      // Rows written before 0019 carry NULL; treat that as "was fine", so the
+      // first sweep after the migration does not manufacture an event.
+      const previous: SweepOutcome = (row.last_sweep_outcome as SweepOutcome | null) ?? "ok";
       try {
         const startedAt = Date.now();
-        await agentCall<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, 5000);
+        await callAgent<AgentHealthcheckResponse>(
+          env,
+          { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
+          "/admin/v1/healthcheck",
+          { method: "POST", body: "{}" },
+          HEALTHCHECK_TIMEOUT_MS
+        );
         const latencyMs = Math.max(1, Date.now() - startedAt);
-        await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
-          .bind(nowTs(), latencyMs, row.id)
-          .run();
-        if (row.status === "unreachable") {
-          await logEvent(env, "cron", "node.healthcheck.recover", "ok", { latency_ms: latencyMs }, row.id);
+        writes.push(
+          env.DB.prepare(
+            "UPDATE nodes SET status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0, last_sweep_outcome='ok' WHERE id=? AND status != 'disabled'"
+          ).bind(nowTs(), latencyMs, row.id)
+        );
+        // Recover pairs with whatever we last reported: a config error we
+        // logged, or an outage we flipped the row for. A transport miss that
+        // never reached the flip threshold was never announced, so it needs no
+        // recovery line either.
+        const announced = previous === "config" || (previous !== "ok" && row.status === "unreachable");
+        if (announced) {
+          writes.push(
+            eventStatement(env, "cron", "node.healthcheck.recover", "ok", { latency_ms: latencyMs, previous }, row.id)
+          );
         }
+        return writes;
       } catch (e) {
         const msg = String(e);
-        const looksTransportError = !/agent_http_4\d\d/.test(msg);
-        if (looksTransportError && row.status !== "unreachable") {
-          await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(row.id).run();
-          await logEvent(env, "cron", "node.healthcheck", "error", { message: msg }, row.id);
+        if (isConfigError(e)) {
+          // A config problem (bad agent_secret, validation) is not an outage:
+          // never flip status. But it used to be invisible — status stayed
+          // 'active' while last_seen_at froze — so log it when the outcome
+          // *changes* to config. Keying this on consecutive_failures === 1
+          // would log nothing at all when a transport miss came first.
+          writes.push(
+            env.DB.prepare(
+              "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='config' WHERE id=? AND status != 'disabled'"
+            ).bind(failures, row.id)
+          );
+          if (previous !== "config") {
+            writes.push(
+              eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, config_error: true, previous }, row.id)
+            );
+          }
+          return writes;
         }
+        // The observable outcome change for a transport failure is the flip to
+        // 'unreachable' — that is what the panel shows and what a recover pairs
+        // with, so that is what gets the audit row.
+        const flip = failures >= UNREACHABLE_AFTER_FAILURES && row.status !== "unreachable";
+        writes.push(
+          flip
+            ? env.DB.prepare(
+                "UPDATE nodes SET status='unreachable', consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+              ).bind(failures, row.id)
+            : env.DB.prepare(
+                "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+              ).bind(failures, row.id)
+        );
+        if (flip) {
+          writes.push(
+            eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, consecutive_failures: failures, previous }, row.id)
+          );
+        }
+        return writes;
       }
     })
   );
+
+  const writes: D1PreparedStatement[] = [];
+  settled.forEach((result, i) => {
+    if (result.status === "fulfilled") {
+      writes.push(...result.value);
+      return;
+    }
+    // The allSettled array used to be discarded, so a thrown statement builder
+    // vanished without a trace.
+    console.error("sweep failed for node", rows[i]?.id, String(result.reason));
+  });
+
+  if (writes.length === 0) {
+    return;
+  }
+  // One transaction, one subrequest — the old code issued N UPDATEs plus N
+  // event INSERTs, which alone approached the free-plan subrequest cap.
+  try {
+    await env.DB.batch(writes);
+  } catch (e) {
+    console.error("sweep batch write failed", String(e));
+  }
 }
 
 export async function nodeRotate(env: Env, id: string, request: Request, actor: string): Promise<Response> {
@@ -612,11 +726,22 @@ export async function nodeRotateCore(
   }
 
   const newHy2Host = generateHy2Host(rng, newZoneName);
+  // host-gen draws 4 random bytes and never checks for a collision, but vpn_host
+  // carries a UNIQUE index — catch that here rather than after the agent has
+  // already moved the node.
+  const hostTaken = await one<{ id: string }>(
+    env.DB.prepare("SELECT id FROM nodes WHERE vpn_host = ? AND id != ?").bind(newHost, id)
+  );
+  if (hostTaken) {
+    return error(409, { error: "vpn_host_exists", detail: newHost });
+  }
   const oldZone = await one<ZoneRow>(env.DB.prepare("SELECT name, cf_zone_id FROM zones WHERE name = ?").bind(row.zone));
+
+  let out: AgentRotateResponse;
   try {
-    const out = await agentCall<AgentRotateResponse>(
+    out = await callAgent<AgentRotateResponse>(
       env,
-      { adminHost: row.admin_host, agentSecret: row.agent_secret },
+      { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/rotate-domain",
       {
         method: "POST",
@@ -632,17 +757,71 @@ export async function nodeRotateCore(
           old_hy2_zone_id: oldZone?.cf_zone_id ?? ""
         })
       },
-      120000
+      MAX_TIMEOUT_MS
     );
-    await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=?")
-      .bind(out.vpn_host, out.hy2_host, out.hy2_port, out.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
-      .run();
-    await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host, public_ip: out.public_ip }, id);
-    return json({ vpn_host: out.vpn_host, hy2_host: out.hy2_host, public_ip: out.public_ip });
   } catch (e) {
+    if (isTimeoutError(e)) {
+      // The budget ran out with no answer — the agent may well have completed
+      // the rotation. Reporting a plain rotate_failed here invites a retry,
+      // and a second rotation orphans every subscription pointing at the host
+      // the first one produced.
+      await logEvent(
+        env,
+        actor,
+        "node.rotate",
+        "partial",
+        { old_host: row.vpn_host, attempted_host: newHost, attempted_hy2_host: newHy2Host, zone: newZoneName, message: String(e) },
+        id
+      );
+      return error(500, {
+        error: "rotate_unknown_state",
+        detail: "rotate timed out with no answer — do NOT retry, reconcile via node status",
+        attempted_host: newHost,
+        attempted_hy2_host: newHy2Host,
+        zone: newZoneName
+      });
+    }
     await logEvent(env, actor, "node.rotate", "error", { message: String(e) }, id);
     return error(502, { error: "rotate_failed", detail: String(e) });
   }
+
+  // The agent has already moved the node at this point. A failed write here is
+  // NOT "rotate failed": reporting it as such invites the operator to retry,
+  // which rotates a second time and invalidates every subscription that still
+  // pointed at the first new host. Log the new host so the row can be
+  // reconciled by hand, and return a distinct error.
+  const hy2 = mergeHy2Runtime(row, out);
+  try {
+    await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=? AND status != 'disabled'")
+      .bind(out.vpn_host, hy2.hy2_host, hy2.hy2_port, hy2.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
+      .run();
+  } catch (e) {
+    await logEvent(
+      env,
+      actor,
+      "node.rotate",
+      "partial",
+      {
+        old_host: row.vpn_host,
+        new_host: out.vpn_host,
+        new_hy2_host: hy2.hy2_host,
+        public_ip: out.public_ip,
+        zone: newZoneName,
+        persist_error: String(e)
+      },
+      id
+    );
+    return error(500, {
+      error: "rotate_persist_failed",
+      detail: "node rotated but D1 was not updated — do NOT retry, reconcile the row",
+      vpn_host: out.vpn_host,
+      hy2_host: hy2.hy2_host,
+      public_ip: out.public_ip,
+      zone: newZoneName
+    });
+  }
+  await logEvent(env, actor, "node.rotate", "ok", { old_host: row.vpn_host, new_host: out.vpn_host, public_ip: out.public_ip }, id);
+  return json({ vpn_host: out.vpn_host, hy2_host: hy2.hy2_host, public_ip: out.public_ip });
 }
 
 export async function nodeSync(env: Env, id: string, request: Request, actor: string): Promise<Response> {
@@ -678,12 +857,12 @@ export async function nodeSyncCore(
     return row;
   }
   try {
-    const out = await agentCall<AgentSyncResponse>(
+    const out = await callAgent<AgentSyncResponse>(
       env,
-      { adminHost: row.admin_host, agentSecret: row.agent_secret },
+      { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/sync",
       { method: "POST", body: JSON.stringify({ users }) },
-      120000
+      MAX_TIMEOUT_MS
     );
     const syncRuntimeFields = row.mode === "direct";
     const syncCloudflareFields = row.mode === "cloudflare";
