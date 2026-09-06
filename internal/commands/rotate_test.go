@@ -149,6 +149,7 @@ func withRotateDirectTempPaths(t *testing.T) string {
 	xrayConfigPath = filepath.Join(dir, "xray.json")
 	subscriptionDir = filepath.Join(dir, "subs")
 	hysteriaConfigPath = filepath.Join(dir, "hysteria.yaml")
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, subscriptionDir, hysteriaConfigPath = oldEnv, oldXray, oldSub, oldHy
 	})
@@ -751,6 +752,7 @@ func withRotateCloudflareTempPaths(t *testing.T) string {
 	subscriptionDir = filepath.Join(dir, "subs")
 	hysteriaConfigPath = filepath.Join(dir, "hysteria.yaml")
 	cloudflaredConfig = filepath.Join(dir, "cloudflared.yml")
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, subscriptionDir, hysteriaConfigPath, cloudflaredConfig = oldEnv, oldXray, oldSub, oldHy, oldCfd
 	})

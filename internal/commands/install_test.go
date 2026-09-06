@@ -917,6 +917,7 @@ func withUpgradeSeams(t *testing.T) string {
 	subscriptionDir = filepath.Join(cfgDir, "subscriptions")
 	systemdUnitDir = filepath.Join(dir, "units")
 	hysteriaConfigPath = filepath.Join(cfgDir, "hysteria.yaml")
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		envFilePath, xrayConfigPath, cloudflaredConfig, subscriptionDir, systemdUnitDir = oldEnv, oldCfg, oldCloud, oldSub, oldSysd
 		hysteriaConfigPath = oldHy

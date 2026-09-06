@@ -289,7 +289,8 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		hy2DnsCreated = true
 	}
 
-	if err := writeAtomicFile(xrayConfigPath, []byte(rendered), 0o600); err != nil {
+	// H12: refuse to publish a config xray cannot load; the live one stays.
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(rendered), 0o600); err != nil {
 		return rollbackDNS(fmt.Errorf("write xray config: %w", err))
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {
@@ -563,7 +564,7 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		hy2DnsCreated = true
 	}
 
-	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return rollbackDNS(fmt.Errorf("write xray config: %w", err))
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {

@@ -416,7 +416,8 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
 		}
 	}
-	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+	// H12: parse-check the candidate before it replaces the live config.
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return fail(fmt.Errorf("write xray config: %w", err))
 	}
 
@@ -588,7 +589,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 	}
 
 	runner := resolveRunner(deps.SystemdRunner)
-	xrayChanged, err := writeIfChanged(xrayConfigPath, []byte(xrayRendered), 0o600)
+	xrayChanged, err := writeXrayConfigIfChanged(ctx, xrayConfigPath, []byte(xrayRendered), 0o600)
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("write xray config: %w", err)
 	}
@@ -1019,7 +1020,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 			return fmt.Errorf("render xray cloudflare config: %w", err)
 		}
 	}
-	if err := writeAtomicFile(xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
+	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return fmt.Errorf("write xray config: %w", err)
 	}
 	hyRendered, err := templates.RenderHysteriaConfig(templates.HysteriaInputs{Listen: ":" + hy2Port, TLSCert: hy2CertPath, TLSKey: hy2KeyPath, ObfsPW: hy2ObfsPW, UpMbps: 100, DownMbps: 100, Users: []templates.HysteriaUser{{Name: in.User1Name, Password: hy2PassUser1}}})

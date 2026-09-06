@@ -625,10 +625,22 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	if err != nil {
 		return nil, commands.RotateDirectResult{}, err
 	}
-	if err := commands.WriteAtomicFile(paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
+	// H12: parse-check the candidate config, then keep the previous one so a
+	// failed restart can be undone. applyUsers had no rollback at all: a config
+	// xray refuses was published over the live one and the node was left with a
+	// broken file on disk and xray down.
+	oldXray, oldXrayErr := os.ReadFile(paths.XrayConfigFile)
+	if err := commands.WriteXrayConfigChecked(ctx, paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
 	}
 	if err := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); err != nil {
+		if oldXrayErr == nil {
+			if rerr := commands.WriteAtomicFile(paths.XrayConfigFile, oldXray, 0o600); rerr != nil {
+				log.Printf("restore previous xray config failed: %v", rerr)
+			} else if rerr := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); rerr != nil {
+				log.Printf("restart xray on the restored config failed: %v", rerr)
+			}
+		}
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("restart xray: %w", err)
 	}
 	hy2Users := make([]hysteria.User, len(reqUsers))

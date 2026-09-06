@@ -36,6 +36,7 @@ func withTempPaths(t *testing.T) (cfgPath, subDir string) {
 	if err := os.WriteFile(hysteriaConfigPath, []byte("listen: :20515\ntls:\n  cert: cert.pem\n  key: key.pem\nobfs:\n  type: salamander\n  salamander:\n    password: pw\nbandwidth:\n  up: 100mbps\n  down: 100mbps\nauth:\n  type: userpass\n  userpass:\n    alice: alice-hy2pw\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	stubXrayValidation(t)
 	t.Cleanup(func() {
 		xrayConfigPath = oldC
 		subscriptionDir = oldS
@@ -43,6 +44,18 @@ func withTempPaths(t *testing.T) (cfgPath, subDir string) {
 		envFilePath = oldE
 	})
 	return
+}
+
+// stubXrayValidation replaces the `xray run -test` pre-flight for tests: the
+// fixture keys these tests render (privateKey "test-priv-x25519" and friends)
+// are deliberately rejected by the real xray, and most machines running the
+// suite have no xray binary at all. Tests that exercise the pre-flight itself
+// set their own stub.
+func stubXrayValidation(t *testing.T) {
+	t.Helper()
+	old := validateXrayConfig
+	validateXrayConfig = func(context.Context, []byte) error { return nil }
+	t.Cleanup(func() { validateXrayConfig = old })
 }
 
 // writeTestEnv writes the node env file the commands under test read.
