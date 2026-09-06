@@ -4,7 +4,12 @@ import { Outlet, useNavigate } from 'react-router-dom'
 type Theme = 'dark' | 'light'
 
 function initialTheme(): Theme {
-  if (localStorage.theme === 'light' || localStorage.theme === 'dark') return localStorage.theme
+  try {
+    const stored = localStorage.getItem('theme')
+    if (stored === 'light' || stored === 'dark') return stored
+  } catch {
+    // storage blocked (e.g. Safari private mode) — fall through to media query
+  }
   return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
 }
 
@@ -14,7 +19,11 @@ export function Layout() {
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', theme === 'dark')
-    localStorage.theme = theme
+    try {
+      localStorage.setItem('theme', theme)
+    } catch {
+      // storage blocked — theme just won't persist across reloads
+    }
   }, [theme])
 
   const toggleTheme = () => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
