@@ -17,9 +17,12 @@ export function requireActorEmail(request: Request): string | Response {
   // Access (e.g. a *.workers.dev URL), so we must reject — the email header
   // would otherwise be forgeable. (Presence is the cheap guard.)
   //
-  // The primary defence against the workers.dev bypass is `workers_dev = false`
-  // in wrangler.toml, which removes that endpoint entirely so only the
-  // Access-fronted custom domain can reach this Worker.
+  // NOTE: there is no `workers_dev = false` in wrangler.toml — workers.dev is
+  // deliberately ENABLED there, because the Telegram webhook is registered
+  // against it. The only actual defence against the workers.dev bypass is the
+  // hostname check at the top of src/index.ts, which 404s every path but
+  // /telegram/webhook on a *.workers.dev request. Do not weaken that check
+  // believing a wrangler setting is backing it up.
   //
   // NOTE: Full JWT signature verification against the team's JWKS
   // (gated on optional env.ACCESS_TEAM_DOMAIN + env.ACCESS_AUD) is intentionally

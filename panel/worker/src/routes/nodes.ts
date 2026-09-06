@@ -22,20 +22,6 @@ const HEALTHCHECK_TIMEOUT_MS = 15000;
 const NODE_STATUSES = ["active", "disabled", "unreachable"] as const;
 type NodeStatus = (typeof NODE_STATUSES)[number];
 
-type AgentCaller = typeof callAgent;
-type TestAgentCaller = (...args: Parameters<AgentCaller>) => Promise<unknown>;
-let callAgentForTests: TestAgentCaller | null = null;
-
-export function setCallAgentForTests(fn: TestAgentCaller | null): void {
-  callAgentForTests = fn;
-}
-
-async function agentCall<T>(...args: Parameters<AgentCaller>): Promise<T> {
-  if (callAgentForTests) {
-    return await callAgentForTests(...args) as T;
-  }
-  return callAgent<T>(...args);
-}
 interface NodeInput {
   id: string;
   label: string;
@@ -294,7 +280,7 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
     let tunnelUuid: string | null = row.tunnel_uuid && row.tunnel_uuid.length > 0 ? row.tunnel_uuid : null;
     let agentReachable = false;
     try {
-      const status = await agentCall<AgentStatusResponse>(
+      const status = await callAgent<AgentStatusResponse>(
         env,
         { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
         "/admin/v1/status",
@@ -323,7 +309,7 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
 
     if (agentReachable) {
       try {
-        await agentCall<{ ok: boolean }>(
+        await callAgent<{ ok: boolean }>(
           env,
           { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
           "/admin/v1/shutdown-tunnel",
@@ -477,7 +463,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     return row;
   }
   try {
-    const status = await agentCall<AgentStatusResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/status", { method: "GET" }, 5000);
+    const status = await callAgent<AgentStatusResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/status", { method: "GET" }, 5000);
     const mode = typeof status.mode === "string" && status.mode.length > 0 ? status.mode : row.mode ?? null;
     const syncRuntimeFields = mode === "direct";
     const syncCloudflareFields = mode === "cloudflare";
@@ -525,7 +511,7 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
   }
   try {
     const startedAt = Date.now();
-    const out = await agentCall<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, HEALTHCHECK_TIMEOUT_MS);
+    const out = await callAgent<AgentHealthcheckResponse>(env, { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id }, "/admin/v1/healthcheck", { method: "POST", body: "{}" }, HEALTHCHECK_TIMEOUT_MS);
     const latencyMs = Math.max(1, Date.now() - startedAt);
     const now = nowTs();
     const measured = { ...out, latency_ms: latencyMs };
@@ -575,7 +561,7 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
       const failures = (row.consecutive_failures ?? 0) + 1;
       try {
         const startedAt = Date.now();
-        await agentCall<AgentHealthcheckResponse>(
+        await callAgent<AgentHealthcheckResponse>(
           env,
           { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
           "/admin/v1/healthcheck",
@@ -728,7 +714,7 @@ export async function nodeRotateCore(
 
   let out: AgentRotateResponse;
   try {
-    out = await agentCall<AgentRotateResponse>(
+    out = await callAgent<AgentRotateResponse>(
       env,
       { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/rotate-domain",
@@ -825,7 +811,7 @@ export async function nodeSyncCore(
     return row;
   }
   try {
-    const out = await agentCall<AgentSyncResponse>(
+    const out = await callAgent<AgentSyncResponse>(
       env,
       { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/sync",
