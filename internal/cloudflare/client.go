@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kulinh/cf-vpn/internal/validate"
 )
 
 // DefaultClient returns a Client wired with a sane HTTP timeout (60s).
@@ -75,6 +77,41 @@ func (c Client) do(ctx context.Context, method, path string, body []byte) (apiRe
 	return out, nil
 }
 
+// zonePath builds "/zones/<id>" for a caller-supplied zone id.
+//
+// C2/LOW: zone, tunnel and record ids used to be concatenated into the API path
+// unchecked. The tunnel id in particular arrives from an agent's status
+// response, so a value like "../accounts/<id>/tokens" reached a different
+// Cloudflare endpoint entirely. Ids are validated against their documented
+// shape and path-escaped; both, because escaping alone still lets a nonsense id
+// reach the API and validation alone is one refactor away from being bypassed.
+func zonePath(zoneID string) (string, error) {
+	if err := validate.HexID32(zoneID); err != nil {
+		return "", fmt.Errorf("cloudflare: zone id: %w", err)
+	}
+	return "/zones/" + url.PathEscape(zoneID), nil
+}
+
+// recordPath builds "/zones/<id>/dns_records/<record id>".
+func recordPath(zoneID, recordID string) (string, error) {
+	zp, err := zonePath(zoneID)
+	if err != nil {
+		return "", err
+	}
+	if err := validate.HexID32(recordID); err != nil {
+		return "", fmt.Errorf("cloudflare: dns record id: %w", err)
+	}
+	return zp + "/dns_records/" + url.PathEscape(recordID), nil
+}
+
+// accountPath builds "/accounts/<id>" from the client's configured account.
+func (c Client) accountPath() (string, error) {
+	if err := validate.HexID32(c.AccountID); err != nil {
+		return "", fmt.Errorf("cloudflare: account id: %w", err)
+	}
+	return "/accounts/" + url.PathEscape(c.AccountID), nil
+}
+
 func (c Client) GetZoneID(ctx context.Context, domain string) (string, error) {
 	parts := strings.Split(domain, ".")
 	for i := 0; i < len(parts)-1; i++ {
@@ -104,7 +141,11 @@ func (c Client) CreateTunnel(ctx context.Context, name string) (string, []byte, 
 	}
 	secret := base64.StdEncoding.EncodeToString(secretRaw)
 	body, _ := json.Marshal(map[string]any{"name": name, "tunnel_secret": secret, "config_src": "local"})
-	resp, err := c.do(ctx, http.MethodPost, "/accounts/"+c.AccountID+"/cfd_tunnel", body)
+	ap, err := c.accountPath()
+	if err != nil {
+		return "", nil, err
+	}
+	resp, err := c.do(ctx, http.MethodPost, ap+"/cfd_tunnel", body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -126,8 +167,12 @@ func (c Client) UpsertCNAME(ctx context.Context, zoneID, name, target string) er
 	// name.exact + match=all so a partial-name match can't return a different
 	// record and cause the PUT below to overwrite the wrong CNAME (consistent
 	// with UpsertARecord / deleteRecordsByName).
+	zp, err := zonePath(zoneID)
+	if err != nil {
+		return err
+	}
 	q := url.Values{"type": {"CNAME"}, "name.exact": {name}, "match": {"all"}}.Encode()
-	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
+	get, err := c.do(ctx, http.MethodGet, zp+"/dns_records?"+q, nil)
 	if err != nil {
 		return err
 	}
@@ -139,25 +184,40 @@ func (c Client) UpsertCNAME(ctx context.Context, zoneID, name, target string) er
 	}
 	payload, _ := json.Marshal(map[string]any{"type": "CNAME", "name": name, "content": target, "proxied": true, "ttl": 1})
 	if len(records) > 0 {
-		_, err = c.do(ctx, http.MethodPut, "/zones/"+zoneID+"/dns_records/"+records[0].ID, payload)
+		rp, err := recordPath(zoneID, records[0].ID)
+		if err != nil {
+			return err
+		}
+		_, err = c.do(ctx, http.MethodPut, rp, payload)
 		return err
 	}
-	_, err = c.do(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records", payload)
+	_, err = c.do(ctx, http.MethodPost, zp+"/dns_records", payload)
 	return err
 }
 
 func (c Client) DeleteTunnel(ctx context.Context, tunnelID string) error {
-	_, err := c.do(ctx, http.MethodDelete, "/accounts/"+c.AccountID+"/cfd_tunnel/"+tunnelID, nil)
+	ap, err := c.accountPath()
+	if err != nil {
+		return err
+	}
+	if err := validate.UUID(tunnelID); err != nil {
+		return fmt.Errorf("cloudflare: tunnel id: %w", err)
+	}
+	_, err = c.do(ctx, http.MethodDelete, ap+"/cfd_tunnel/"+url.PathEscape(tunnelID), nil)
 	return err
 }
 
 func (c Client) UpsertARecord(ctx context.Context, zoneID, name, ip string) error {
+	zp, err := zonePath(zoneID)
+	if err != nil {
+		return err
+	}
 	q := url.Values{
 		"type":       {"A"},
 		"name.exact": {name},
 		"match":      {"all"},
 	}.Encode()
-	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
+	get, err := c.do(ctx, http.MethodGet, zp+"/dns_records?"+q, nil)
 	if err != nil {
 		return err
 	}
@@ -175,10 +235,14 @@ func (c Client) UpsertARecord(ctx context.Context, zoneID, name, ip string) erro
 		"ttl":     60,
 	})
 	if len(records) > 0 {
-		_, err = c.do(ctx, http.MethodPut, "/zones/"+zoneID+"/dns_records/"+records[0].ID, payload)
+		rp, err := recordPath(zoneID, records[0].ID)
+		if err != nil {
+			return err
+		}
+		_, err = c.do(ctx, http.MethodPut, rp, payload)
 		return err
 	}
-	_, err = c.do(ctx, http.MethodPost, "/zones/"+zoneID+"/dns_records", payload)
+	_, err = c.do(ctx, http.MethodPost, zp+"/dns_records", payload)
 	return err
 }
 
@@ -191,12 +255,16 @@ func (c Client) DeleteCNAMEByName(ctx context.Context, zoneID, name string) erro
 }
 
 func (c Client) deleteRecordsByName(ctx context.Context, zoneID, recordType, name string) error {
+	zp, err := zonePath(zoneID)
+	if err != nil {
+		return err
+	}
 	q := url.Values{
 		"type":       {recordType},
 		"name.exact": {name},
 		"match":      {"all"},
 	}.Encode()
-	get, err := c.do(ctx, http.MethodGet, "/zones/"+zoneID+"/dns_records?"+q, nil)
+	get, err := c.do(ctx, http.MethodGet, zp+"/dns_records?"+q, nil)
 	if err != nil {
 		return err
 	}
@@ -207,7 +275,11 @@ func (c Client) deleteRecordsByName(ctx context.Context, zoneID, recordType, nam
 		return err
 	}
 	for _, r := range records {
-		if _, err := c.do(ctx, http.MethodDelete, "/zones/"+zoneID+"/dns_records/"+r.ID, nil); err != nil {
+		rp, err := recordPath(zoneID, r.ID)
+		if err != nil {
+			return err
+		}
+		if _, err := c.do(ctx, http.MethodDelete, rp, nil); err != nil {
 			return err
 		}
 	}

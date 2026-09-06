@@ -14,7 +14,7 @@ func TestGetZoneIDBySuffix(t *testing.T) {
 	mux.HandleFunc("/client/v4/zones", func(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		if name == "example.com" {
-			w.Write([]byte(`{"success":true,"result":[{"id":"zone-1"}]}`))
+			w.Write([]byte(`{"success":true,"result":[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`))
 			return
 		}
 		w.Write([]byte(`{"success":true,"result":[]}`))
@@ -27,15 +27,15 @@ func TestGetZoneIDBySuffix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if zone != "zone-1" {
-		t.Fatalf("expected zone-1, got %q", zone)
+	if zone != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("expected aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, got %q", zone)
 	}
 }
 
 func TestUpsertARecordCreatesWhenAbsent(t *testing.T) {
 	mux := http.NewServeMux()
 	var posted bool
-	mux.HandleFunc("/client/v4/zones/zone-1/dns_records", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/client/v4/zones/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dns_records", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
 		case http.MethodGet:
 			if r.URL.Query().Get("type") != "A" {
@@ -60,14 +60,14 @@ func TestUpsertARecordCreatesWhenAbsent(t *testing.T) {
 			if !strings.Contains(string(body), `"proxied":false`) {
 				t.Fatalf("expected proxied:false, got %s", body)
 			}
-			w.Write([]byte(`{"success":true,"result":{"id":"rec-1"}}`))
+			w.Write([]byte(`{"success":true,"result":{"id":"dddddddddddddddddddddddddddddddd"}}`))
 		}
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
 	c := Client{BaseURL: ts.URL + "/client/v4", Token: "t", AccountID: "a", HTTP: ts.Client()}
-	if err := c.UpsertARecord(context.Background(), "zone-1", "vpn+test.example.com", "203.0.113.42"); err != nil {
+	if err := c.UpsertARecord(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "vpn+test.example.com", "203.0.113.42"); err != nil {
 		t.Fatal(err)
 	}
 	if !posted {
@@ -78,7 +78,7 @@ func TestUpsertARecordCreatesWhenAbsent(t *testing.T) {
 func TestUpsertARecordUpdatesWhenPresent(t *testing.T) {
 	mux := http.NewServeMux()
 	var put bool
-	mux.HandleFunc("/client/v4/zones/zone-1/dns_records", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/client/v4/zones/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dns_records", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("type") != "A" {
 			t.Fatalf("expected type=A, got %s", r.URL.Query().Get("type"))
 		}
@@ -88,20 +88,20 @@ func TestUpsertARecordUpdatesWhenPresent(t *testing.T) {
 		if r.URL.Query().Get("match") != "all" {
 			t.Fatalf("expected match=all, got %s", r.URL.Query().Get("match"))
 		}
-		w.Write([]byte(`{"success":true,"result":[{"id":"rec-existing"}]}`))
+		w.Write([]byte(`{"success":true,"result":[{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}]}`))
 	})
-	mux.HandleFunc("/client/v4/zones/zone-1/dns_records/rec-existing", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/client/v4/zones/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dns_records/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut {
 			t.Fatalf("expected PUT, got %s", r.Method)
 		}
 		put = true
-		w.Write([]byte(`{"success":true,"result":{"id":"rec-existing"}}`))
+		w.Write([]byte(`{"success":true,"result":{"id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}}`))
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
 	c := Client{BaseURL: ts.URL + "/client/v4", Token: "t", AccountID: "a", HTTP: ts.Client()}
-	if err := c.UpsertARecord(context.Background(), "zone-1", "vpn+test.example.com", "203.0.113.42"); err != nil {
+	if err := c.UpsertARecord(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "vpn+test.example.com", "203.0.113.42"); err != nil {
 		t.Fatal(err)
 	}
 	if !put {
@@ -112,7 +112,7 @@ func TestUpsertARecordUpdatesWhenPresent(t *testing.T) {
 func TestDeleteARecordByNameRemovesMatching(t *testing.T) {
 	mux := http.NewServeMux()
 	var deleted bool
-	mux.HandleFunc("/client/v4/zones/zone-1/dns_records", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/client/v4/zones/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dns_records", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("type") != "A" {
 			t.Fatalf("expected type=A, got %s", r.URL.Query().Get("type"))
 		}
@@ -122,20 +122,20 @@ func TestDeleteARecordByNameRemovesMatching(t *testing.T) {
 		if r.URL.Query().Get("match") != "all" {
 			t.Fatalf("expected match=all, got %s", r.URL.Query().Get("match"))
 		}
-		w.Write([]byte(`{"success":true,"result":[{"id":"rec-old"}]}`))
+		w.Write([]byte(`{"success":true,"result":[{"id":"cccccccccccccccccccccccccccccccc"}]}`))
 	})
-	mux.HandleFunc("/client/v4/zones/zone-1/dns_records/rec-old", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/client/v4/zones/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dns_records/cccccccccccccccccccccccccccccccc", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
 			t.Fatalf("expected DELETE, got %s", r.Method)
 		}
 		deleted = true
-		w.Write([]byte(`{"success":true,"result":{"id":"rec-old"}}`))
+		w.Write([]byte(`{"success":true,"result":{"id":"cccccccccccccccccccccccccccccccc"}}`))
 	})
 	ts := httptest.NewServer(mux)
 	defer ts.Close()
 
 	c := Client{BaseURL: ts.URL + "/client/v4", Token: "t", AccountID: "a", HTTP: ts.Client()}
-	if err := c.DeleteARecordByName(context.Background(), "zone-1", "old.example.com"); err != nil {
+	if err := c.DeleteARecordByName(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "old.example.com"); err != nil {
 		t.Fatal(err)
 	}
 	if !deleted {
@@ -145,7 +145,7 @@ func TestDeleteARecordByNameRemovesMatching(t *testing.T) {
 
 func TestDeleteARecordByNameNoopWhenAbsent(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/client/v4/zones/zone-1/dns_records", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/client/v4/zones/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/dns_records", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("type") != "A" {
 			t.Fatalf("expected type=A, got %s", r.URL.Query().Get("type"))
 		}
@@ -161,7 +161,7 @@ func TestDeleteARecordByNameNoopWhenAbsent(t *testing.T) {
 	defer ts.Close()
 
 	c := Client{BaseURL: ts.URL + "/client/v4", Token: "t", AccountID: "a", HTTP: ts.Client()}
-	if err := c.DeleteARecordByName(context.Background(), "zone-1", "missing.example.com"); err != nil {
+	if err := c.DeleteARecordByName(context.Background(), "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "missing.example.com"); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
 }
