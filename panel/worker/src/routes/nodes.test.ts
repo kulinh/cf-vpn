@@ -8,11 +8,15 @@ vi.mock("../lib/events", () => ({
   logEvent: vi.fn().mockResolvedValue(undefined)
 }));
 
-vi.mock("../lib/cf-api", () => ({
-  deleteDnsRecordByName: vi.fn().mockResolvedValue(true),
-  deleteTunnel: vi.fn().mockResolvedValue(undefined),
-  hasCfCredentials: vi.fn().mockReturnValue(true)
-}));
+vi.mock("../lib/cf-api", async (orig) => {
+  const actual = await orig<typeof import("../lib/cf-api")>();
+  return {
+    ...actual,
+    deleteDnsRecordByName: vi.fn().mockResolvedValue(true),
+    deleteTunnel: vi.fn().mockResolvedValue(undefined),
+    hasCfCredentials: vi.fn().mockReturnValue(true)
+  };
+});
 
 import { callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
@@ -235,7 +239,7 @@ describe("deleteNode", () => {
           cloudflared: "ok",
           hysteria: "ok",
           vpn_host: "edge-old.example.com",
-          tunnel_uuid: "tunnel-abc",
+          tunnel_uuid: "f70ff985-a4ef-4643-bbbc-4a0ed4fc8415",
           last_rotate_at: 0
         } as never;
       }
@@ -286,7 +290,60 @@ describe("deleteNode", () => {
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-com", "edge-old.example.com", "A");
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-net", "hy-old.example.net", "A");
     expect(vi.mocked(deleteDnsRecordByName)).toHaveBeenCalledWith(env, "zone-admin", "del-01.rwl247.dev", "CNAME");
-    expect(vi.mocked(deleteTunnel)).toHaveBeenCalledWith(env, "tunnel-abc");
+    expect(vi.mocked(deleteTunnel)).toHaveBeenCalledWith(env, "f70ff985-a4ef-4643-bbbc-4a0ed4fc8415");
+  });
+
+  it("ignores a path-traversal tunnel_uuid reported by a compromised agent", async () => {
+    vi.mocked(callAgent).mockImplementation(async (_env, _host, path) => {
+      if (path === "/admin/v1/status") {
+        return {
+          xray: "ok",
+          cloudflared: "ok",
+          hysteria: "ok",
+          vpn_host: "edge-old.example.com",
+          tunnel_uuid: "../../../zones/VICTIMZONE",
+          last_rotate_at: 0
+        } as never;
+      }
+      return { ok: true } as never;
+    });
+
+    const env = makeEnv({
+      node: {
+        id: "del-05",
+        label: "Del 05",
+        admin_host: "del-05.rwl247.dev",
+        vpn_host: "edge-old.example.com",
+        zone: "example.com",
+        status: "active",
+        last_seen_at: null,
+        latency_ms: null,
+        created_at: 1,
+        public_ip: null,
+        mode: "direct",
+        hy2_host: null,
+        hy2_port: null,
+        hy2_obfs_pw: null,
+        reality_pubkey: null,
+        reality_sid: null,
+        reality_sni: null,
+        reality_dest: null,
+        xhttp_path: null,
+        agent_secret: null,
+        tunnel_uuid: null
+      },
+      zones: [
+        { name: "example.com", cf_zone_id: "zone-com", enabled: 1 },
+        { name: "rwl247.dev", cf_zone_id: "zone-admin", enabled: 1 }
+      ]
+    });
+
+    const res = await deleteNode(env, "del-05");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { warnings: string[] };
+    expect(vi.mocked(deleteTunnel)).not.toHaveBeenCalled();
+    expect(body.warnings.some((w) => /malformed tunnel_uuid/i.test(w))).toBe(true);
   });
 
   it("still deletes the row when agent is unreachable, surfacing a warning", async () => {

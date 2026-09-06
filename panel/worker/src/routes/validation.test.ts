@@ -125,7 +125,7 @@ describe("route payload validation", () => {
     const req = new Request("https://panel.test/api/zones", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "example.com", cf_zone_id: "zid" })
+      body: JSON.stringify({ name: "example.com", cf_zone_id: "a".repeat(32) })
     });
     const res = await createZone(env, req);
     expect(res.status).toBe(409);

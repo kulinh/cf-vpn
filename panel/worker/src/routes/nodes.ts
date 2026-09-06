@@ -8,7 +8,7 @@ import type {
 } from "../types";
 import { all, one, nowTs } from "../lib/db";
 import { callAgent } from "../lib/agent-client";
-import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
+import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials, isCfTunnelId } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
 import { generateAdminHost, validateAdminHost } from "../lib/hosts";
@@ -290,7 +290,13 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
       );
       agentReachable = true;
       if (typeof status.tunnel_uuid === "string" && status.tunnel_uuid.length > 0) {
-        tunnelUuid = status.tunnel_uuid;
+        // Same rule as persistNodeRuntime: only a well-formed tunnel id may be
+        // interpolated into the Cloudflare API path (see lib/cf-api.ts).
+        if (isCfTunnelId(status.tunnel_uuid)) {
+          tunnelUuid = status.tunnel_uuid;
+        } else {
+          warnings.push("Agent reported a malformed tunnel_uuid; ignored");
+        }
       } else if (!tunnelUuid) {
         warnings.push("Agent did not report tunnel_uuid; tunnel not deleted");
       }
@@ -470,7 +476,11 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       reality_sni: syncRuntimeFields ? status.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp_path: syncCloudflareFields ? status.xhttp_path ?? row.xhttp_path : row.xhttp_path,
-      tunnel_uuid: status.tunnel_uuid || row.tunnel_uuid,
+      // The agent is only as trustworthy as the VPS it runs on: a compromised
+      // node could report a tunnel_uuid crafted to escape the Cloudflare API
+      // path template on the next deleteNode. Persist it only if it looks like
+      // a tunnel id; otherwise keep whatever we already had.
+      tunnel_uuid: isCfTunnelId(status.tunnel_uuid) ? status.tunnel_uuid : row.tunnel_uuid,
     });
     return json(status);
   } catch (e) {
