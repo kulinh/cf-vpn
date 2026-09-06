@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kulinh/cf-vpn/internal/fsutil"
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/templates"
 	"github.com/kulinh/cf-vpn/internal/xray"
@@ -364,6 +365,55 @@ func TestRunRotateDirectRestartFailureRestoresXrayAndRollsBackARecord(t *testing
 	}
 	if len(cf.deleteA) != 1 || cf.deleteA[0].zoneID != "z" || cf.deleteA[0].name != "vpn.example.com" {
 		t.Fatalf("expected rollback delete of new A record, got %#v", cf.deleteA)
+	}
+}
+
+// A post-rename durability failure on the xray write means the new config IS
+// live. RunRotateDirect must not treat that as fatal: no DNS rollback, no
+// aborted rotation — writeXrayConfigChecked (the lower layer) already decided
+// the error is survivable and warned about it, so RunRotateDirect just carries
+// on and restarts onto the published config, same as any other successful
+// write.
+func TestRunRotateDirectContinuesAfterXrayDurabilityError(t *testing.T) {
+	withRotateDirectTempPaths(t)
+
+	oldWrite := writeAtomicFile
+	writeAtomicFile = func(path string, content []byte, mode os.FileMode) error {
+		if err := oldWrite(path, content, mode); err != nil {
+			return err
+		}
+		if path == xrayConfigPath {
+			// The real writer's post-rename failure: content published, directory
+			// entry not flushed.
+			return &fsutil.DurabilityError{Path: path, Err: errors.New("simulated fsync failure")}
+		}
+		return nil
+	}
+	t.Cleanup(func() { writeAtomicFile = oldWrite })
+
+	cf := &fakeRotateDirectCF{}
+	runner := &recordingRunner{}
+	var err error
+	stderrText := captureStderr(t, func() {
+		_, err = RunRotateDirect(context.Background(), RotateDirectInputs{
+			NewHost: "vpn.example.com", NewZone: "example.com", NewZoneID: "new-zone",
+			ExistingUsers: []ExistingUser{{Name: "alice", UUID: "uuid-a"}},
+		}, RotateDirectDeps{CF: cf, IP: fakeIPDetector{ip: "203.0.113.10"}, Cert: &fakeCertManager{cert: "/c", key: "/k"}, Runner: runner}, &bytes.Buffer{}, &bytes.Buffer{})
+	})
+	if err != nil {
+		t.Fatalf("RunRotateDirect aborted on a published-but-unflushed xray write: %v", err)
+	}
+	if len(cf.deleteA) != 0 {
+		t.Fatalf("rollback deleted the new A record despite the config being live: %#v", cf.deleteA)
+	}
+	if len(cf.upsertA) != 1 {
+		t.Fatalf("expected the new A record to still exist, got %#v", cf.upsertA)
+	}
+	if len(runner.calls) != 1 || strings.Join(runner.calls[0][1:], " ") != "restart cfvpn-xray.service" {
+		t.Fatalf("xray was not restarted onto the published config: %#v", runner.calls)
+	}
+	if !strings.Contains(stderrText, "durability") {
+		t.Errorf("expected the durability warning on stderr, got %q", stderrText)
 	}
 }
 

@@ -114,11 +114,29 @@ func lastLine(out []byte) string {
 
 // writeXrayConfigChecked validates a candidate xray config and only then
 // replaces the live one. On validation failure the file on disk is untouched.
+//
+// A DurabilityError from the write means the rename already published the new
+// config; only its crash-durability is unproven. Every caller of this function
+// treats "written" the same way — restart on it and carry on — so that
+// judgment call is made once, here, instead of duplicated (or missed) at each
+// call site. Returning the error would make callers like RunRotateDirect roll
+// back DNS and abort with the new config already live and xray still running
+// the old one: a worse state than the one being avoided. Callers that need a
+// dedicated warn sink (e.g. applyXrayConfig) still see the config change via
+// the restart that follows; the durability warning itself goes to stderr since
+// this function has no warn sink of its own.
 func writeXrayConfigChecked(ctx context.Context, path string, config []byte, mode os.FileMode) error {
 	if err := validateXrayConfig(ctx, config); err != nil {
 		return err
 	}
-	return writeAtomicFile(path, config, mode)
+	if err := writeAtomicFile(path, config, mode); err != nil {
+		if !fsutil.IsDurability(err) {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "warning: %v; the new xray config is already live but its durability "+
+			"is unproven — a crash in the next moments could lose the rename\n", err)
+	}
+	return nil
 }
 
 // WriteXrayConfigChecked is the exported form for cfvpn-agent.
@@ -136,16 +154,7 @@ func WriteXrayConfigChecked(ctx context.Context, path string, config []byte, mod
 func applyXrayConfig(ctx context.Context, config []byte, runner systemd.Runner, warn io.Writer) error {
 	previous, previousErr := os.ReadFile(xrayConfigPath)
 	if err := writeXrayConfigChecked(ctx, xrayConfigPath, config, 0o600); err != nil {
-		// A DurabilityError means the rename already published the new config;
-		// only its crash-durability is unproven. Returning here would leave xray
-		// running the OLD config with the NEW one on disk — a divergence that the
-		// next restart from anywhere resolves silently and in favour of the file
-		// nobody restarted onto. Carry on and restart; report it as a warning.
-		if !fsutil.IsDurability(err) {
-			return err
-		}
-		warnf(warn, "warning: %v; continuing with the restart because the new config is live, "+
-			"but a crash in the next moments could lose the rename", err)
+		return err
 	}
 	if err := systemd.Restart(ctx, runner, xrayServiceUnit); err != nil {
 		if previousErr == nil {

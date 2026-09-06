@@ -23,7 +23,6 @@ import (
 	"github.com/kulinh/cf-vpn/internal/cert"
 	"github.com/kulinh/cf-vpn/internal/cloudflare"
 	"github.com/kulinh/cf-vpn/internal/commands"
-	"github.com/kulinh/cf-vpn/internal/fsutil"
 	"github.com/kulinh/cf-vpn/internal/hysteria"
 	"github.com/kulinh/cf-vpn/internal/netinfo"
 	"github.com/kulinh/cf-vpn/internal/paths"
@@ -630,16 +629,14 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	// failed restart can be undone. applyUsers had no rollback at all: a config
 	// xray refuses was published over the live one and the node was left with a
 	// broken file on disk and xray down.
+	//
+	// WriteXrayConfigChecked itself treats a post-rename DurabilityError as
+	// success (the config is already live; only its crash-durability is
+	// unproven) and warns to stderr, so there is nothing left to special-case
+	// here.
 	oldXray, oldXrayErr := os.ReadFile(paths.XrayConfigFile)
 	if err := commands.WriteXrayConfigChecked(ctx, paths.XrayConfigFile, []byte(rendered), 0o600); err != nil {
-		// A DurabilityError means the new config is already published and only
-		// its crash-durability is unproven; aborting here would leave xray on the
-		// old config with the new one on disk, to be picked up silently by the
-		// next restart. Continue to the restart and log it instead.
-		if !fsutil.IsDurability(err) {
-			return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
-		}
-		log.Printf("warning: %v; restarting xray on it anyway (the config is live)", err)
+		return nil, commands.RotateDirectResult{}, fmt.Errorf("write xray config: %w", err)
 	}
 	if err := systemd.Restart(ctx, systemd.ExecRunner{}, "cfvpn-xray.service"); err != nil {
 		if oldXrayErr == nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -127,7 +128,10 @@ func TestValidateXrayConfigSkipsWhenBinaryMissing(t *testing.T) {
 // A post-rename durability failure means the new config IS live. Aborting there
 // would leave xray running the old config with the new one on disk, to be
 // adopted silently by the next restart from anywhere — so applyXrayConfig must
-// carry on, restart, and report the problem as a warning.
+// carry on, restart, and report the problem as a warning. The warning itself
+// now comes from writeXrayConfigChecked (the lower layer that decided the
+// error is survivable), so it lands on stderr rather than applyXrayConfig's own
+// warn sink.
 func TestApplyXrayConfigContinuesAfterDurabilityError(t *testing.T) {
 	withTempPaths(t)
 	if err := os.WriteFile(xrayConfigPath, []byte(`{"previous":true}`), 0o600); err != nil {
@@ -147,9 +151,11 @@ func TestApplyXrayConfigContinuesAfterDurabilityError(t *testing.T) {
 
 	r := &userRestartRunner{}
 	var warn bytes.Buffer
-	if err := applyXrayConfig(context.Background(), []byte(`{"candidate":true}`), r, &warn); err != nil {
-		t.Fatalf("applyXrayConfig aborted on a published-but-unflushed write: %v", err)
-	}
+	stderrText := captureStderr(t, func() {
+		if err := applyXrayConfig(context.Background(), []byte(`{"candidate":true}`), r, &warn); err != nil {
+			t.Fatalf("applyXrayConfig aborted on a published-but-unflushed write: %v", err)
+		}
+	})
 
 	raw, _ := os.ReadFile(xrayConfigPath)
 	if string(raw) != `{"candidate":true}` {
@@ -158,9 +164,32 @@ func TestApplyXrayConfigContinuesAfterDurabilityError(t *testing.T) {
 	if !strings.Contains(r.joined(), "restart cfvpn-xray.service") {
 		t.Fatalf("xray was not restarted onto the published config:\n%s", r.joined())
 	}
-	if !strings.Contains(warn.String(), "simulated fsync failure") {
-		t.Errorf("the durability problem was not surfaced: %q", warn.String())
+	if !strings.Contains(stderrText, "simulated fsync failure") {
+		t.Errorf("the durability problem was not surfaced: %q", stderrText)
 	}
+}
+
+// captureStderr redirects os.Stderr for the duration of fn and returns what was
+// written to it. Used for the handful of warnings that writeXrayConfigChecked
+// emits directly to stderr because it has no warn sink of its own.
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+	old := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+	fn()
+	os.Stderr = old
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, r); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
 }
 
 // A failure BEFORE the rename publishes nothing, so it must still abort — no
