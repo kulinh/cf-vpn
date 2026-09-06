@@ -27,3 +27,6 @@ SERVICE_TOKEN_HEADER_ID = "CF-Access-Client-Id"
 SERVICE_TOKEN_HEADER_SECRET = "CF-Access-Client-Secret"
 ADMIN_HOST_ALLOWED_SUFFIXES = "rwl265.com,888vn.net,dongnat247.com,rwl247.dev,rwl265.org"
 TELEGRAM_GROUP_ID = "-1003806233980"
+# Subscription links handed out by the bot must point at the custom domain: the
+# webhook itself arrives on *.workers.dev, where /sub/* is 404 by design.
+PANEL_PUBLIC_ORIGIN = "https://cp.rwl265.com"

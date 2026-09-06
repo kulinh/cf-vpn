@@ -61,7 +61,10 @@ export async function handleTelegramWebhook(
     return ok();
   }
 
-  const baseUrl = new URL(request.url).origin;
+  // The webhook is registered against *.workers.dev, and index.ts 404s every
+  // path but /telegram/webhook on that hostname — so echoing the request origin
+  // handed out /sub/ links that were guaranteed to 404 in the client.
+  const baseUrl = env.PANEL_PUBLIC_ORIGIN || new URL(request.url).origin;
   try {
     await dispatch(env, ctx, update, baseUrl);
   } catch {
