@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentHttpError, callAgent, isConfigError, MAX_TIMEOUT_MS } from "./agent-client";
+import { AgentHttpError, callAgent, isConfigError, isTimeoutError, MAX_TIMEOUT_MS } from "./agent-client";
 import type { Env } from "../types";
 
 const env = { ADMIN_HOST_ALLOWED_SUFFIXES: "example.com", AGENT_SHARED_SECRET: "" } as unknown as Env;
@@ -106,5 +106,22 @@ describe("callAgent shared-secret fallback", () => {
     await callAgent({ ...env, AGENT_SHARED_SECRET: "fleet-secret" } as Env, target, "/x");
 
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("isTimeoutError", () => {
+  it("recognises an aborted fetch and a stalled body read", () => {
+    const abort = new Error("The operation was aborted");
+    abort.name = "AbortError";
+    expect(isTimeoutError(abort)).toBe(true);
+    expect(isTimeoutError(new Error("agent_body_timeout: response body not read within 55000ms"))).toBe(true);
+    expect(isTimeoutError("AbortError: The operation was aborted")).toBe(true);
+  });
+
+  it("does not treat an HTTP answer or a plain transport error as unknown state", () => {
+    // The agent answered — we know it did not silently complete the work.
+    expect(isTimeoutError(new AgentHttpError(502, "agent_http_502: bad gateway"))).toBe(false);
+    expect(isTimeoutError(new AgentHttpError(401, "agent_http_401: unauthorized"))).toBe(false);
+    expect(isTimeoutError(new Error("connection refused"))).toBe(false);
   });
 });

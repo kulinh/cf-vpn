@@ -223,6 +223,29 @@ Migrations 0010 and 0011 are purely additive (nullable columns) — backwards co
 - `0010_nodes_reality_xhttp.sql` adds `reality_pubkey`, `reality_sid`, `reality_sni`, `reality_dest`, `xhttp_path`.
 - `0011_nodes_agent_secret.sql` adds `agent_secret` — the per-node bearer the Worker sends on `/admin/v1/*`. Mirror `/etc/cfvpn/cfvpn.env`'s `AGENT_SHARED_SECRET` into this column with the SQL printed by `install-node.sh`. The Worker falls back to the global `AGENT_SHARED_SECRET` env var when the column is null, so existing nodes keep working until you migrate them.
 
+### Deploy order (migrations 0016–0019)
+
+**Migrations first, Worker second.** The cron sweep reads `nodes.consecutive_failures` (0017) and `nodes.last_sweep_outcome` (0019); a Worker deployed ahead of them makes every sweep throw, and `last_seen_at` silently stops advancing fleet-wide.
+
+`d1_migrations` on prod is stuck at `0013` even though `0014` and `0015` were applied out of band, so `wrangler d1 migrations apply` would replay `0014` and abort on `duplicate column name`, taking everything after it down with it. Backfill the bookkeeping first:
+
+```bash
+# 1. Backfill the two out-of-band migrations so the runner skips them
+wrangler --config panel/worker/wrangler.toml d1 execute cfvpn_panel_prod --remote \
+  --command "INSERT INTO d1_migrations (name) VALUES ('0014_nodes_tunnel_uuid.sql'), ('0015_normalize_zone_created_at_ms.sql');"
+
+# 2. Verify: max(id) should now cover 0015 and nothing should be pending but 0016+
+wrangler --config panel/worker/wrangler.toml d1 migrations list cfvpn_panel_prod --remote
+
+# 3. Apply 0016 (created_at normalisation), 0017 + 0019 (sweep columns), 0018 (drop dead indexes)
+wrangler --config panel/worker/wrangler.toml d1 migrations apply cfvpn_panel_prod --remote
+
+# 4. Only now deploy the Worker
+npm --prefix panel/worker run deploy
+```
+
+Each file holds a single `ALTER` on purpose — D1 has no `ADD COLUMN IF NOT EXISTS`, so a partial failure stays recoverable.
+
 ## Tests
 
 ```bash

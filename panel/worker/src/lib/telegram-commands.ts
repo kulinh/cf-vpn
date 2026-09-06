@@ -1,5 +1,5 @@
 import type { Env } from "../types";
-import { all, userIDFromName } from "./db";
+import { all, MAX_ENTITY_ID_LEN, userIDFromName } from "./db";
 import {
   answerCallbackQuery,
   editMessageText,
@@ -41,8 +41,10 @@ export function parseCommand(text: string): ParsedCommand | null {
 // callback_data is capped at 64 bytes by Telegram and is split on ":", so an id
 // carrying a colon would address a different entity than the button says, and an
 // over-long id makes sendMessage 400 — which used to make /nodes and /users
-// silently return nothing, forever. Ids that fail this are never put on a button.
-const CALLBACK_ID_RE = /^[A-Za-z0-9._-]{1,32}$/;
+// silently return nothing, forever. The bound is 64 minus the longest wrapper
+// the bot builds, "u:del:" + id + ":yes" = 10 bytes (see MAX_ENTITY_ID_LEN).
+// Ids that fail this are never put on a button.
+const CALLBACK_ID_RE = new RegExp(`^[A-Za-z0-9._-]{1,${MAX_ENTITY_ID_LEN}}$`);
 
 export function isCallbackId(id: unknown): id is string {
   return typeof id === "string" && CALLBACK_ID_RE.test(id);

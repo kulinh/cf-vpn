@@ -41,6 +41,17 @@ describe("yamlString", () => {
     expect(yamlString("MATCH,Proxy")).toBe('"MATCH,Proxy"');
     expect(yamlString("kulinh:pw")).toBe('"kulinh:pw"');
   });
+
+  it("escapes C0 controls so they cannot end the scalar mid-line", () => {
+    // A newline inside an obfs password or node id would otherwise split the
+    // scalar and produce an unparseable document.
+    expect(yamlString("a\nb")).toBe('"a\\u000ab"');
+    expect(yamlString("a\tb")).toBe('"a\\u0009b"');
+    expect(yamlString("a\u0000b")).toBe('"a\\u0000b"');
+    expect(yamlString("a\u007fb")).toBe('"a\\u007fb"');
+    // Non-C0 unicode is left alone.
+    expect(yamlString("Việt")).toBe('"Việt"');
+  });
 });
 
 describe("buildClashConfig", () => {

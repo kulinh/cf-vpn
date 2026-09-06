@@ -139,14 +139,16 @@ describe("callback_data id validation (M-W5)", () => {
     // A colon would make parseCallback address a different node than the label.
     expect(isCallbackId("n:1")).toBe(false);
     expect(isCallbackId("")).toBe(false);
-    // callback_data is capped at 64 bytes including the "n:rotate:" + ":yes".
-    expect(isCallbackId("x".repeat(33))).toBe(false);
+    // The bound is 64 bytes minus the longest wrapper ("u:del:" + ":yes").
+    expect(isCallbackId("x".repeat(54))).toBe(true);
+    expect(`u:del:${"x".repeat(54)}:yes`.length).toBe(64);
+    expect(isCallbackId("x".repeat(55))).toBe(false);
     expect(isCallbackId("a b")).toBe(false);
   });
 
   it("omits buttons for a user id that cannot be put in callback_data", async () => {
     vi.mocked(listUsers).mockResolvedValue(
-      jsonRes([{ id: "good", nodes: [] }, { id: "x".repeat(40), nodes: [] }])
+      jsonRes([{ id: "good", nodes: [] }, { id: "x".repeat(70), nodes: [] }])
     );
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 

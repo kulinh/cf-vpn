@@ -1,5 +1,5 @@
 import type { AgentAddUserResponse, Env } from "../types";
-import { all, nowTs, one, randomHex, userIDFromName } from "../lib/db";
+import { all, MAX_ENTITY_ID_LEN, nowTs, one, randomHex, userIDFromName } from "../lib/db";
 import { callAgent, MAX_TIMEOUT_MS } from "../lib/agent-client";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { logEvent } from "../lib/events";
@@ -58,9 +58,14 @@ export async function createUserByName(env: Env, rawName: string | undefined, ac
   if (!name) {
     return error(400, { error: "invalid_user", detail: "name is required" });
   }
+  // userIDFromName strips everything outside [a-z0-9-] and truncates to
+  // MAX_ENTITY_ID_LEN; a name made only of separators sanitises to "".
   const id = userIDFromName(name);
   if (!id) {
-    return error(400, { error: "invalid_user", detail: "name is invalid" });
+    return error(400, { error: "invalid_user", detail: "name has no usable [a-z0-9-] characters" });
+  }
+  if (id.length > MAX_ENTITY_ID_LEN) {
+    return error(400, { error: "invalid_user", detail: `id must be at most ${MAX_ENTITY_ID_LEN} characters` });
   }
 
   const existing = await one<{ id: string }>(env.DB.prepare("SELECT id FROM users WHERE id=?").bind(id));

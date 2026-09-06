@@ -29,6 +29,22 @@ export function isConfigError(e: unknown): boolean {
   return CONFIG_ERROR_RE.test(e instanceof Error ? e.message : String(e));
 }
 
+// True when the call ran out of budget with no answer from the agent — either
+// the fetch itself was aborted or the body read was (agent_body_timeout below).
+// Callers that mutate node state must treat this as "unknown", never as
+// "failed": the agent may have completed the operation regardless.
+export function isTimeoutError(e: unknown): boolean {
+  if (e instanceof AgentHttpError) {
+    return false;
+  }
+  const name = typeof e === "object" && e !== null ? String((e as { name?: unknown }).name ?? "") : "";
+  if (name === "AbortError" || name === "TimeoutError") {
+    return true;
+  }
+  const msg = e instanceof Error ? e.message : String(e);
+  return /agent_body_timeout|AbortError|TimeoutError|aborted|timed out/i.test(msg);
+}
+
 async function fetchJsonWithTimeout(
   input: RequestInfo,
   init: RequestInit,

@@ -197,6 +197,11 @@ export default {
       // control. Log it for observability, return a generic shape — never the
       // exception text, which can carry hostnames, tokens or SQL.
       console.error("unhandled worker error", String(e));
+      if (new URL(request.url).pathname === "/telegram/webhook") {
+        // Telegram retries every non-2xx, and the mutating commands are not
+        // idempotent — an internal error must not turn into a replayed rotate.
+        return new Response("ok", { status: 200 });
+      }
       return error(500, { error: "internal_error" });
     }
   },
@@ -206,15 +211,22 @@ export default {
   // expression in wrangler.toml silently turned the daily prune into a second
   // sweep, and the events table would then grow without bound.
   async scheduled(event: ScheduledEvent, env: Env, _ctx: ExecutionContext): Promise<void> {
-    if (event.cron === "*/5 * * * *") {
-      await sweepNodesHealth(env);
-      return;
+    // A throw here is only visible as a failed cron invocation with no body —
+    // e.g. the sweep hitting a missing consecutive_failures column because the
+    // Worker was deployed before the migration. Log it instead of dying mute.
+    try {
+      if (event.cron === "*/5 * * * *") {
+        await sweepNodesHealth(env);
+        return;
+      }
+      if (event.cron === "17 3 * * *") {
+        const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
+        await env.DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run();
+        return;
+      }
+      console.warn("unhandled cron trigger, doing nothing:", event.cron);
+    } catch (e) {
+      console.error("scheduled handler failed", event.cron, String(e));
     }
-    if (event.cron === "17 3 * * *") {
-      const cutoff = Date.now() - 90 * 24 * 60 * 60 * 1000;
-      await env.DB.prepare("DELETE FROM events WHERE ts < ?").bind(cutoff).run();
-      return;
-    }
-    console.warn("unhandled cron trigger, doing nothing:", event.cron);
   }
 };

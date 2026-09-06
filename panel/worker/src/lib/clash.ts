@@ -3,9 +3,16 @@ import type { SubscriptionRow } from "./subscription";
 // Minimal YAML emitter. mihomo/Clash configs are a fixed shape here, so a full
 // YAML library would be a dependency for no benefit. Every string is
 // double-quoted (so ":", "#", "@" and leading digits are always safe) with only
-// the two escapes double-quoted YAML requires; booleans and numbers go bare.
+// the escapes double-quoted YAML requires (backslash, quote, C0 controls);
+// booleans and numbers go bare.
 export function yamlString(value: string): string {
-  return `"${value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  const escaped = value
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    // C0 controls (and DEL) would otherwise end the scalar mid-line or be
+    // rejected by the parser. Double-quoted YAML understands \uXXXX.
+    .replace(/[\u0000-\u001f\u007f]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`);
+  return `"${escaped}"`;
 }
 
 type Scalar = string | number | boolean;

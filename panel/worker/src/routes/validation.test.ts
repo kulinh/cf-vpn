@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { validateAdminHost } from "../lib/hosts";
+import { MAX_ENTITY_ID_LEN, userIDFromName } from "../lib/db";
+import { createUserByName } from "./users";
 import { createNode, nodeSync } from "./nodes";
 import { createZone } from "./zones";
 import type { Env } from "../types";
@@ -129,5 +131,24 @@ describe("route payload validation", () => {
     });
     const res = await createZone(env, req);
     expect(res.status).toBe(409);
+  });
+});
+
+describe("user id length cap", () => {
+  it("truncates to MAX_ENTITY_ID_LEN without leaving a trailing separator", () => {
+    expect(MAX_ENTITY_ID_LEN).toBe(54);
+    const long = userIDFromName("x".repeat(80));
+    expect(long).toHaveLength(MAX_ENTITY_ID_LEN);
+    // "u:del:" + id + ":yes" must still fit Telegram's 64-byte callback_data.
+    expect(`u:del:${long}:yes`.length).toBeLessThanOrEqual(64);
+    // A cut landing on a separator must not leave the id ending in "-".
+    expect(userIDFromName(`${"a".repeat(53)} b c`)).not.toMatch(/-$/);
+  });
+
+  it("400s when a name sanitises to nothing", async () => {
+    const env = makeEnv();
+    const res = await createUserByName(env, "!!! ???", "operator@example.com");
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_user");
   });
 });

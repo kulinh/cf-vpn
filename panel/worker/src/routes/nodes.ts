@@ -7,7 +7,7 @@ import type {
   NodeRow
 } from "../types";
 import { all, one, nowTs } from "../lib/db";
-import { callAgent, isConfigError, MAX_TIMEOUT_MS } from "../lib/agent-client";
+import { callAgent, isConfigError, isTimeoutError, MAX_TIMEOUT_MS } from "../lib/agent-client";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials, isCfTunnelId } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { eventStatement, logEvent } from "../lib/events";
@@ -434,7 +434,7 @@ async function persistNodeRuntime(
   }
 ): Promise<void> {
   await env.DB.prepare(
-    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, tunnel_uuid=? WHERE id=?"
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
   )
     .bind(
       fields.vpn_host,
@@ -497,7 +497,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     const msg = String(e);
     const looksTransportError = !isConfigError(e);
     if (looksTransportError) {
-      await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=?").bind(id).run();
+      await env.DB.prepare("UPDATE nodes SET status='unreachable' WHERE id=? AND status != 'disabled'").bind(id).run();
     }
     await logEvent(env, actor, "node.status", "error", { node_id: id, message: msg }, id);
     return error(502, { error: "agent_unreachable", detail: msg });
@@ -516,7 +516,9 @@ export async function nodeHealthcheck(env: Env, id: string, actor: string): Prom
     const now = nowTs();
     const measured = { ...out, latency_ms: latencyMs };
     const wasUnreachable = row.status === "unreachable";
-    await env.DB.prepare("UPDATE nodes SET status='active', last_seen_at=?, latency_ms=? WHERE id=?")
+    await env.DB.prepare(
+      "UPDATE nodes SET status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0, last_sweep_outcome='ok' WHERE id=? AND status != 'disabled'"
+    )
       .bind(now, latencyMs, id)
       .run();
     if (wasUnreachable) {
@@ -542,6 +544,7 @@ interface SweepRow {
   agent_secret: string | null;
   status: string;
   consecutive_failures: number | null;
+  last_sweep_outcome: string | null;
 }
 
 // A node must miss two consecutive sweeps before it is called unreachable: a
@@ -549,9 +552,13 @@ interface SweepRow {
 // error→recover pairs in 29 days of prod events, i.e. ~99% noise.
 const UNREACHABLE_AFTER_FAILURES = 2;
 
+type SweepOutcome = "ok" | "transport" | "config";
+
 export async function sweepNodesHealth(env: Env): Promise<void> {
+  // 'disabled' is an operator decision; the sweep must neither probe those
+  // nodes nor overwrite the status they were deliberately parked in.
   const { results } = await env.DB.prepare(
-    "SELECT id, admin_host, agent_secret, status, consecutive_failures FROM nodes"
+    "SELECT id, admin_host, agent_secret, status, consecutive_failures, last_sweep_outcome FROM nodes WHERE status != 'disabled'"
   ).all<SweepRow>();
   const rows = results ?? [];
 
@@ -559,6 +566,9 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
     rows.map(async (row): Promise<D1PreparedStatement[]> => {
       const writes: D1PreparedStatement[] = [];
       const failures = (row.consecutive_failures ?? 0) + 1;
+      // Rows written before 0019 carry NULL; treat that as "was fine", so the
+      // first sweep after the migration does not manufacture an event.
+      const previous: SweepOutcome = (row.last_sweep_outcome as SweepOutcome | null) ?? "ok";
       try {
         const startedAt = Date.now();
         await callAgent<AgentHealthcheckResponse>(
@@ -571,12 +581,17 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
         const latencyMs = Math.max(1, Date.now() - startedAt);
         writes.push(
           env.DB.prepare(
-            "UPDATE nodes SET status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0 WHERE id=?"
+            "UPDATE nodes SET status='active', last_seen_at=?, latency_ms=?, consecutive_failures=0, last_sweep_outcome='ok' WHERE id=? AND status != 'disabled'"
           ).bind(nowTs(), latencyMs, row.id)
         );
-        if (row.status === "unreachable") {
+        // Recover pairs with whatever we last reported: a config error we
+        // logged, or an outage we flipped the row for. A transport miss that
+        // never reached the flip threshold was never announced, so it needs no
+        // recovery line either.
+        const announced = previous === "config" || (previous !== "ok" && row.status === "unreachable");
+        if (announced) {
           writes.push(
-            eventStatement(env, "cron", "node.healthcheck.recover", "ok", { latency_ms: latencyMs }, row.id)
+            eventStatement(env, "cron", "node.healthcheck.recover", "ok", { latency_ms: latencyMs, previous }, row.id)
           );
         }
         return writes;
@@ -585,27 +600,37 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
         if (isConfigError(e)) {
           // A config problem (bad agent_secret, validation) is not an outage:
           // never flip status. But it used to be invisible — status stayed
-          // 'active' while last_seen_at froze — so log exactly once, on the
-          // first consecutive occurrence.
+          // 'active' while last_seen_at froze — so log it when the outcome
+          // *changes* to config. Keying this on consecutive_failures === 1
+          // would log nothing at all when a transport miss came first.
           writes.push(
-            env.DB.prepare("UPDATE nodes SET consecutive_failures=? WHERE id=?").bind(failures, row.id)
+            env.DB.prepare(
+              "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='config' WHERE id=? AND status != 'disabled'"
+            ).bind(failures, row.id)
           );
-          if (failures === 1) {
+          if (previous !== "config") {
             writes.push(
-              eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, config_error: true }, row.id)
+              eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, config_error: true, previous }, row.id)
             );
           }
           return writes;
         }
+        // The observable outcome change for a transport failure is the flip to
+        // 'unreachable' — that is what the panel shows and what a recover pairs
+        // with, so that is what gets the audit row.
         const flip = failures >= UNREACHABLE_AFTER_FAILURES && row.status !== "unreachable";
         writes.push(
           flip
-            ? env.DB.prepare("UPDATE nodes SET status='unreachable', consecutive_failures=? WHERE id=?").bind(failures, row.id)
-            : env.DB.prepare("UPDATE nodes SET consecutive_failures=? WHERE id=?").bind(failures, row.id)
+            ? env.DB.prepare(
+                "UPDATE nodes SET status='unreachable', consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+              ).bind(failures, row.id)
+            : env.DB.prepare(
+                "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+              ).bind(failures, row.id)
         );
         if (flip) {
           writes.push(
-            eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, consecutive_failures: failures }, row.id)
+            eventStatement(env, "cron", "node.healthcheck", "error", { message: msg, consecutive_failures: failures, previous }, row.id)
           );
         }
         return writes;
@@ -735,6 +760,27 @@ export async function nodeRotateCore(
       MAX_TIMEOUT_MS
     );
   } catch (e) {
+    if (isTimeoutError(e)) {
+      // The budget ran out with no answer — the agent may well have completed
+      // the rotation. Reporting a plain rotate_failed here invites a retry,
+      // and a second rotation orphans every subscription pointing at the host
+      // the first one produced.
+      await logEvent(
+        env,
+        actor,
+        "node.rotate",
+        "partial",
+        { old_host: row.vpn_host, attempted_host: newHost, attempted_hy2_host: newHy2Host, zone: newZoneName, message: String(e) },
+        id
+      );
+      return error(500, {
+        error: "rotate_unknown_state",
+        detail: "rotate timed out with no answer — do NOT retry, reconcile via node status",
+        attempted_host: newHost,
+        attempted_hy2_host: newHy2Host,
+        zone: newZoneName
+      });
+    }
     await logEvent(env, actor, "node.rotate", "error", { message: String(e) }, id);
     return error(502, { error: "rotate_failed", detail: String(e) });
   }
@@ -746,7 +792,7 @@ export async function nodeRotateCore(
   // reconciled by hand, and return a distinct error.
   const hy2 = mergeHy2Runtime(row, out);
   try {
-    await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=?")
+    await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=? AND status != 'disabled'")
       .bind(out.vpn_host, hy2.hy2_host, hy2.hy2_port, hy2.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
       .run();
   } catch (e) {
