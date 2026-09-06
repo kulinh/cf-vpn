@@ -1,6 +1,6 @@
 # Testing Checklist — cf-vpn
 
-Run these checks after `sudo cfvpnctl install --mode direct` or `sudo cfvpnctl upgrade --mode direct` completes and before declaring a direct node healthy. For VPSs that cannot expose TCP 443, run the same checklist with `sudo cfvpnctl upgrade --mode cloudflare` and use the Cloudflare-mode notes below.
+Run these checks after `sudo cfvpnctl install` (with `MODE=direct` in `cfvpn.env`, or the installer's auto-probe having picked direct) or `sudo cfvpnctl upgrade --mode direct` completes and before declaring a direct node healthy. For VPSs that cannot expose TCP 443, run the same checklist with `MODE=cloudflare` (install) or `sudo cfvpnctl upgrade --mode cloudflare` and use the Cloudflare-mode notes below. Note: `cfvpnctl install` has no `--mode` flag — mode always comes from `MODE=` in `cfvpn.env`; `--mode` exists only on `cfvpnctl upgrade` (and `cfvpnctl install --upgrade`).
 
 ## 0. Prerequisites
 
@@ -88,7 +88,7 @@ Record for reference:
 
 ## 8. Command idempotency
 
-- [ ] `sudo cfvpnctl install --mode direct` twice in a row does not create duplicate runtime state
+- [ ] `sudo cfvpnctl install` (MODE=direct in `cfvpn.env`) twice in a row does not create duplicate runtime state
 - [ ] `sudo cfvpnctl upgrade --mode direct` twice in a row preserves users and remains healthy
 - [ ] `sudo cfvpnctl add-user alice` then again fails with `already exists`
 - [ ] `sudo cfvpnctl remove-user alice` then again fails with `not found`
