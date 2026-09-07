@@ -36,6 +36,7 @@ export function Layout() {
         <button className="rounded px-2.5 py-1 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={() => navigate('/users')}>Users</button>
         <button className="rounded px-2.5 py-1 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={() => navigate('/quick-add')}>Quick Add</button>
         <button className="rounded px-2.5 py-1 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={() => navigate('/events')}>Events</button>
+        <button className="rounded px-2.5 py-1 text-sm text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800" onClick={() => navigate('/connectivity')}>Connectivity</button>
         <button
           type="button"
           onClick={toggleTheme}

@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router-dom'
 import { CommandCenterPage } from '../pages/CommandCenterPage'
+import { ConnectivityPage } from '../pages/ConnectivityPage'
 import { EventsPage } from '../pages/EventsPage'
 import { NodesPage } from '../pages/NodesPage'
 import { QuickAddPage } from '../pages/QuickAddPage'
@@ -15,6 +16,7 @@ export function App() {
         <Route path="/users" element={<UsersPage />} />
         <Route path="/quick-add" element={<QuickAddPage />} />
         <Route path="/events" element={<EventsPage />} />
+        <Route path="/connectivity" element={<ConnectivityPage />} />
       </Route>
     </Routes>
   )
