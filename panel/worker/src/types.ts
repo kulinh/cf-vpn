@@ -15,6 +15,10 @@ export interface Env {
   // served on *.workers.dev, where /sub/* is 404 by design, so subscription
   // links must be built from this rather than from the request origin.
   PANEL_PUBLIC_ORIGIN?: string;
+  // Username/password fallback used when Cloudflare Access is not in front of
+  // the Worker. Both must be set for it to apply; see lib/auth.ts.
+  PANEL_BASIC_USER?: string;
+  PANEL_BASIC_PASS?: string;
   // Optional Cloudflare Access JWKS verification gate (see lib/auth.ts NOTE).
   // When both are set (and a JWKS-capable JWT library is available), the Worker
   // should verify the CF-Access-Jwt-Assertion signature instead of only

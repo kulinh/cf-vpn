@@ -40,3 +40,6 @@ panel/worker/.wrangler/
 # Local Go binary outputs (built at repo root)
 /cfvpn-agent
 /cfvpnctl
+
+# vitest cache accidentally created under src/
+panel/worker/src/node_modules/

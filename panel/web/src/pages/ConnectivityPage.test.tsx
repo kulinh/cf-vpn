@@ -53,12 +53,36 @@ describe('ConnectivityPage', () => {
     await screen.findByText(/no nodes with a vpn endpoint/i)
   })
 
-  it('states that Hysteria2 is out of scope', async () => {
-    // The whole point of the page is knowing what it does and does not prove;
-    // a user reading a green row must not conclude HY2 works.
+  it('orders the finished run fastest first', async () => {
+    vi.spyOn(api, 'listNodes').mockResolvedValue([
+      makeNode({ id: 'slow', label: 'SLOW', vpnHost: 'slow.example.com' }),
+      makeNode({ id: 'fast', label: 'FAST', vpnHost: 'fast.example.com' }),
+    ])
+    vi.spyOn(connectivity, 'probeHost').mockImplementation(async (nodeId, host) => ({
+      nodeId,
+      host,
+      outcome: 'reachable',
+      elapsedMs: nodeId === 'fast' ? 90 : 900,
+    }))
+
+    render(<ConnectivityPage />)
+    await screen.findByText('SLOW')
+    fireEvent.click(screen.getByRole('button', { name: /run test/i }))
+
+    await waitFor(() => expect(screen.getAllByText(/^\d+ ms$/)).toHaveLength(2))
+    const rows = screen.getAllByRole('row').slice(1)
+    expect(rows[0].textContent).toContain('FAST')
+    expect(rows[1].textContent).toContain('SLOW')
+  })
+
+  it('gives the run button a colour the light theme does not blank out', async () => {
+    // styles/tailwind.css remaps bg-slate-900 to #fff outside dark mode, so a
+    // bg-slate-900 + text-white button renders white-on-white and disappears.
     vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode()])
     render(<ConnectivityPage />)
-    await screen.findByText(/says nothing about hysteria2/i)
+    const button = screen.getByRole('button', { name: /run test/i })
+    expect(button.className).not.toMatch(/bg-slate-900/)
+    expect(button.className).toMatch(/bg-blue-600/)
   })
 
   it('surfaces a failed node load instead of showing an empty table', async () => {

@@ -6,6 +6,7 @@ import {
   PROBE_TIMEOUT_MS,
   describeOutcome,
   probeHost,
+  sortByResult,
   type ProbeResult,
 } from '../lib/connectivity'
 import type { Node } from '../lib/types'
@@ -59,6 +60,10 @@ export function ConnectivityPage() {
     setRunning(false)
   }
 
+  // Only reorder once the run is over: rows jumping while each probe lands
+  // makes the table unreadable and moves the row you are watching.
+  const displayNodes = running ? nodes : sortByResult(nodes, results)
+
   return (
     <section className="space-y-4">
       <div className="flex flex-wrap items-center gap-3">
@@ -67,28 +72,10 @@ export function ConnectivityPage() {
           type="button"
           onClick={runAll}
           disabled={running}
-          className="rounded bg-slate-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
+          className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 dark:focus:ring-offset-slate-950"
         >
           {running ? 'Testing…' : 'Run test'}
         </button>
-      </div>
-
-      <div className="rounded border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-700 dark:bg-amber-950/40 dark:text-amber-200">
-        <p className="font-medium">This measures TCP + TLS from this device, on this network.</p>
-        <ul className="mt-1 list-disc space-y-0.5 pl-5">
-          <li>
-            <strong>It says nothing about Hysteria2.</strong> HY2 runs over UDP, which a browser
-            cannot send. Only the VPN client can test that.
-          </li>
-          <li>
-            A direct-mode node runs Reality and will decline the handshake — that still proves the
-            endpoint is reachable, and is reported as such.
-          </li>
-          <li>
-            Reachable does not mean usable: wrong credentials also present as a timeout in the
-            client. Run <code>scripts/check-fleet-drift.sh</code> to rule that out.
-          </li>
-        </ul>
       </div>
 
       {loadError ? <ErrorBanner message={loadError} /> : null}
@@ -104,7 +91,7 @@ export function ConnectivityPage() {
           </tr>
         </thead>
         <tbody>
-          {nodes.map((node) => {
+          {displayNodes.map((node) => {
             const result = results[node.id]
             return (
               <tr key={node.id} className="border-b border-slate-100 dark:border-slate-900">
