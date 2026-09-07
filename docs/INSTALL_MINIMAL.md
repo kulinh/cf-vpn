@@ -46,7 +46,7 @@ Network requirements:
 - outbound HTTPS/443 to GitHub, Cloudflare API, Let's Encrypt, and OS package mirrors
 - outbound DNS/53 to recursive resolvers such as `1.1.1.1` and `8.8.8.8`
 - direct mode: inbound TCP/443 to the VPS
-- both modes: inbound UDP on the generated Hysteria2 port (`20000-60000`)
+- both modes: inbound UDP on the Hysteria2 port (random `20000-60000`, or whatever `HY2_PORT` pins it to)
 
 ## 3) Clone the repo on the VPS
 
@@ -70,9 +70,10 @@ That is the only command you need. Optional environment overrides:
 | Var          | Default       | Notes                                                                                                                |
 | ------------ | ------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `NODE_ID`    | **required**  | Single DNS label, lowercase `[a-z0-9-]`, ≤63 chars. Used as `<NODE_ID>.rwl247.dev` for the admin tunnel.             |
-| `USER1_NAME` | `user1`       | Must match `^[A-Za-z0-9_-]{1,32}$`. Initial VPN account.                                                              |
+| `USER1_NAME` | `kulinh`      | Must match `^[A-Za-z0-9_-]{1,32}$`. Initial VPN account, and the account the node is bound to in D1. The fleet uses a single real account, so the default is it — overriding this creates a second user in the panel. |
 | `MODE`       | `auto`        | `direct` (TCP/443 on this host), `cloudflare` (VLESS rides Cloudflare Tunnel), or `auto` (probe :443, fall back).    |
 | `DOMAIN`     | auto-selected | Must be a subdomain of a zone in `DefaultPool`. If empty the installer picks one and registers the DNS record itself. |
+| `HY2_PORT`   | random `20000-60000` | Explicit Hysteria2 UDP port, `1024-65535`. Set it when the host sits behind a provider NAT that maps one fixed external port: the port is advertised to clients verbatim, so the external and internal numbers must match. |
 
 ### Mode decision matrix
 
@@ -95,7 +96,7 @@ regardless of `MODE`.
 ```bash
 sudo cfvpnctl status
 sudo cfvpnctl healthcheck run
-sudo cfvpnctl gen-sub user1
+sudo cfvpnctl gen-sub kulinh
 ```
 
 `install-node.sh` already runs these checks and reports each unit's state:
@@ -174,10 +175,27 @@ sudo -E FORCE_REINSTALL=1 ... bash scripts/install-node.sh
 
 That backs the current env file up to `/etc/cfvpn/cfvpn.env.bak-<unixtime>`
 (mode 0600), clears the `.installed` marker, and keeps only the values that
-must not be regenerated — `ADMIN_TUNNEL_UUID` (dropping it would make
-`cfvpnctl` create a **second** admin tunnel and orphan the first) plus the
-Cloudflare credentials. Everything else is reissued, so afterwards you must
-re-issue every user's config for this node.
+must not be regenerated — `ADMIN_TUNNEL_UUID` plus the Cloudflare credentials.
+Everything else is reissued, so afterwards you must re-issue every user's
+config for this node.
+
+When `ADMIN_TUNNEL_UUID` is set, `cfvpnctl install` **reuses** that tunnel
+instead of creating one, and requires
+`/etc/cfvpn/cloudflared/<ADMIN_TUNNEL_UUID>.json` to be present — Cloudflare
+returns a tunnel's secret only at creation, so that file is the only copy. If
+it is gone, the install stops rather than minting a duplicate; restore the file
+from a backup, or delete the tunnel with
+`cfvpnctl rotate-domain --cleanup <uuid> --yes` and clear `ADMIN_TUNNEL_UUID`
+to provision a fresh one.
+
+Note that `cfvpnctl install` issues the Hysteria2 certificate **before** it
+touches the tunnel. A run that dies partway can therefore leave
+`/etc/cfvpn/hysteria/cert.pem` holding a cert for a freshly generated
+`HY2_HOST` while the env file (restored from backup) still names the old one —
+Hysteria2 then fails every TLS handshake while `systemctl is-active`,
+the service log and `cfvpnctl healthcheck` all still look healthy. Compare
+`openssl x509 -in /etc/cfvpn/hysteria/cert.pem -noout -subject` against
+`HY2_HOST` and run `cfvpnctl cert-renew` if they disagree.
 
 Without `FORCE_REINSTALL`, a re-run over a *partial* env file (one with no node
 secrets yet) is safe: the installer rewrites only the bootstrap keys it owns

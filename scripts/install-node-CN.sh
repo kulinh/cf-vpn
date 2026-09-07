@@ -112,7 +112,8 @@ fi
 # PROJECT_ROOT is known) and is ARGV-ONLY: pass a command and its arguments,
 # never a shell snippet. Remote scripts go on stdin: ssh_run bash -s <<'EOF'.
 
-: "${USER1_NAME:=user1}"
+# Same default as scripts/install-node.sh: the fleet's one real account.
+: "${USER1_NAME:=kulinh}"
 : "${MODE:=auto}"
 : "${DOMAIN:=}"
 

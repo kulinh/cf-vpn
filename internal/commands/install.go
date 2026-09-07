@@ -47,6 +47,11 @@ type InstallInputs struct {
 	Hy2Port      string
 	Hy2ObfsPW    string
 	Hy2PassUser1 string
+	// AdminTunnelUUID is an existing admin tunnel to reuse instead of creating
+	// one, taken from ADMIN_TUNNEL_UUID. FORCE_REINSTALL carries that key
+	// across a re-provision precisely so the node keeps its tunnel; creating a
+	// second one would orphan the first and fail on Cloudflare error 1013.
+	AdminTunnelUUID string
 	// XrayDNSServers is the optional comma-separated resolver override from
 	// XRAY_DNS_SERVERS. Empty means the international DoH default.
 	XrayDNSServers string
@@ -983,6 +988,14 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 			return fmt.Errorf("port_443_busy: %w", err)
 		}
 	}
+	// Bound ADMIN_TUNNEL_UUID before anything is mutated: a typo here would
+	// otherwise surface as a confusing Cloudflare error long after the env file
+	// and the DNS records have been rewritten.
+	if reuse := strings.TrimSpace(in.AdminTunnelUUID); reuse != "" {
+		if err := validate.UUID(reuse); err != nil {
+			return fmt.Errorf("ADMIN_TUNNEL_UUID %q is not a Cloudflare tunnel UUID: %w", reuse, err)
+		}
+	}
 
 	binRunner := resolveBinaryRunner(deps.BinaryRunner)
 	sysRunner := resolveRunner(deps.SystemdRunner)
@@ -1049,22 +1062,43 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		return fmt.Errorf("issue cert for %s: %w", hy2Host, err)
 	}
 
-	fmt.Fprintln(stdout, "creating admin tunnel...")
 	tunnelName := tunnelNameForNode(in.NodeID)
 	if tunnelName == "" {
 		return fmt.Errorf("derive tunnel name: NODE_ID %q is not a valid DNS label", in.NodeID)
 	}
-	tunnelID, creds, err := deps.CF.CreateTunnel(ctx, tunnelName)
-	if err != nil {
-		return fmt.Errorf("create tunnel: %w", err)
-	}
-	if tunnelID == "" {
-		return fmt.Errorf("create tunnel: empty tunnel id")
-	}
-	credPath := filepath.Join(cloudflaredCredDir, tunnelID+".json")
-	if err := writeAtomicFile(credPath, creds, 0o600); err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-		return fmt.Errorf("write tunnel credentials: %w", err)
+	var tunnelID string
+	if reuse := strings.TrimSpace(in.AdminTunnelUUID); reuse != "" {
+		// Reuse path: the tunnel secret is handed out once, at creation, so the
+		// credentials file on disk is the only copy. Without it the tunnel
+		// cannot be served, and minting a replacement behind the operator's
+		// back would orphan the old tunnel — so stop and say what to do.
+		credPath := filepath.Join(cloudflaredCredDir, reuse+".json")
+		if _, err := os.Stat(credPath); err != nil {
+			return fmt.Errorf("reuse admin tunnel %s: credentials file %s is unreadable (%w); "+
+				"restore it from a backup, or clear ADMIN_TUNNEL_UUID and delete the tunnel "+
+				"with `cfvpnctl rotate-domain --cleanup %s --yes` to provision a fresh one",
+				reuse, credPath, err, reuse)
+		}
+		fmt.Fprintf(stdout, "reusing admin tunnel %s...\n", reuse)
+		tunnelID = reuse
+	} else {
+		fmt.Fprintln(stdout, "creating admin tunnel...")
+		var (
+			creds []byte
+			err   error
+		)
+		tunnelID, creds, err = deps.CF.CreateTunnel(ctx, tunnelName)
+		if err != nil {
+			return fmt.Errorf("create tunnel: %w", err)
+		}
+		if tunnelID == "" {
+			return fmt.Errorf("create tunnel: empty tunnel id")
+		}
+		credPath := filepath.Join(cloudflaredCredDir, tunnelID+".json")
+		if err := writeAtomicFile(credPath, creds, 0o600); err != nil {
+			printRotateHint(stdout, "cfvpnctl install", tunnelID)
+			return fmt.Errorf("write tunnel credentials: %w", err)
+		}
 	}
 
 	fmt.Fprintln(stdout, "detecting public ip...")
@@ -1354,10 +1388,15 @@ func randomPortInRange(rng io.Reader, min, max int) (int, error) {
 	return min + int(n.Int64()), nil
 }
 
+// validateHy2Port bounds an operator-supplied HY2_PORT. pickHy2UDPPort still
+// draws random ports from [20000,60000]; an explicit one only has to be a legal
+// unprivileged port, because a node behind a provider NAT that maps a single
+// fixed external port must bind that exact number. HY2_PORT is advertised to
+// clients verbatim, so a translated mapping never connects.
 func validateHy2Port(raw string) (int, error) {
 	port, err := strconv.Atoi(raw)
-	if err != nil || port < 20000 || port > 60000 {
-		return 0, fmt.Errorf("HY2_PORT must be in [20000,60000]")
+	if err != nil || port < 1024 || port > 65535 {
+		return 0, fmt.Errorf("HY2_PORT must be in [1024,65535]")
 	}
 	return port, nil
 }

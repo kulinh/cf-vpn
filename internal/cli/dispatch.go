@@ -26,25 +26,26 @@ var buildInstallDeps = func(env map[string]string) commands.InstallDeps {
 	return deps
 }
 
-// installFromEnv reads MODE, HY2_HOST, HY2_PORT (and optionally HY2_OBFS_PW, HY2_PASS_USER1)
-// from env and populates InstallInputs. MODE is required; missing MODE returns "mode_required".
+// installFromEnv reads MODE, HY2_HOST, HY2_PORT, ADMIN_TUNNEL_UUID (and optionally
+// HY2_OBFS_PW, HY2_PASS_USER1) from env and populates InstallInputs. MODE is required; missing MODE returns "mode_required".
 func installFromEnv(env map[string]string) (commands.InstallInputs, error) {
 	mode := env["MODE"]
 	if mode == "" {
 		return commands.InstallInputs{}, fmt.Errorf("mode_required")
 	}
 	return commands.InstallInputs{
-		CFAPIToken:     env["CF_API_TOKEN"],
-		CFAccountID:    env["CF_ACCOUNT_ID"],
-		Domain:         env["DOMAIN"],
-		NodeID:         env["NODE_ID"],
-		User1Name:      env["USER1_NAME"],
-		Mode:           mode,
-		Hy2Host:        env["HY2_HOST"],
-		Hy2Port:        env["HY2_PORT"],
-		Hy2ObfsPW:      env["HY2_OBFS_PW"],
-		Hy2PassUser1:   env["HY2_PASS_USER1"],
-		XrayDNSServers: env["XRAY_DNS_SERVERS"],
+		CFAPIToken:      env["CF_API_TOKEN"],
+		CFAccountID:     env["CF_ACCOUNT_ID"],
+		Domain:          env["DOMAIN"],
+		NodeID:          env["NODE_ID"],
+		User1Name:       env["USER1_NAME"],
+		Mode:            mode,
+		Hy2Host:         env["HY2_HOST"],
+		Hy2Port:         env["HY2_PORT"],
+		Hy2ObfsPW:       env["HY2_OBFS_PW"],
+		Hy2PassUser1:    env["HY2_PASS_USER1"],
+		AdminTunnelUUID: env["ADMIN_TUNNEL_UUID"],
+		XrayDNSServers:  env["XRAY_DNS_SERVERS"],
 	}, nil
 }
 

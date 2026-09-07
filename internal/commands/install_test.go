@@ -379,8 +379,121 @@ func TestRunInstallIssuesHy2AndDirectVPNCertsToServicePaths(t *testing.T) {
 	}
 }
 
+// A node behind a provider NAT that only maps a fixed external port must bind
+// that exact number: HY2_PORT is advertised to clients verbatim, so a
+// translated mapping (external 5331 -> internal 43235) never connects. The
+// random picker still stays inside [20000,60000]; an explicit port only has to
+// be a legal unprivileged port.
+// FORCE_REINSTALL deliberately carries ADMIN_TUNNEL_UUID across a
+// re-provision so the node keeps its existing admin tunnel. RunInstall used to
+// call CreateTunnel unconditionally, which meant a re-provision died on
+// Cloudflare error 1013 ("You already have a tunnel with this name") — after
+// the env file had already been rewritten. Reuse the tunnel instead.
+func TestRunInstallReusesExistingAdminTunnel(t *testing.T) {
+	withInstallSeams(t)
+	const existing = "56dae1fa-99f1-41e2-a429-19072f6abb69"
+	if err := os.MkdirAll(cloudflaredCredDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credPath := filepath.Join(cloudflaredCredDir, existing+".json")
+	if err := os.WriteFile(credPath, []byte(`{"kept":"creds"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "11111111-2222-3333-4444-555555555555", creds: []byte(`{"fresh":"creds"}`)}
+	deps := baseInstallDeps(cf)
+	var out, errBuf bytes.Buffer
+	in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", Domain: "vpn.example.com", NodeID: "OR-001", User1Name: "alice", Mode: "cloudflare", AdminTunnelUUID: existing}
+
+	if err := RunInstall(context.Background(), in, deps, &out, &errBuf); err != nil {
+		t.Fatalf("RunInstall: %v", err)
+	}
+	if cf.createCalls != 0 {
+		t.Fatalf("CreateTunnel calls = %d, want 0 (existing tunnel must be reused)", cf.createCalls)
+	}
+	env, err := state.Load(envFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["ADMIN_TUNNEL_UUID"] != existing {
+		t.Fatalf("ADMIN_TUNNEL_UUID = %q, want %q", env["ADMIN_TUNNEL_UUID"], existing)
+	}
+	// The credentials on disk are the only copy of the tunnel secret; a reuse
+	// must never overwrite them with a freshly minted tunnel's credentials.
+	got, err := os.ReadFile(credPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != `{"kept":"creds"}` {
+		t.Fatalf("credentials file = %s, want the pre-existing content", got)
+	}
+}
+
+// Reuse is only possible while the credentials file survives: the tunnel secret
+// is returned once, at creation. Minting a second tunnel behind the operator's
+// back is worse than stopping, so stop and say what to do.
+func TestRunInstallRefusesReuseWhenTunnelCredentialsMissing(t *testing.T) {
+	withInstallSeams(t)
+	const existing = "56dae1fa-99f1-41e2-a429-19072f6abb69"
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "11111111-2222-3333-4444-555555555555", creds: []byte(`{"fresh":"creds"}`)}
+	deps := baseInstallDeps(cf)
+	var out, errBuf bytes.Buffer
+	in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", Domain: "vpn.example.com", NodeID: "OR-001", User1Name: "alice", Mode: "cloudflare", AdminTunnelUUID: existing}
+
+	err := RunInstall(context.Background(), in, deps, &out, &errBuf)
+	if err == nil || !strings.Contains(err.Error(), "credentials") {
+		t.Fatalf("RunInstall error = %v, want a missing-credentials error", err)
+	}
+	if cf.createCalls != 0 {
+		t.Fatalf("CreateTunnel calls = %d, want 0 (must not mint a duplicate tunnel)", cf.createCalls)
+	}
+	if _, err := os.Stat(envFilePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("env file stat err = %v, want not exist", err)
+	}
+}
+
+func TestRunInstallRejectsMalformedAdminTunnelUUID(t *testing.T) {
+	withInstallSeams(t)
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "11111111-2222-3333-4444-555555555555", creds: []byte(`{"k":"v"}`)}
+	deps := baseInstallDeps(cf)
+	var out, errBuf bytes.Buffer
+	in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", Domain: "vpn.example.com", NodeID: "OR-001", User1Name: "alice", Mode: "cloudflare", AdminTunnelUUID: "not-a-uuid"}
+
+	err := RunInstall(context.Background(), in, deps, &out, &errBuf)
+	if err == nil || !strings.Contains(err.Error(), "ADMIN_TUNNEL_UUID") {
+		t.Fatalf("RunInstall error = %v, want ADMIN_TUNNEL_UUID validation error", err)
+	}
+	if cf.createCalls != 0 || cf.getZoneCalls != 0 {
+		t.Fatalf("malformed ADMIN_TUNNEL_UUID mutated Cloudflare: %#v", cf)
+	}
+}
+
+func TestRunInstallAcceptsExplicitHy2PortOutsideRandomRange(t *testing.T) {
+	withInstallSeams(t)
+	cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "9f2b1c44-7e10-4c2a-9a55-1122334455aa", creds: []byte(`{"k":"v"}`)}
+	udp := &fakeUDPProber{}
+	deps := baseInstallDeps(cf)
+	deps.UDPProber = udp
+	var out, errBuf bytes.Buffer
+	in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", Domain: "vpn.example.com", NodeID: "OR-001", User1Name: "alice", Mode: "cloudflare", Hy2Host: "hy2.example.com", Hy2Port: "5331", Hy2ObfsPW: "explicit-obfs"}
+
+	if err := RunInstall(context.Background(), in, deps, &out, &errBuf); err != nil {
+		t.Fatalf("RunInstall with NAT-mapped HY2_PORT: %v", err)
+	}
+
+	env, err := state.Load(envFilePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["HY2_PORT"] != "5331" {
+		t.Fatalf("HY2_PORT = %q, want 5331", env["HY2_PORT"])
+	}
+	if len(udp.ports) != 0 {
+		t.Fatalf("UDP probes = %#v, want none when the port is supplied", udp.ports)
+	}
+}
+
 func TestRunInstallRejectsInvalidExplicitHy2PortBeforeMutating(t *testing.T) {
-	for _, hy2Port := range []string{"abc", "0", "19999", "60001", "24444x"} {
+	for _, hy2Port := range []string{"abc", "0", "1023", "65536", "24444x"} {
 		t.Run(hy2Port, func(t *testing.T) {
 			withInstallSeams(t)
 			cf := &fakeInstallCF{zones: map[string]string{"example.com": "zone-id", adminHostZone: "admin-zone"}, tunnelID: "3c9e5d21-4411-4622-8a33-bbccddeeff00", creds: []byte(`{"k":"v"}`)}
@@ -391,7 +504,7 @@ func TestRunInstallRejectsInvalidExplicitHy2PortBeforeMutating(t *testing.T) {
 			in := InstallInputs{CFAPIToken: "cf-token", CFAccountID: "cf-acct", Domain: "vpn.example.com", NodeID: "JPY-04", User1Name: "alice", Mode: "direct", Hy2Host: "hy2.example.com", Hy2Port: hy2Port, Hy2ObfsPW: "explicit-obfs"}
 
 			err := RunInstall(context.Background(), in, deps, &out, &errBuf)
-			if err == nil || !strings.Contains(err.Error(), "HY2_PORT must be in [20000,60000]") {
+			if err == nil || !strings.Contains(err.Error(), "HY2_PORT must be in [1024,65535]") {
 				t.Fatalf("RunInstall error = %v, want HY2_PORT validation error", err)
 			}
 			if cf.getZoneCalls != 0 || cf.createCalls != 0 || len(cf.aRecords) != 0 || len(cf.cnames) != 0 {
