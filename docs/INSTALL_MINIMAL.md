@@ -163,9 +163,24 @@ the node no longer has.
 To upgrade an existing node:
 
 ```bash
-sudo cfvpnctl upgrade          # keeps every credential
-sudo cfvpnctl rotate-domain    # new domain, same credentials
+sudo cfvpnctl upgrade             # keeps every credential
+sudo cfvpnctl upgrade --binaries  # also move xray + hysteria to the current upstream release
+sudo cfvpnctl rotate-domain       # new domain, same credentials
 ```
+
+`binary.EnsureXray` and `binary.EnsureHysteria` return early when the binary is
+already present, so a plain `upgrade` leaves a node on whatever xray and
+hysteria release it was provisioned with — the versions drift as upstream moves
+on. `--binaries` re-runs the upstream installers
+(`XTLS/Xray-install/install-release.sh` and `https://get.hy2.sh`, both of which
+fetch the latest **stable**) and then restarts `cfvpn-xray`, `cfvpn-hysteria`
+and `cfvpn-cloudflared`, because a binary upgrade rewrites no config and the
+change-driven restarts would never fire.
+
+It is opt-in on purpose: an ordinary upgrade must not pull a new upstream
+release behind the operator's back. `cloudflared` and `lego` are never forced —
+cloudflared comes from Cloudflare's apt repo and carries the admin tunnel, and
+lego is pinned through `LEGO_VERSION`.
 
 If you really do want to re-provision from scratch:
 

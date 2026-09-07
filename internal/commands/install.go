@@ -102,14 +102,21 @@ func resolveBinaryRunner(r binary.Runner) binary.Runner {
 	return r
 }
 
-func ensureRuntimeBinaries(ctx context.Context, runner binary.Runner) error {
-	if err := binary.EnsureXray(ctx, runner, binary.Exists("xray")); err != nil {
+// ensureRuntimeBinaries installs any missing runtime binary. With forceProxies
+// set it re-runs the xray and hysteria installers even when those binaries are
+// present, which is the only way to move a provisioned node onto a newer
+// upstream release: binary.Ensure* returns early when the binary exists.
+//
+// cloudflared and lego are never forced — see UpgradeInputs.Binaries.
+func ensureRuntimeBinaries(ctx context.Context, runner binary.Runner, forceProxies bool) error {
+	proxyPresent := func(name string) bool { return !forceProxies && binary.Exists(name) }
+	if err := binary.EnsureXray(ctx, runner, proxyPresent("xray")); err != nil {
 		return fmt.Errorf("ensure xray: %w", err)
 	}
 	if err := binary.EnsureCloudflared(ctx, runner, binary.Exists("cloudflared")); err != nil {
 		return fmt.Errorf("ensure cloudflared: %w", err)
 	}
-	if err := binary.EnsureHysteria(ctx, runner, binary.Exists("hysteria")); err != nil {
+	if err := binary.EnsureHysteria(ctx, runner, proxyPresent("hysteria")); err != nil {
 		return fmt.Errorf("ensure hysteria: %w", err)
 	}
 	if err := binary.EnsureLego(ctx, runner, binary.Exists("lego")); err != nil {
@@ -126,6 +133,16 @@ type UpgradeInputs struct {
 	BackupRoot string
 	Mode       string
 	Now        func() time.Time
+	// Binaries re-runs the upstream installers for xray and hysteria even when
+	// the binaries are already present, and restarts the services so the new
+	// build is the one actually serving. Opt-in: an ordinary upgrade must not
+	// pull a new upstream release behind the operator's back.
+	//
+	// cloudflared and lego are deliberately left alone. cloudflared comes from
+	// Cloudflare's apt repo on current nodes and carries the admin tunnel, so
+	// swapping it is a separate, riskier decision; lego is pinned through
+	// LEGO_VERSION in scripts/install-node.sh.
+	Binaries bool
 }
 
 type UpgradeResult struct {
@@ -240,8 +257,27 @@ func RunUpgrade(ctx context.Context, in UpgradeInputs, deps InstallDeps, stdout,
 		rng = rand.Reader
 	}
 	binRunner := resolveBinaryRunner(deps.BinaryRunner)
-	if err := ensureRuntimeBinaries(ctx, binRunner); err != nil {
+	if err := ensureRuntimeBinaries(ctx, binRunner, in.Binaries); err != nil {
 		return UpgradeResult{}, err
+	}
+	// Restart here rather than alongside the config-change restarts further
+	// down: a binary upgrade rewrites no config, and several upgrade paths
+	// (a legacy node whose in-place re-render is skipped, for one) return
+	// before those are reached — the node would keep serving the old build.
+	if in.Binaries {
+		binSysRunner := resolveRunner(deps.SystemdRunner)
+		if err := systemd.Restart(ctx, binSysRunner, "cfvpn-xray.service"); err != nil {
+			return UpgradeResult{}, fmt.Errorf("restart cfvpn-xray.service after binary upgrade: %w", err)
+		}
+		if err := hysteria.ReloadService(ctx, binSysRunner); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: restart cfvpn-hysteria.service after binary upgrade: %v\n", err)
+		}
+		if err := systemd.Restart(ctx, binSysRunner, "cfvpn-cloudflared.service"); err != nil && stderr != nil {
+			fmt.Fprintf(stderr, "warning: restart cfvpn-cloudflared.service after binary upgrade: %v\n", err)
+		}
+		if stdout != nil {
+			fmt.Fprintln(stdout, "xray + hysteria reinstalled from upstream; services restarted")
+		}
 	}
 
 	// Network tuning (BBR/fq/mtu-probing) is applied on every upgrade so a
@@ -1050,7 +1086,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 
 	fmt.Fprintln(stdout, "ensuring binaries...")
-	if err := ensureRuntimeBinaries(ctx, binRunner); err != nil {
+	if err := ensureRuntimeBinaries(ctx, binRunner, false); err != nil {
 		return err
 	}
 
