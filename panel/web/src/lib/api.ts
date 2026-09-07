@@ -1,6 +1,45 @@
 import { buildPublicSubscriptionUrl } from './subscriptionLinks'
 import type { Event, Node, UpgradeUserNodesResponse, User } from './types'
 
+import { clearCredentials, encodeBasic, loadCredentials } from './credentials'
+
+/**
+ * Every /api/* call goes through here so the basic-auth header is attached in
+ * one place.
+ *
+ * The Worker's 401 carries WWW-Authenticate, which most browsers turn into a
+ * native login dialog — but several iOS Safari versions suppress that prompt
+ * for fetch/XHR, and the panel is used from a phone. Sending the header
+ * ourselves behaves identically everywhere and lets the app own the sign-in
+ * screen.
+ *
+ * A 401 means the stored credentials are wrong or gone: drop them and raise
+ * `unauthorized` so the app returns to the login screen instead of showing a
+ * generic failure the user cannot act on.
+ */
+export class UnauthorizedError extends Error {
+  constructor() {
+    super('unauthorized')
+    this.name = 'UnauthorizedError'
+  }
+}
+
+export async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const credentials = loadCredentials()
+  const headers = new Headers(init.headers)
+  if (credentials) headers.set('Authorization', encodeBasic(credentials))
+  const response = await fetch(input, { ...init, headers })
+  if (response.status === 401) {
+    clearCredentials()
+    // Let the gate react from anywhere, including calls whose caller swallows
+    // the rejection into a page-level error message.
+    window.dispatchEvent(new Event('panel-unauthorized'))
+    throw new UnauthorizedError()
+  }
+  return response
+}
+
+
 type RotateNodeApiResponse = {
   vpn_host?: string
   hy2_host?: string | null
@@ -104,7 +143,7 @@ function parseNode(raw: NodeApiResponse): Node {
 }
 
 export async function rotateNode(nodeId: string): Promise<RotateNodeResponse> {
-  const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/rotate`, {
+  const response = await apiFetch(`/api/nodes/${encodeURIComponent(nodeId)}/rotate`, {
     method: 'POST',
   })
 
@@ -117,23 +156,23 @@ export async function rotateNode(nodeId: string): Promise<RotateNodeResponse> {
 }
 
 export async function listUsers(): Promise<User[]> {
-  const response = await fetch('/api/users')
+  const response = await apiFetch('/api/users')
   return parseJsonOrThrow<User[]>(response, 'users')
 }
 
 export async function listNodes(): Promise<Node[]> {
-  const response = await fetch('/api/nodes')
+  const response = await apiFetch('/api/nodes')
   const rows = await parseJsonOrThrow<NodeApiResponse[]>(response, 'nodes')
   return rows.map(parseNode)
 }
 
 export async function listEvents(): Promise<Event[]> {
-  const response = await fetch('/api/events?limit=200')
+  const response = await apiFetch('/api/events?limit=200')
   return parseJsonOrThrow<Event[]>(response, 'events')
 }
 
 export async function upgradeUserNodes(userId: string): Promise<UpgradeUserNodesResponse> {
-  const response = await fetch(`/api/users/${encodeURIComponent(userId)}/upgrade-nodes`, {
+  const response = await apiFetch(`/api/users/${encodeURIComponent(userId)}/upgrade-nodes`, {
     method: 'POST',
   })
   return parseJsonOrThrow<UpgradeUserNodesResponse>(response, 'upgrade user nodes')
@@ -146,7 +185,7 @@ export type UserSubscription = {
 }
 
 export async function getUserSubscription(userId: string): Promise<UserSubscription> {
-  const response = await fetch(`/api/users/${encodeURIComponent(userId)}/subscription`)
+  const response = await apiFetch(`/api/users/${encodeURIComponent(userId)}/subscription`)
   const data = await parseJsonOrThrow<{ subscription_url: string; sub_token: string }>(
     response,
     'subscription',
@@ -159,7 +198,7 @@ export async function getUserSubscription(userId: string): Promise<UserSubscript
 }
 
 export async function healthcheckNode(nodeId: string): Promise<{ latency_ms: number }> {
-  const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}/healthcheck`, {
+  const response = await apiFetch(`/api/nodes/${encodeURIComponent(nodeId)}/healthcheck`, {
     method: 'POST',
   })
   return parseJsonOrThrow<{ latency_ms: number }>(response, 'healthcheck')
@@ -177,7 +216,7 @@ export type NodeInput = {
 }
 
 export async function createNode(input: NodeInput): Promise<void> {
-  const response = await fetch('/api/nodes', {
+  const response = await apiFetch('/api/nodes', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -197,7 +236,7 @@ export async function patchNode(
   nodeId: string,
   input: Partial<NodeInput & { status: string }>,
 ): Promise<void> {
-  const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}`, {
+  const response = await apiFetch(`/api/nodes/${encodeURIComponent(nodeId)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
@@ -213,7 +252,7 @@ export type DeleteNodeResponse = {
 }
 
 export async function deleteNode(nodeId: string): Promise<DeleteNodeResponse> {
-  const response = await fetch(`/api/nodes/${encodeURIComponent(nodeId)}`, {
+  const response = await apiFetch(`/api/nodes/${encodeURIComponent(nodeId)}`, {
     method: 'DELETE',
   })
 
@@ -234,7 +273,7 @@ export type UserInput = {
 }
 
 export async function createUser(input: UserInput): Promise<void> {
-  const response = await fetch('/api/users', {
+  const response = await apiFetch('/api/users', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(input),
