@@ -14,12 +14,14 @@ const OUTCOME_STYLE: Record<ProbeResult['outcome'], string> = {
   reachable: 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200',
   'tls-refused': 'bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-200',
   blocked: 'bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-200',
+  'not-attempted': 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200',
 }
 
 const OUTCOME_LABEL: Record<ProbeResult['outcome'], string> = {
   reachable: 'Reachable',
   'tls-refused': 'Reachable',
   blocked: 'Blocked',
+  'not-attempted': 'Not measured',
 }
 
 export function ConnectivityPage() {
