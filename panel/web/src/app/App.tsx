@@ -3,6 +3,7 @@ import { CommandCenterPage } from '../pages/CommandCenterPage'
 import { ConnectivityPage } from '../pages/ConnectivityPage'
 import { EventsPage } from '../pages/EventsPage'
 import { NodesPage } from '../pages/NodesPage'
+import { NotFoundPage } from '../pages/NotFoundPage'
 import { QuickAddPage } from '../pages/QuickAddPage'
 import { UsersPage } from '../pages/UsersPage'
 import { Layout } from './Layout'
@@ -17,6 +18,7 @@ export function App() {
         <Route path="/quick-add" element={<QuickAddPage />} />
         <Route path="/events" element={<EventsPage />} />
         <Route path="/connectivity" element={<ConnectivityPage />} />
+        <Route path="*" element={<NotFoundPage />} />
       </Route>
     </Routes>
   )
