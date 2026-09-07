@@ -325,6 +325,52 @@ contains "$(d1_zone_for_domain vpn.example.co.uk 2>&1 >/dev/null)" "falling back
    "fallback warns on stderr"
 
 # ---------------------------------------------------------------------------
+section "cfvpn-drift.sh — node config vs D1 (M-S11)"
+# shellcheck source=../lib/cfvpn-drift.sh
+. "$LIB/cfvpn-drift.sh"
+
+DRIFT_DIR="$TMPROOT/drift"; mkdir -p "$DRIFT_DIR"
+mk() { printf '%b' "$2" > "$DRIFT_DIR/$1"; echo "$DRIFT_DIR/$1"; }
+
+D1_OK=$(mk d1ok 'JPY-01\tkulinh\tuuid-a\tpassword-aaaa\nSIN-01\tkulinh\tuuid-b\tpassword-bbbb\n')
+NODE_OK=$(mk nodeok 'JPY-01\tkulinh\tuuid-a\tpassword-aaaa\nSIN-01\tkulinh\tuuid-b\tpassword-bbbb\n')
+OUT=$(drift_compare "$D1_OK" "$NODE_OK"); RC=$?
+is "$RC" "0" "in sync exits 0"
+is "$OUT" "" "in sync prints nothing"
+
+# The exact failure that took JPY-01 and SIN-01 down: the hy2 password on the
+# node drifted away from the one D1 hands to clients.
+NODE_PW=$(mk nodepw 'JPY-01\tkulinh\tuuid-a\tpassword-zzzz\nSIN-01\tkulinh\tuuid-b\tpassword-bbbb\n')
+OUT=$(drift_compare "$D1_OK" "$NODE_PW"); RC=$?
+is "$RC" "1" "hy2 password drift exits 1"
+contains "$OUT" "JPY-01	kulinh	hy2_pw" "hy2 password drift names node, user and field"
+case "$OUT" in *SIN-01*) bad "in-sync node reported as drifted" ;; *) ok "only the drifted node is reported" ;; esac
+
+# A credential must never be echoed in full by a diagnostic.
+case "$OUT" in
+  *password-zzzz*|*password-aaaa*) bad "drift output leaked a full credential" ;;
+  *) ok "credentials are masked in the output" ;;
+esac
+
+NODE_UUID=$(mk nodeuuid 'JPY-01\tkulinh\tuuid-WRONG\tpassword-aaaa\nSIN-01\tkulinh\tuuid-b\tpassword-bbbb\n')
+OUT=$(drift_compare "$D1_OK" "$NODE_UUID")
+contains "$OUT" "vless_uuid" "vless uuid drift is reported"
+
+# A user D1 promises but the node does not serve is just as broken.
+NODE_MISSING=$(mk nodemissing 'JPY-01\tkulinh\tuuid-a\tpassword-aaaa\n')
+OUT=$(drift_compare "$D1_OK" "$NODE_MISSING"); RC=$?
+is "$RC" "1" "user missing on the node exits 1"
+contains "$OUT" "node=<absent>" "user missing on the node is reported"
+
+NODE_EXTRA=$(mk nodeextra 'JPY-01\tkulinh\tuuid-a\tpassword-aaaa\nSIN-01\tkulinh\tuuid-b\tpassword-bbbb\nSIN-01\tghost\tuuid-g\tpassword-gggg\n')
+OUT=$(drift_compare "$D1_OK" "$NODE_EXTRA"); RC=$?
+is "$RC" "1" "user only on the node exits 1"
+contains "$OUT" "d1=<absent>" "user only on the node is reported"
+
+OUT=$(drift_compare "$DRIFT_DIR/nope" "$NODE_OK" 2>/dev/null); RC=$?
+is "$RC" "2" "unreadable input exits 2 (not mistaken for 'in sync')"
+
+
 printf '\n--------------------------------------------\n'
 printf 'scripts/tests: pass=%d fail=%d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
