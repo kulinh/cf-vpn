@@ -129,3 +129,49 @@ export async function probeHost(
   const elapsedMs = Math.round(deps.now() - started)
   return { nodeId, host, outcome: classifyProbe(resolved, elapsedMs), elapsedMs }
 }
+
+/**
+ * Rank for ordering a finished run: fastest first.
+ *
+ * A probe that reached the endpoint sorts by its elapsed time. Everything that
+ * did not is grouped after those, because their times measure different things
+ * — "blocked" is always the full timeout, and "not measured" is a page fault
+ * with no network component at all. Sorting those in with real round trips
+ * would put a 0 ms failure at the top of a list whose whole point is "fastest".
+ */
+export function outcomeRank(outcome: ProbeOutcome): number {
+  switch (outcome) {
+    case 'reachable':
+    case 'tls-refused':
+      return 0
+    case 'not-attempted':
+      return 1
+    case 'blocked':
+      return 2
+  }
+}
+
+/**
+ * sortByResult orders nodes fastest-first, leaving untested nodes in their
+ * original order at the end. Stable for equal keys, so a re-run does not
+ * reshuffle rows that tied.
+ */
+export function sortByResult<T extends { id: string }>(
+  nodes: readonly T[],
+  results: Readonly<Record<string, ProbeResult>>,
+): T[] {
+  return nodes
+    .map((node, index) => ({ node, index }))
+    .sort((a, b) => {
+      const ra = results[a.node.id]
+      const rb = results[b.node.id]
+      if (!ra && !rb) return a.index - b.index
+      if (!ra) return 1
+      if (!rb) return -1
+      const rankDiff = outcomeRank(ra.outcome) - outcomeRank(rb.outcome)
+      if (rankDiff !== 0) return rankDiff
+      if (ra.elapsedMs !== rb.elapsedMs) return ra.elapsedMs - rb.elapsedMs
+      return a.index - b.index
+    })
+    .map((entry) => entry.node)
+}

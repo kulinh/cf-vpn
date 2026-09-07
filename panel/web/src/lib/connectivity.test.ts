@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
-import { FAST_FAIL_MS, MIN_NETWORK_MS, classifyProbe, describeOutcome, probeHost } from './connectivity'
+import {
+  FAST_FAIL_MS,
+  MIN_NETWORK_MS,
+  classifyProbe,
+  describeOutcome,
+  probeHost,
+  sortByResult,
+} from './connectivity'
 
 describe('classifyProbe', () => {
   it('treats a completed request as reachable', () => {
@@ -122,5 +129,55 @@ describe('probeHost', () => {
     expect(result.outcome).toBe('tls-refused')
     expect(result.elapsedMs).toBe(50)
     expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+})
+
+describe('sortByResult', () => {
+  const nodes = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }]
+  const r = (id: string, outcome: Parameters<typeof describeOutcome>[0], elapsedMs: number) => ({
+    [id]: { nodeId: id, host: `${id}.example.com`, outcome, elapsedMs },
+  })
+
+  it('puts the fastest reachable node first', () => {
+    const results = {
+      ...r('a', 'reachable', 900),
+      ...r('b', 'tls-refused', 120),
+      ...r('c', 'reachable', 400),
+    }
+    expect(sortByResult(nodes, results).map((n) => n.id)).toEqual(['b', 'c', 'a', 'd'])
+  })
+
+  it('ranks a refused handshake with the reachable nodes, by time', () => {
+    // tls-refused IS reachable; grouping it after real successes would bury
+    // every direct-mode node below every Cloudflare one regardless of speed.
+    const results = { ...r('a', 'reachable', 800), ...r('b', 'tls-refused', 100) }
+    expect(sortByResult(nodes, results).map((n) => n.id)).toEqual(['b', 'a', 'c', 'd'])
+  })
+
+  it('keeps failures below every node that answered', () => {
+    // A blocked probe always costs the full timeout and a not-measured one
+    // costs nothing; neither time is comparable to a round trip.
+    const results = {
+      ...r('a', 'blocked', 6000),
+      ...r('b', 'not-attempted', 0),
+      ...r('c', 'reachable', 5000),
+    }
+    expect(sortByResult(nodes, results).map((n) => n.id)).toEqual(['c', 'b', 'a', 'd'])
+  })
+
+  it('leaves untested nodes at the end in their original order', () => {
+    const results = r('c', 'reachable', 10)
+    expect(sortByResult(nodes, results).map((n) => n.id)).toEqual(['c', 'a', 'b', 'd'])
+  })
+
+  it('is stable for equal times so a re-run does not reshuffle rows', () => {
+    const results = { ...r('a', 'reachable', 200), ...r('b', 'reachable', 200) }
+    expect(sortByResult(nodes, results).map((n) => n.id)).toEqual(['a', 'b', 'c', 'd'])
+  })
+
+  it('does not mutate the input array', () => {
+    const original = [...nodes]
+    sortByResult(nodes, r('d', 'reachable', 1))
+    expect(nodes).toEqual(original)
   })
 })
