@@ -1545,3 +1545,113 @@ func TestTunnelNameForNode(t *testing.T) {
 		}
 	}
 }
+
+// `cfvpnctl upgrade` re-runs the binary installers, but binary.Ensure* is a
+// no-op once the binary exists — so an upgrade never actually moved xray or
+// hysteria off the version the node was provisioned with. `--binaries` forces
+// the upstream installers to run, and must restart the services afterwards:
+// on this path no config changes, so the change-driven restarts never fire and
+// the freshly installed binaries would otherwise stay unused.
+func TestRunUpgradeWithBinariesForcesInstallAndRestarts(t *testing.T) {
+	dir := withUpgradeSeams(t)
+	if err := state.SaveAtomic(envFilePath, map[string]string{
+		"CF_API_TOKEN":   "t",
+		"CF_ACCOUNT_ID":  "a",
+		"DOMAIN":         "vpn.example.com",
+		"NODE_ID":        "JPY-04",
+		"USER1_NAME":     "alice",
+		"UUID_USER1":     "u-1",
+		"HY2_HOST":       "hy2.example.com",
+		"HY2_PORT":       "21000",
+		"HY2_OBFS_PW":    "existing-obfs",
+		"HY2_PASS_USER1": "existing-hy2pw",
+		"TUNNEL_UUID":    "2f8a1c3e-1111-4222-8333-abcdefabcdef",
+	}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		Users:       []templates.XrayUser{{Name: "alice", UUID: "u-1"}},
+		PrivateKey:  "test-priv-x25519",
+		ShortIDs:    []string{"abcd1234"},
+		Dest:        "www.microsoft.com:443",
+		ServerNames: []string{"www.microsoft.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomicFile(xrayConfigPath, []byte(rendered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomicFile(cloudflaredConfig, []byte("cloudflared config\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	binRunner := &installRecorder{}
+	sysRunner := &installRecorder{}
+	deps := InstallDeps{
+		CF:            &fakeInstallCF{zones: map[string]string{"example.com": "zone-1", adminHostZone: "admin-zone"}},
+		IP:            fakeInstallIP{ip: "203.0.113.42"},
+		Cert:          &fakeInstallCert{},
+		UFW:           &fakeUFW{},
+		UDPProber:     &fakeUDPProber{},
+		BinaryRunner:  binRunner,
+		SystemdRunner: sysRunner,
+	}
+	var out, errBuf bytes.Buffer
+	in := UpgradeInputs{BackupRoot: dir, Now: func() time.Time { return time.Unix(9999, 0) }, Binaries: true}
+	if _, err := RunUpgrade(context.Background(), in, deps, &out, &errBuf); err != nil {
+		t.Fatalf("RunUpgrade --binaries: %v", err)
+	}
+
+	binCalls := strings.Join(flattenCalls(binRunner.calls), "\n")
+	for _, want := range []string{"Xray-install", "get.hy2.sh"} {
+		if !strings.Contains(binCalls, want) {
+			t.Fatalf("binary runner never ran the %s installer:\n%s", want, binCalls)
+		}
+	}
+
+	if strings.Contains(binCalls, "cloudflared") {
+		t.Fatalf("--binaries must not touch cloudflared (it carries the admin tunnel):\n%s", binCalls)
+	}
+
+	sysCalls := strings.Join(flattenCalls(sysRunner.calls), "\n")
+	for _, unit := range []string{"cfvpn-xray.service", "cfvpn-hysteria.service", "cfvpn-cloudflared.service"} {
+		if !strings.Contains(sysCalls, "restart "+unit) {
+			t.Fatalf("%s was not restarted after a binary upgrade:\n%s", unit, sysCalls)
+		}
+	}
+}
+
+// Without --binaries the installers must stay no-ops on a node that already
+// has them: an ordinary upgrade must not silently pull a new upstream release.
+func TestRunUpgradeWithoutBinariesLeavesInstallersAlone(t *testing.T) {
+	dir := withUpgradeSeams(t)
+	seedUpgradeConfig(t)
+	binRunner := &installRecorder{}
+	deps := InstallDeps{
+		CF:            &fakeInstallCF{zones: map[string]string{"example.com": "zone-1", adminHostZone: "admin-zone"}},
+		IP:            fakeInstallIP{ip: "203.0.113.42"},
+		Cert:          &fakeInstallCert{},
+		UFW:           &fakeUFW{},
+		BinaryRunner:  binRunner,
+		SystemdRunner: &installRecorder{},
+	}
+	var out, errBuf bytes.Buffer
+	if _, err := RunUpgrade(context.Background(), UpgradeInputs{BackupRoot: dir, Now: func() time.Time { return time.Unix(1234, 0) }}, deps, &out, &errBuf); err != nil {
+		t.Fatalf("RunUpgrade: %v", err)
+	}
+	calls := strings.Join(flattenCalls(binRunner.calls), "\n")
+	for _, unwanted := range []string{"Xray-install", "get.hy2.sh"} {
+		if strings.Contains(calls, unwanted) {
+			t.Fatalf("plain upgrade ran the %s installer (binaries must be opt-in):\n%s", unwanted, calls)
+		}
+	}
+}
+
+func flattenCalls(calls [][]string) []string {
+	out := make([]string, 0, len(calls))
+	for _, c := range calls {
+		out = append(out, strings.Join(c, " "))
+	}
+	return out
+}

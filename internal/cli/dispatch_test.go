@@ -184,3 +184,19 @@ func writeDispatchEnv(t *testing.T) string {
 	}
 	return path
 }
+
+func TestParseUpgradeArgsBinariesFlag(t *testing.T) {
+	in, check, ok := parseUpgradeArgs([]string{"--binaries"}, false)
+	if !ok || check {
+		t.Fatalf("parseUpgradeArgs(--binaries) = ok:%v check:%v, want ok:true check:false", ok, check)
+	}
+	if !in.Binaries {
+		t.Fatal("Binaries = false, want true")
+	}
+	if plain, _, ok := parseUpgradeArgs(nil, false); !ok || plain.Binaries {
+		t.Fatalf("default Binaries = %v, want false", plain.Binaries)
+	}
+	if both, _, ok := parseUpgradeArgs([]string{"--mode", "cloudflare", "--binaries"}, false); !ok || !both.Binaries || both.Mode != "cloudflare" {
+		t.Fatalf("combined flags = %#v ok:%v", both, ok)
+	}
+}

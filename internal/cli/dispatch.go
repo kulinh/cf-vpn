@@ -59,6 +59,8 @@ func parseUpgradeArgs(args []string, allowCheck bool) (commands.UpgradeInputs, b
 				return commands.UpgradeInputs{}, false, false
 			}
 			check = true
+		case "--binaries":
+			in.Binaries = true
 		case "--mode":
 			if i+1 >= len(args) || (args[i+1] != "direct" && args[i+1] != "cloudflare" && args[i+1] != "auto") {
 				return commands.UpgradeInputs{}, false, false
@@ -141,7 +143,7 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "upgrade":
 		upgradeIn, check, ok := parseUpgradeArgs(args[1:], false)
 		if !ok || check {
-			fmt.Fprintln(stderr, "usage: cfvpnctl upgrade [--mode auto|direct|cloudflare]")
+			fmt.Fprintln(stderr, "usage: cfvpnctl upgrade [--mode auto|direct|cloudflare] [--binaries]")
 			return 2
 		}
 		env, err := state.Load(envFile)
