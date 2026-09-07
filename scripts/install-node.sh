@@ -17,6 +17,7 @@
 #     [USER1_NAME=alice] [MODE=direct] \
 #     bash scripts/install-node.sh
 #
+# USER1_NAME: defaults to kulinh, the fleet's single real account.
 # NODE_ID  : DNS label (case-insensitive); stored UPPERCASE in D1.
 # NODE_LABEL: human-readable name for the panel (defaults to uppercase NODE_ID).
 # FORCE_REINSTALL=1 : re-provision a node that already has credentials. This
@@ -43,9 +44,12 @@ require_env CF_API_TOKEN
 require_env CF_ACCOUNT_ID
 require_env NODE_ID
 
-: "${USER1_NAME:=user1}"
+# The fleet has a single real account; defaulting to it keeps a new node out of
+# the panel's user list as a stray "user1" that nobody uses.
+: "${USER1_NAME:=kulinh}"
 : "${MODE:=auto}"
 : "${DOMAIN:=}"
+: "${HY2_PORT:=}"
 
 # Normalize: lowercase for DNS/cfvpnctl, UPPERCASE for D1 storage
 NODE_ID="$(echo "$NODE_ID" | tr '[:upper:]' '[:lower:]')"
@@ -62,6 +66,17 @@ fi
 # USER1_NAME must match the xray validator: ^[A-Za-z0-9_-]{1,32}$
 if ! [[ "$USER1_NAME" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
   die "USER1_NAME must match ^[A-Za-z0-9_-]{1,32}\$ (got: $USER1_NAME)"
+fi
+
+# HY2_PORT is optional; cfvpnctl picks a random 20000-60000 port when it is
+# empty. Bound it here with the same rule the Go installer applies so a typo
+# fails before anything is mutated. An explicit port is what a node behind a
+# provider NAT needs: the port is advertised to clients verbatim, so the
+# external and internal numbers have to match.
+if [ -n "$HY2_PORT" ]; then
+  if ! [[ "$HY2_PORT" =~ ^[0-9]+$ ]] || [ "$HY2_PORT" -lt 1024 ] || [ "$HY2_PORT" -gt 65535 ]; then
+    die "HY2_PORT must be an integer in [1024,65535] (got: $HY2_PORT)"
+  fi
 fi
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -245,6 +260,7 @@ log "writing /etc/cfvpn/cfvpn.env"
   # `|| true`: this group is the left side of a pipe and `set -o pipefail` is
   # on, so a false AND-list here would abort the whole script.
   { [ -n "$DOMAIN" ] && printf 'DOMAIN=%s\n' "$DOMAIN"; } || true
+  { [ -n "$HY2_PORT" ] && printf 'HY2_PORT=%s\n' "$HY2_PORT"; } || true
 } | bash "$ENV_FILE_HELPER" write
 
 # ----- 6. firewall hygiene ----------------------------------------------------
