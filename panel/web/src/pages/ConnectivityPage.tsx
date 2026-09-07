@@ -64,7 +64,7 @@ export function ConnectivityPage() {
         <button
           type="button"
           onClick={runAll}
-          disabled={running || nodes.length === 0}
+          disabled={running}
           className="rounded bg-slate-900 px-3 py-1.5 text-sm text-white disabled:opacity-50 dark:bg-slate-100 dark:text-slate-900"
         >
           {running ? 'Testing…' : 'Run test'}
@@ -129,7 +129,10 @@ export function ConnectivityPage() {
       </table>
 
       {nodes.length === 0 && !loadError ? (
-        <p className="text-sm text-slate-500">No nodes with a VPN endpoint to test.</p>
+        <p className="text-sm text-slate-500">
+          No nodes with a VPN endpoint to test. The node list comes from the panel API — if you are
+          signed in and this stays empty, the API call failed rather than returning nothing.
+        </p>
       ) : null}
 
       <p className="text-xs text-slate-500">
