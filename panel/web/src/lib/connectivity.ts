@@ -22,7 +22,7 @@
  * therefore the signal, not success.
  */
 
-export type ProbeOutcome = 'reachable' | 'tls-refused' | 'blocked'
+export type ProbeOutcome = 'reachable' | 'tls-refused' | 'blocked' | 'not-attempted'
 
 export type ProbeResult = {
   nodeId: string
@@ -41,6 +41,25 @@ export const PROBE_TIMEOUT_MS = 6000
 export const FAST_FAIL_MS = 3000
 
 /**
+ * A rejection faster than this never reached the network.
+ *
+ * `fetch` rejects synchronously — in well under a millisecond — when the
+ * request is invalid before any I/O: a `mode: 'no-cors'` request with a
+ * redirect mode other than "follow" is rejected by the Fetch spec itself, and
+ * a Content-Security-Policy block behaves the same way. Both surface as the
+ * same `TypeError: Failed to fetch` as a genuine connection failure, so the
+ * error gives nothing away and only the elapsed time separates them.
+ *
+ * Without this floor, "rejected fast" reads as "the server declined the
+ * handshake" and a probe that never left the browser is reported as reachable
+ * — which is exactly what shipped, and what made every node show 0 ms.
+ *
+ * Measured from a browser: the quickest real rejection across the fleet was
+ * 136 ms, the invalid-request rejection was 0 ms. 25 ms sits far from both.
+ */
+export const MIN_NETWORK_MS = 25
+
+/**
  * classifyProbe maps one attempt onto an outcome.
  *
  * `resolved` means the browser completed a request, which requires both TCP and
@@ -51,6 +70,7 @@ export const FAST_FAIL_MS = 3000
  */
 export function classifyProbe(resolved: boolean, elapsedMs: number): ProbeOutcome {
   if (resolved) return 'reachable'
+  if (elapsedMs < MIN_NETWORK_MS) return 'not-attempted'
   return elapsedMs < FAST_FAIL_MS ? 'tls-refused' : 'blocked'
 }
 
@@ -62,6 +82,8 @@ export function describeOutcome(outcome: ProbeOutcome): string {
       return 'Reachable — TCP connected, the server declined the handshake. Expected for a Reality node; the endpoint is not blocked on this network.'
     case 'blocked':
       return 'No answer before the timeout — blocked, dropped, or the host does not resolve on this network.'
+    case 'not-attempted':
+      return 'The browser rejected the request before sending it, so nothing was measured. This is a fault in the page or its Content-Security-Policy, not a problem with the node.'
   }
 }
 
@@ -91,9 +113,11 @@ export async function probeHost(
   let resolved = false
   try {
     await deps.fetchImpl(`https://${host}/?probe=${started}`, {
+      // Do not set `redirect` here. The Fetch spec rejects a `no-cors`
+      // request whose redirect mode is not "follow" before it issues any I/O,
+      // which looks identical to a fast connection failure.
       mode: 'no-cors',
       cache: 'no-store',
-      redirect: 'manual',
       signal: controller.signal,
     })
     resolved = true
