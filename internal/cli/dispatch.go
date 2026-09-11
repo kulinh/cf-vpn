@@ -363,6 +363,16 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "xhttp":
+		if len(args) != 2 || (args[1] != "enable" && args[1] != "disable") {
+			fmt.Fprintln(stderr, "usage: cfvpnctl xhttp {enable|disable}")
+			return 2
+		}
+		if err := commands.RunXHTTPSet(ctx, args[1] == "enable", systemd.ExecRunner{}, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "hy2":
 		if len(args) != 2 || (args[1] != "enable" && args[1] != "disable") {
 			fmt.Fprintln(stderr, "usage: cfvpnctl hy2 {enable|disable}")

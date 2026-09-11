@@ -55,7 +55,10 @@ const cloudflaredWithAdminTemplate = `tunnel: {{.TunnelUUID}}
 credentials-file: /etc/cfvpn/cloudflared/{{.TunnelUUID}}.json
 {{if .Protocol}}protocol: {{.Protocol}}
 {{end}}ingress:
-  - hostname: {{.Domain}}
+{{if .XHTTP}}  - hostname: {{.Domain}}
+    path: ^/api/v2/stream
+    service: http://127.0.0.1:10002
+{{end}}  - hostname: {{.Domain}}
     path: ^/api/v1/sync
     service: http://127.0.0.1:10001
   - hostname: {{.AdminHost}}
@@ -119,13 +122,26 @@ func RenderCloudflaredAdmin(tunnelUUID, adminHost, protocol string) (string, err
 	return b.String(), err
 }
 
+// CloudflaredOptions are the per-node knobs of the cloudflare-mode tunnel
+// config: the transport (see RenderCloudflaredAdmin) and whether the XHTTP
+// ingress rule (XHTTPPath -> XHTTPPort) is emitted ahead of HTTPUpgrade.
+type CloudflaredOptions struct {
+	Protocol string
+	XHTTP    bool
+}
+
 // RenderCloudflaredWithAdmin renders the cloudflare-mode tunnel config (VPN +
-// admin ingress). protocol as in RenderCloudflaredAdmin.
+// admin ingress). protocol as in RenderCloudflaredAdmin; no XHTTP rule.
 func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost, protocol string) (string, error) {
+	return RenderCloudflaredWithAdminOpts(tunnelUUID, domain, adminHost, CloudflaredOptions{Protocol: protocol})
+}
+
+// RenderCloudflaredWithAdminOpts is RenderCloudflaredWithAdmin with every knob.
+func RenderCloudflaredWithAdminOpts(tunnelUUID, domain, adminHost string, opts CloudflaredOptions) (string, error) {
 	if err := validateCloudflaredInputs(tunnelUUID, map[string]string{"domain": domain, "admin host": adminHost}); err != nil {
 		return "", err
 	}
-	if err := validateCloudflaredProtocol(protocol); err != nil {
+	if err := validateCloudflaredProtocol(opts.Protocol); err != nil {
 		return "", err
 	}
 	t, err := template.New("cloudflared-with-admin").Parse(cloudflaredWithAdminTemplate)
@@ -133,7 +149,7 @@ func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost, protocol string) 
 		return "", err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "Domain": domain, "AdminHost": adminHost, "Protocol": protocol})
+	err = t.Execute(&b, map[string]any{"TunnelUUID": tunnelUUID, "Domain": domain, "AdminHost": adminHost, "Protocol": opts.Protocol, "XHTTP": opts.XHTTP})
 	return b.String(), err
 }
 
@@ -190,34 +206,65 @@ func standardRouting() map[string]any {
 	}
 }
 
+// RenderXrayCloudflareHTTPUpgrade renders the cloudflare-mode xray config
+// with the HTTPUpgrade inbound only.
 func RenderXrayCloudflareHTTPUpgrade(users []XrayUser, vpnHost string, dnsServers []string) (string, error) {
+	return RenderXrayCloudflare(users, vpnHost, dnsServers, false)
+}
+
+// RenderXrayCloudflare renders the cloudflare-mode xray config: the
+// HTTPUpgrade inbound on 10001 and, when xhttp is set, a second VLESS inbound
+// on XHTTPPort with network xhttp / XHTTPPath / XHTTPMode for the same users.
+func RenderXrayCloudflare(users []XrayUser, vpnHost string, dnsServers []string, xhttp bool) (string, error) {
 	clients := make([]map[string]string, 0, len(users))
 	for _, u := range users {
 		clients = append(clients, map[string]string{"id": u.UUID, "email": u.Name + "@vpn"})
 	}
-	cfg := map[string]any{
-		"log": map[string]string{"loglevel": "warning"},
-		"dns": dnsBlock(dnsServers),
-		"inbounds": []any{
-			map[string]any{
-				"tag":      "vless-httpupgrade",
-				"listen":   "127.0.0.1",
-				"port":     10001,
-				"protocol": "vless",
-				"settings": map[string]any{
-					"clients":    clients,
-					"decryption": "none",
-				},
-				"streamSettings": map[string]any{
-					"network": "httpupgrade",
-					"httpupgradeSettings": map[string]any{
-						"path": VLESSPath,
-						"host": vpnHost,
-					},
-				},
-				"sniffing": sniffingBlock(),
+	inbounds := []any{
+		map[string]any{
+			"tag":      "vless-httpupgrade",
+			"listen":   "127.0.0.1",
+			"port":     10001,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
 			},
+			"streamSettings": map[string]any{
+				"network": "httpupgrade",
+				"httpupgradeSettings": map[string]any{
+					"path": VLESSPath,
+					"host": vpnHost,
+				},
+			},
+			"sniffing": sniffingBlock(),
 		},
+	}
+	if xhttp {
+		inbounds = append(inbounds, map[string]any{
+			"tag":      "vless-xhttp",
+			"listen":   "127.0.0.1",
+			"port":     XHTTPPort,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]any{
+				"network": "xhttp",
+				"xhttpSettings": map[string]any{
+					"path": XHTTPPath,
+					"host": vpnHost,
+					"mode": XHTTPMode,
+				},
+			},
+			"sniffing": sniffingBlock(),
+		})
+	}
+	cfg := map[string]any{
+		"log":       map[string]string{"loglevel": "warning"},
+		"dns":       dnsBlock(dnsServers),
+		"inbounds":  inbounds,
 		"outbounds": standardOutbounds(),
 		"routing":   standardRouting(),
 	}

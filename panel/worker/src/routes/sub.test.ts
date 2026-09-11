@@ -383,3 +383,20 @@ describe("HY2 URIs dial the public IP and keep the hostname as sni", () => {
     expect(lines[1].startsWith("hysteria2://kulinh:p1@hy-c36ca6bd.dongnat247.com:31300/?")).toBe(true);
   });
 });
+
+describe("XHTTP line for cloudflare nodes with xhttp_enabled", () => {
+  const base = {
+    vless_uuid: "2f8a1c3e-1111-4222-8333-abcdefabcdef", hy2_pw: "p1", vpn_host: "static-df60bd79.duylinh.org", node_id: "or-001",
+    hy2_host: null, hy2_port: null, hy2_obfs_pw: null, public_ip: "51.81.245.144",
+    mode: "cloudflare" as const, reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: "/api/v1/sync",
+  };
+  it("matches the Go golden string byte for byte", () => {
+    const lines = buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 1 }]).split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#alice%40or-001-XHTTP");
+  });
+  it("emits nothing extra when disabled or for direct nodes", () => {
+    expect(buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 0 }]).split("\n")).toHaveLength(1);
+    expect(buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: null }]).split("\n")).toHaveLength(1);
+  });
+});

@@ -65,6 +65,11 @@ export function httpUpgradeName(username: string, nodeId: string): string {
 export function hy2Name(username: string, nodeId: string): string {
   return `${username}@${nodeId}-HY2`;
 }
+// XHTTP routes exist in the base64 subscription and the Shadowrocket groups
+// only: mihomo has no xhttp transport, so the Clash output omits them.
+export function xhttpName(username: string, nodeId: string): string {
+  return `${username}@${nodeId}-XHTTP`;
+}
 
 const AUTO_GROUP = "Auto";
 const SELECT_GROUP = "Proxy";

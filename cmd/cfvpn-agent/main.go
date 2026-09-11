@@ -63,6 +63,7 @@ type statusResponse struct {
 	RealitySNI     string `json:"reality_sni,omitempty"`
 	RealityDest    string `json:"reality_dest,omitempty"`
 	XHTTPPath      string `json:"xhttp_path,omitempty"`
+	XHTTPEnabled   bool   `json:"xhttp_enabled"`
 }
 
 // hy2Field blanks an HY2 value on a node whose HY2 is disabled, so the panel
@@ -232,6 +233,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		RealitySNI:     env[state.KeyRealitySNI],
 		RealityDest:    env[state.KeyRealityDest],
 		XHTTPPath:      env[state.KeyXHTTPPath],
+		XHTTPEnabled:   commands.XHTTPEnabled(env),
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -685,7 +687,7 @@ func renderXrayForMode(env map[string]string, users []commands.ExistingUser) (st
 	tplUsers := toTemplateUsers(users)
 	mode := strings.TrimSpace(env["MODE"])
 	if mode == "cloudflare" {
-		out, err := templates.RenderXrayCloudflareHTTPUpgrade(tplUsers, env["DOMAIN"], commands.XrayDNSServersFromEnv(env))
+		out, err := templates.RenderXrayCloudflare(tplUsers, env["DOMAIN"], commands.XrayDNSServersFromEnv(env), commands.XHTTPEnabled(env))
 		if err != nil {
 			return "", fmt.Errorf("render cloudflare xray: %w", err)
 		}

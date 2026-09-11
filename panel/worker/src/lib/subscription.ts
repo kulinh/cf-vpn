@@ -15,7 +15,13 @@ export interface SubscriptionRow {
   reality_sid: string | null;
   reality_sni: string | null;
   xhttp_path: string | null;
+  // 1 when the node also serves the XHTTP inbound (cfvpnctl xhttp enable).
+  // Optional so rows that predate the column still type-check.
+  xhttp_enabled?: number | null;
 }
+
+export const XHTTP_PATH = "/api/v2/stream";
+export const XHTTP_MODE = "packet-up";
 
 // Server-side hysteria uses `auth.type: userpass`, so the URI must include the
 // username before the password. Without it, the client gets a 404 auth error.
@@ -37,6 +43,17 @@ export function buildVLESSHTTPUpgradeURI(
 
 // address is what the client dials (public IP when known), sniHost the
 // hostname the HY2 certificate was issued for. Mirrors BuildHy2URI in Go.
+// Mirrors BuildVLESSXHTTPURI in internal/subscription.
+export function buildVLESSXHTTPURI(name: string, uuid: string, domain: string, path: string, mode: string): string {
+  const enc = encodeURIComponent;
+  const encPath = path.split("/").map(enc).join("%2F");
+  return `vless://${uuid}@${domain}:443?encryption=none&security=tls&type=xhttp&host=${enc(domain)}&path=${encPath}&mode=${enc(mode)}&sni=${enc(domain)}#${enc(name)}-XHTTP`;
+}
+
+export function hasXHTTP(r: SubscriptionRow): boolean {
+  return isCloudflareRow(r) && !!r.xhttp_enabled;
+}
+
 export function buildHy2URI(tag: string, username: string, password: string, address: string, sniHost: string, port: number, obfsPw: string): string {
   const enc = encodeURIComponent;
   return `hysteria2://${enc(username)}:${enc(password)}@${address}:${port}/?obfs=salamander&obfs-password=${enc(obfsPw)}&sni=${enc(sniHost)}&insecure=0#${enc(tag)}-HY2`;
@@ -94,6 +111,9 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
       continue;
     }
     lines.push(uri);
+    if (hasXHTTP(r)) {
+      lines.push(buildVLESSXHTTPURI(tag, r.vless_uuid, r.vpn_host, XHTTP_PATH, XHTTP_MODE));
+    }
     if (hasHy2(r)) {
       lines.push(buildHy2URI(tag, username, r.hy2_pw, hy2Address(r), r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!));
     } else if (r.hy2_host && r.hy2_port) {

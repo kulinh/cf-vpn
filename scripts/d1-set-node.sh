@@ -4,6 +4,7 @@
 #   bash scripts/d1-set-node.sh <NODE_ID> hy2-off   # NULL hy2_host/hy2_port/hy2_obfs_pw
 #   bash scripts/d1-set-node.sh <NODE_ID> hy2-on    # copy HY2_HOST/HY2_PORT/HY2_OBFS_PW from the node
 #   bash scripts/d1-set-node.sh <NODE_ID> reality   # copy REALITY_* + PUBLIC_IP from the node
+#   bash scripts/d1-set-node.sh <NODE_ID> xhttp-on|xhttp-off   # nodes.xhttp_enabled
 #
 # Why: the Worker only persists reality_*/hy2_* when the panel itself calls
 # the agent (node status / user sync), both behind Cloudflare Access. After a
@@ -61,7 +62,11 @@ case "$ACTION" in
     payload="$(jq -cn --arg id "$NODE" --arg pk "$pk" --arg sid "$sid" --arg sni "$sni" --arg dest "$dest" --arg ip "$ip" \
       '{sql:"UPDATE nodes SET reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, public_ip=? WHERE id=?", params:[$pk,$sid,$sni,$dest,$ip,$id]}')"
     ;;
-  *) echo "unknown action: $ACTION (hy2-off|hy2-on|reality)" >&2; exit 2 ;;
+  xhttp-on|xhttp-off)
+    v=0; [ "$ACTION" = "xhttp-on" ] && v=1
+    payload="$(jq -cn --arg id "$NODE" --argjson v "$v" '{sql:"UPDATE nodes SET xhttp_enabled=? WHERE id=?", params:[$v,$id]}')"
+    ;;
+  *) echo "unknown action: $ACTION (hy2-off|hy2-on|reality|xhttp-on|xhttp-off)" >&2; exit 2 ;;
 esac
 
 out="$(d1_query "$payload")"

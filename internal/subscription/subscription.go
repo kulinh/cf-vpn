@@ -86,6 +86,17 @@ func BuildVLESSHTTPUpgradeURI(name, uuid, domain, path string) string {
 	)
 }
 
+// BuildVLESSXHTTPURI builds the XHTTP client URI for a cloudflare-mode node
+// whose XHTTP inbound is enabled. Mirrors buildVLESSXHTTPURI() in
+// panel/worker/src/lib/subscription.ts.
+func BuildVLESSXHTTPURI(name, uuid, domain, path, mode string) string {
+	enc := EncodeURIComponent
+	return fmt.Sprintf(
+		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=%s&sni=%s#%s-XHTTP",
+		uuid, domain, enc(domain), encodeVLESSPath(path), enc(mode), enc(domain), enc(name),
+	)
+}
+
 // BuildHy2URI builds the Hysteria2 client URI. Mirrors buildHy2URI() in
 // panel/worker/src/lib/subscription.ts.
 //

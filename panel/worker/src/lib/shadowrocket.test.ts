@@ -81,3 +81,11 @@ describe("buildShadowrocketConfig", () => {
     expect(availableNames("kulinh", [broken])).toEqual([]);
   });
 });
+
+describe("XHTTP names", () => {
+  it("adds <node>-XHTTP to PROXY for cloudflare rows with xhttp_enabled, never to AUTO", () => {
+    const conf = buildShadowrocketConfig("kulinh", [{ ...row("OR-001", "cloudflare", false), xhttp_enabled: 1 }, row("SIN-01", "direct", false)]);
+    expect(conf).toContain("PROXY = select, AUTO, kulinh@OR-001-HTTPUpgrade, kulinh@OR-001-XHTTP, kulinh@SIN-01-Reality");
+    expect(conf).toContain("AUTO = url-test, kulinh@SIN-01-Reality, kulinh@OR-001-HTTPUpgrade, url = ");
+  });
+});

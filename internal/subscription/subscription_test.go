@@ -167,3 +167,11 @@ func TestBuildSubscriptionB64JoinsWithNewline(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, "YQpi")
 	}
 }
+
+func TestGoldenXHTTPURIMatchesWorker(t *testing.T) {
+	got := BuildVLESSXHTTPURI("alice@or-001", "2f8a1c3e-1111-4222-8333-abcdefabcdef", "static-df60bd79.duylinh.org", "/api/v2/stream", "packet-up")
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#alice%40or-001-XHTTP"
+	if got != want {
+		t.Fatalf("\n got %s\nwant %s", got, want)
+	}
+}

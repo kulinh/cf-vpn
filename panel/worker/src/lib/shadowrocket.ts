@@ -1,5 +1,6 @@
 import type { SubscriptionRow } from "./subscription";
-import { realityName, httpUpgradeName, hy2Name, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
+import { realityName, httpUpgradeName, hy2Name, xhttpName, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
+import { hasXHTTP } from "./subscription";
 
 // Shadowrocket ".conf" companion to the base64 subscription. The subscription
 // carries the nodes; this file carries the policy groups and rules that the
@@ -31,6 +32,9 @@ export function availableNames(username: string, rows: SubscriptionRow[]): strin
       names.push(realityName(username, r.node_id));
     } else if (isCloudflareRow(r)) {
       names.push(httpUpgradeName(username, r.node_id));
+      if (hasXHTTP(r)) {
+        names.push(xhttpName(username, r.node_id));
+      }
     } else {
       continue;
     }

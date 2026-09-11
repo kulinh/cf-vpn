@@ -488,7 +488,7 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			return fail(fmt.Errorf("render xray reality config: %w", err))
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, newHost, xrayDNSServersFromEnv(env))
+		xrayRendered, err = templates.RenderXrayCloudflare(users, newHost, xrayDNSServersFromEnv(env), XHTTPEnabled(env))
 		if err != nil {
 			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
 		}
@@ -509,7 +509,7 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			return fail(fmt.Errorf("render cloudflared admin config: %w", err))
 		}
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(oldTunnel, newHost, adminHost, env[state.KeyCloudflaredProtocol])
+		cfRendered, err = templates.RenderCloudflaredWithAdminOpts(oldTunnel, newHost, adminHost, templates.CloudflaredOptions{Protocol: env[state.KeyCloudflaredProtocol], XHTTP: XHTTPEnabled(env)})
 		if err != nil {
 			return fail(fmt.Errorf("render cloudflared config: %w", err))
 		}
@@ -649,7 +649,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 			return UpgradeResult{}, fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain, xrayDNSServersFromEnv(env))
+		xrayRendered, err = templates.RenderXrayCloudflare(users, domain, xrayDNSServersFromEnv(env), XHTTPEnabled(env))
 		if err != nil {
 			return UpgradeResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 		}
@@ -659,7 +659,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 	if in.Mode == "direct" {
 		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelUUID, adminHost, env[state.KeyCloudflaredProtocol])
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost, env[state.KeyCloudflaredProtocol])
+		cfRendered, err = templates.RenderCloudflaredWithAdminOpts(tunnelUUID, domain, adminHost, templates.CloudflaredOptions{Protocol: env[state.KeyCloudflaredProtocol], XHTTP: XHTTPEnabled(env)})
 	}
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("render cloudflared config: %w", err)
