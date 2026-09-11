@@ -1,0 +1,5 @@
+# /etc/cron.d/cfvpn-fleet-probe — probe every route from VNM-01 every 10 minutes.
+# Install: install -m 644 scripts/fleet-probe.cron /etc/cron.d/cfvpn-fleet-probe
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+*/10 * * * * root /usr/bin/python3 /opt/cf-vpn/scripts/fleet-probe.py --env /etc/cfvpn/fleet-probe.env >/dev/null 2>>/var/log/cfvpn-fleet-probe.err
