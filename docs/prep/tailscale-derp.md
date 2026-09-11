@@ -1,71 +1,41 @@
-# Custom Tailscale DERP relay on HKG-01 — prepared, not applied
+# Custom Tailscale DERP relay on HKG-01 — RELAY DEPLOYED 2026-09-12, ACL NOT APPLIED
 
-Status: **prepared 2026-09-12, nothing installed, ACL not changed.**
+Status: `derper` is **running on HKG-01**; the tailnet **ACL has not been
+changed** (that is done in the admin console by the operator). Until the ACL
+lists the region, no device uses it.
 
-Why HKG-01: it is a direct (Reality) node, so TCP 443 is taken by xray.
-derper therefore listens on **8443/tcp** for DERP and **3478/udp** for STUN.
-(SIN-01 would be identical; it was not chosen so the primary Reality node
-stays single-purpose.) If you want DERP on 443 instead, put derper on JPY-01
-or OR-001 where 443 is free (see the NaiveProxy prep for the port check) —
-but only one of NaiveProxy/DERP can own 443 there.
+| Item | Value |
+|---|---|
+| Hostname | `derp-f2a4f360.duylinh.net` → 96.9.228.81 (A, not proxied) |
+| DERP | TCP **8443** (443 is xray Reality on this node) |
+| STUN | UDP **3478** |
+| Binary | `/usr/local/bin/derper` (tailscale.com/cmd/derper@latest, built on VNM-01) |
+| Unit | `derper.service`: `derper --hostname derp-f2a4f360.duylinh.net -a :8443 --http-port -1 --stun --stun-port 3478 --certmode manual --certdir /etc/derper --verify-clients` |
+| Cert | Let's Encrypt via lego DNS-01, `/etc/derper/lego/certificates/` symlinked to `/etc/derper/<host>.crt|.key` |
+| ufw | `8443/tcp`, `3478/udp` |
 
-## 1. Hostname and certificate
+Verified from VNM-01: `https://derp-f2a4f360.duylinh.net:8443/derp/probe` → 200,
+STUN binding request (tailscale format, with FINGERPRINT) → 44-byte response.
+Note: a bare 20-byte STUN request without the FINGERPRINT attribute is
+ignored by derper; that is not a fault.
 
-- DNS: `derp-<8 hex>.duylinh.net` A → 96.9.228.81 (proxied **false**; DERP
-  must be reached directly).
-- Certificate via lego DNS-01 (already installed on every node for HY2):
+`--verify-clients` accepts only nodes of the tailnet the local `tailscaled`
+belongs to, so nobody else can relay through it.
 
-```bash
-export CF_DNS_API_TOKEN="$(awk -F= '/^CF_API_TOKEN=/{print $2}' /etc/cfvpn/cfvpn.env)"
-mkdir -p /etc/derper && chmod 700 /etc/derper
-lego --email admin@duylinh.net --dns cloudflare --domains <host> --path /etc/derper/lego --accept-tos run
-# derper --certmode manual expects <certdir>/<host>.crt and <host>.key
-ln -sf /etc/derper/lego/certificates/<host>.crt /etc/derper/<host>.crt
-ln -sf /etc/derper/lego/certificates/<host>.key /etc/derper/<host>.key
-```
+## Cert renewal (not automated yet)
 
-Renewal: add `lego ... renew --days 30` plus `systemctl restart derper` to a
-monthly cron (the cfvpn cert-renew timer does not know about this cert).
-
-## 2. derper
-
-```bash
-GOFLAGS= go install tailscale.com/cmd/derper@latest      # on VNM-01, then scp ~/go/bin/derper to HKG-01:/usr/local/bin/derper
-```
-
-`/etc/systemd/system/derper.service`:
+lego certs last 90 days (this one until ~2026-12-11). Add to root's crontab on HKG-01:
 
 ```
-[Unit]
-Description=Tailscale DERP relay
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/derper --hostname <host> -a :8443 --http-port -1 --stun --stun-port 3478 --certmode manual --certdir /etc/derper --verify-clients
-Restart=on-failure
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
+17 4 1 * * cd /etc/derper && CLOUDFLARE_DNS_API_TOKEN=$(awk -F= '/^CF_API_TOKEN=/{print $2}' /etc/cfvpn/cfvpn.env) lego --email admin@duylinh.net --dns cloudflare --domains derp-f2a4f360.duylinh.net --path /etc/derper/lego --accept-tos renew --days 30 && systemctl restart derper
 ```
 
-`--verify-clients` makes derper accept only nodes of the tailnet the local
-`tailscaled` belongs to (HKG-01 is already on the tailnet). `--http-port -1`
-disables the plain-HTTP listener.
+## ACL — to apply in the admin console (Access Controls → policy file)
 
-```bash
-ufw allow 8443/tcp && ufw allow 3478/udp
-systemctl daemon-reload && systemctl enable --now derper
-curl -sk https://<host>:8443/derp/probe -o /dev/null -w '%{http_code}\n'   # 200
-```
-
-## 3. ACL snippet (tailnet policy file, Access Controls in the admin console)
+Step 1, add the region **without** omitting the defaults and verify:
 
 ```json
 "derpMap": {
-  "OmitDefaultRegions": true,
   "Regions": {
     "900": {
       "RegionID": 900,
@@ -75,7 +45,7 @@ curl -sk https://<host>:8443/derp/probe -o /dev/null -w '%{http_code}\n'   # 200
         {
           "Name": "900a",
           "RegionID": 900,
-          "HostName": "<host>",
+          "HostName": "derp-f2a4f360.duylinh.net",
           "DERPPort": 8443,
           "STUNPort": 3478
         }
@@ -85,16 +55,15 @@ curl -sk https://<host>:8443/derp/probe -o /dev/null -w '%{http_code}\n'   # 200
 }
 ```
 
-## 4. Apply order (when you decide to)
+Check on two devices: `tailscale netcheck` shows region 900 with a latency;
+`tailscale debug derp 900` reports no errors; `tailscale ping <peer>` shows
+`via DERP(hkg)` for a pair without a direct path.
 
-1. Add the region **without** `OmitDefaultRegions` first. Run
-   `tailscale netcheck` on two devices: region 900 must appear with a
-   latency. Run `tailscale ping <peer>` and confirm `via DERP(hkg)` appears
-   for a peer that cannot connect directly.
-2. Only then set `"OmitDefaultRegions": true`. From that moment HKG-01 is the
-   **only** relay for the whole tailnet: if it is down, every device pair
-   without a direct path loses connectivity, including the SSH-over-Tailscale
-   fleet access from VNM-01. Keep the public-IP :17722 SSH path as the
-   fallback (it exists on every node).
-3. Rollback = remove `derpMap` from the policy file; devices return to the
-   default regions within a minute.
+Step 2, only then, add `"OmitDefaultRegions": true` inside `derpMap`. From that
+moment HKG-01 is the **only** relay for the tailnet: if it is down, every
+device pair without a direct path loses connectivity, including
+SSH-over-Tailscale from VNM-01. The public-IP `:17722` SSH path on every node
+remains the fallback.
+
+Rollback = remove `derpMap`; devices return to the default regions within a
+minute. On the node: `systemctl disable --now derper; ufw delete allow 8443/tcp; ufw delete allow 3478/udp`.
