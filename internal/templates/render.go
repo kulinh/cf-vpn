@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"text/template"
 
 	"github.com/kulinh/cf-vpn/internal/hysteria"
@@ -212,10 +213,29 @@ func RenderXrayCloudflareHTTPUpgrade(users []XrayUser, vpnHost string, dnsServer
 	return RenderXrayCloudflare(users, vpnHost, dnsServers, false)
 }
 
+// XrayCloudflareOptions are the optional inbounds of a cloudflare-mode node.
+type XrayCloudflareOptions struct {
+	XHTTP      bool   // second inbound on XHTTPPort behind the Cloudflare tunnel
+	DirectHost string // direct XHTTP route: TLS hostname served by the local TLS front
+	DirectPath string // direct XHTTP route: the one path the front proxies to XHTTPDirectPort
+}
+
 // RenderXrayCloudflare renders the cloudflare-mode xray config: the
 // HTTPUpgrade inbound on 10001 and, when xhttp is set, a second VLESS inbound
 // on XHTTPPort with network xhttp / XHTTPPath / XHTTPMode for the same users.
 func RenderXrayCloudflare(users []XrayUser, vpnHost string, dnsServers []string, xhttp bool) (string, error) {
+	return RenderXrayCloudflareOpts(users, vpnHost, dnsServers, XrayCloudflareOptions{XHTTP: xhttp})
+}
+
+// RenderXrayCloudflareOpts is RenderXrayCloudflare with every optional inbound.
+func RenderXrayCloudflareOpts(users []XrayUser, vpnHost string, dnsServers []string, opts XrayCloudflareOptions) (string, error) {
+	xhttp := opts.XHTTP
+	if (opts.DirectHost == "") != (opts.DirectPath == "") {
+		return "", errors.New("direct xhttp route needs both host and path")
+	}
+	if opts.DirectPath != "" && !strings.HasPrefix(opts.DirectPath, "/") {
+		return "", errors.New("direct xhttp path must start with /")
+	}
 	clients := make([]map[string]string, 0, len(users))
 	for _, u := range users {
 		clients = append(clients, map[string]string{"id": u.UUID, "email": u.Name + "@vpn"})
@@ -256,6 +276,27 @@ func RenderXrayCloudflare(users []XrayUser, vpnHost string, dnsServers []string,
 					"path": XHTTPPath,
 					"host": vpnHost,
 					"mode": XHTTPMode,
+				},
+			},
+			"sniffing": sniffingBlock(),
+		})
+	}
+	if opts.DirectHost != "" {
+		inbounds = append(inbounds, map[string]any{
+			"tag":      "vless-xhttp-direct",
+			"listen":   "127.0.0.1",
+			"port":     XHTTPDirectPort,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]any{
+				"network": "xhttp",
+				"xhttpSettings": map[string]any{
+					"path": opts.DirectPath,
+					"host": opts.DirectHost,
+					"mode": XHTTPDirectMode,
 				},
 			},
 			"sniffing": sniffingBlock(),

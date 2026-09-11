@@ -400,3 +400,19 @@ describe("XHTTP line for cloudflare nodes with xhttp_enabled", () => {
     expect(buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: null }]).split("\n")).toHaveLength(1);
   });
 });
+
+describe("XHTTP-Direct line", () => {
+  const base = {
+    vless_uuid: "2f8a1c3e-1111-4222-8333-abcdefabcdef", hy2_pw: "p1", vpn_host: "edge-fd34b370.rwl247.dev", node_id: "JPY-01",
+    hy2_host: null, hy2_port: null, hy2_obfs_pw: null, public_ip: "45.143.131.36",
+    mode: "cloudflare" as const, reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: "/api/v1/sync", xhttp_enabled: 0,
+  };
+  it("matches the Go golden string and uses the hostname, not the IP", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn-82169439.duylinh.net", xhttp_direct_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10" }]).split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#kulinh%40JPY-01-XHTTP-Direct");
+  });
+  it("needs both host and path", () => {
+    expect(buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn.example.com", xhttp_direct_path: null }]).split("\n")).toHaveLength(1);
+  });
+});

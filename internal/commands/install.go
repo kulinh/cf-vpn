@@ -488,7 +488,7 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			return fail(fmt.Errorf("render xray reality config: %w", err))
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflare(users, newHost, xrayDNSServersFromEnv(env), XHTTPEnabled(env))
+		xrayRendered, err = templates.RenderXrayCloudflareOpts(users, newHost, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 		if err != nil {
 			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
 		}
@@ -649,7 +649,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 			return UpgradeResult{}, fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflare(users, domain, xrayDNSServersFromEnv(env), XHTTPEnabled(env))
+		xrayRendered, err = templates.RenderXrayCloudflareOpts(users, domain, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 		if err != nil {
 			return UpgradeResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 		}

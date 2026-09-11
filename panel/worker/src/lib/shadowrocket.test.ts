@@ -89,3 +89,11 @@ describe("XHTTP names", () => {
     expect(conf).toContain("AUTO = url-test, kulinh@SIN-01-Reality, kulinh@OR-001-HTTPUpgrade, url = ");
   });
 });
+
+describe("XHTTP-Direct names", () => {
+  it("adds <node>-XHTTP-Direct to PROXY only, never to AUTO", () => {
+    const conf = buildShadowrocketConfig("kulinh", [{ ...row("JPY-01", "cloudflare", true), xhttp_direct_host: "cdn.example.com", xhttp_direct_path: "/abc" }, row("SIN-01", "direct", false)]);
+    expect(conf).toContain("PROXY = select, AUTO, HY2-BACKUP, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-XHTTP-Direct, kulinh@JPY-01-HY2, kulinh@SIN-01-Reality");
+    expect(conf).toContain("AUTO = url-test, kulinh@SIN-01-Reality, kulinh@JPY-01-HY2, url = ");
+  });
+});

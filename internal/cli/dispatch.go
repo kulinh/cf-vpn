@@ -373,6 +373,54 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "xhttp-direct":
+		usage := "usage: cfvpnctl xhttp-direct enable --host <host> --path </long-random-path> | disable"
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		var host, path string
+		switch args[1] {
+		case "disable":
+			if len(args) != 2 {
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+		case "enable":
+			for i := 2; i < len(args); i++ {
+				switch args[i] {
+				case "--host":
+					if i+1 >= len(args) {
+						fmt.Fprintln(stderr, usage)
+						return 2
+					}
+					host = args[i+1]
+					i++
+				case "--path":
+					if i+1 >= len(args) {
+						fmt.Fprintln(stderr, usage)
+						return 2
+					}
+					path = args[i+1]
+					i++
+				default:
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+			}
+			if host == "" || path == "" {
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+		default:
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := commands.RunXHTTPDirectSet(ctx, host, path, systemd.ExecRunner{}, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "hy2":
 		if len(args) != 2 || (args[1] != "enable" && args[1] != "disable") {
 			fmt.Fprintln(stderr, "usage: cfvpnctl hy2 {enable|disable}")

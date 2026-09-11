@@ -78,6 +78,9 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 		if XHTTPEnabled(env) {
 			lines = append(lines, subscription.BuildVLESSXHTTPURI(tag, uuid, domain, templates.XHTTPPath, templates.XHTTPMode))
 		}
+		if dh, dp := strings.TrimSpace(env[state.KeyXHTTPDirectHost]), strings.TrimSpace(env[state.KeyXHTTPDirectPath]); dh != "" && dp != "" {
+			lines = append(lines, subscription.BuildVLESSXHTTPDirectURI(tag, uuid, dh, dp, templates.XHTTPDirectMode))
+		}
 	default:
 		warnf(warn, "warning: MODE=%q is not \"direct\" or \"cloudflare\"; emitting no VLESS URI for %q "+
 			"— this node's mode is unknown, so no transport can be described", mode, name)

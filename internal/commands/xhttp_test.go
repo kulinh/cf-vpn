@@ -61,3 +61,36 @@ func TestXHTTPTemplatesAgree(t *testing.T) {
 		t.Fatal("xhttp ingress must be absent when disabled")
 	}
 }
+
+func TestBuildUserURIsAddsXHTTPDirectLine(t *testing.T) {
+	env := map[string]string{"MODE": "cloudflare", "NODE_ID": "JPY-01", "HY2_ENABLED": "0",
+		"XHTTP_DIRECT_HOST": "cdn-82169439.duylinh.net", "XHTTP_DIRECT_PATH": "/3e6f9770dcd50c91"}
+	lines := buildUserURIs("kulinh", "uuid", "edge-fd34b370.rwl247.dev", "", env, nil)
+	if len(lines) != 2 {
+		t.Fatalf("expected HTTPUpgrade + XHTTP-Direct, got %v", lines)
+	}
+	want := "vless://uuid@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c91&mode=stream-one&sni=cdn-82169439.duylinh.net#kulinh%40JPY-01-XHTTP-Direct"
+	if lines[1] != want {
+		t.Fatalf("direct line:\n got %s\nwant %s", lines[1], want)
+	}
+	env["XHTTP_DIRECT_PATH"] = ""
+	if lines := buildUserURIs("kulinh", "uuid", "d.example", "", env, nil); len(lines) != 1 {
+		t.Fatalf("half-configured direct route must emit nothing extra, got %v", lines)
+	}
+}
+
+func TestRenderXrayCloudflareOptsDirectInbound(t *testing.T) {
+	out, err := templates.RenderXrayCloudflareOpts([]templates.XrayUser{{Name: "a", UUID: "u"}}, "vpn.example.com", nil,
+		templates.XrayCloudflareOptions{XHTTP: true, DirectHost: "cdn.example.com", DirectPath: "/abc123def456ghi789"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"tag": "vless-xhttp-direct"`, `"port": 10003`, `"path": "/abc123def456ghi789"`, `"host": "cdn.example.com"`, `"mode": "stream-one"`, `"tag": "vless-xhttp"`, `"tag": "vless-httpupgrade"`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing %s:\n%s", want, out)
+		}
+	}
+	if _, err := templates.RenderXrayCloudflareOpts(nil, "vpn.example.com", nil, templates.XrayCloudflareOptions{DirectHost: "x.example.com"}); err == nil {
+		t.Fatal("host without path must be rejected")
+	}
+}

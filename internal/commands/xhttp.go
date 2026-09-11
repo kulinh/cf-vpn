@@ -55,7 +55,7 @@ func RunXHTTPSet(ctx context.Context, enable bool, runner systemd.Runner, stdout
 	if err != nil {
 		return err
 	}
-	xrayRendered, err := templates.RenderXrayCloudflare(users, domain, xrayDNSServersFromEnv(env), enable)
+	xrayRendered, err := templates.RenderXrayCloudflareOpts(users, domain, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 	if err != nil {
 		return fmt.Errorf("render xray cloudflare config: %w", err)
 	}

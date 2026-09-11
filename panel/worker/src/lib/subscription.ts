@@ -18,7 +18,12 @@ export interface SubscriptionRow {
   // 1 when the node also serves the XHTTP inbound (cfvpnctl xhttp enable).
   // Optional so rows that predate the column still type-check.
   xhttp_enabled?: number | null;
+  // Direct XHTTP route (TLS front on the node's own hostname); both set = on.
+  xhttp_direct_host?: string | null;
+  xhttp_direct_path?: string | null;
 }
+
+export const XHTTP_DIRECT_MODE = "stream-one";
 
 export const XHTTP_PATH = "/api/v2/stream";
 export const XHTTP_MODE = "packet-up";
@@ -52,6 +57,18 @@ export function buildVLESSXHTTPURI(name: string, uuid: string, domain: string, p
 
 export function hasXHTTP(r: SubscriptionRow): boolean {
   return isCloudflareRow(r) && !!r.xhttp_enabled;
+}
+
+export function hasXHTTPDirect(r: SubscriptionRow): boolean {
+  return isCloudflareRow(r) && !!r.xhttp_direct_host && !!r.xhttp_direct_path;
+}
+
+// Mirrors BuildVLESSXHTTPDirectURI in internal/subscription: real TLS on the
+// node's own hostname, so the address is the hostname, never the IP.
+export function buildVLESSXHTTPDirectURI(name: string, uuid: string, host: string, path: string, mode: string): string {
+  const enc = encodeURIComponent;
+  const encPath = path.split("/").map(enc).join("%2F");
+  return `vless://${uuid}@${host}:443?encryption=none&security=tls&type=xhttp&host=${enc(host)}&path=${encPath}&mode=${enc(mode)}&sni=${enc(host)}#${enc(name)}-XHTTP-Direct`;
 }
 
 export function buildHy2URI(tag: string, username: string, password: string, address: string, sniHost: string, port: number, obfsPw: string): string {
@@ -113,6 +130,9 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
     lines.push(uri);
     if (hasXHTTP(r)) {
       lines.push(buildVLESSXHTTPURI(tag, r.vless_uuid, r.vpn_host, XHTTP_PATH, XHTTP_MODE));
+    }
+    if (hasXHTTPDirect(r)) {
+      lines.push(buildVLESSXHTTPDirectURI(tag, r.vless_uuid, r.xhttp_direct_host!, r.xhttp_direct_path!, XHTTP_DIRECT_MODE));
     }
     if (hasHy2(r)) {
       lines.push(buildHy2URI(tag, username, r.hy2_pw, hy2Address(r), r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!));

@@ -97,6 +97,18 @@ func BuildVLESSXHTTPURI(name, uuid, domain, path, mode string) string {
 	)
 }
 
+// BuildVLESSXHTTPDirectURI builds the URI of the direct (not via Cloudflare)
+// XHTTP route: real TLS on the node's own hostname, so the address MUST be the
+// hostname. Mirrors buildVLESSXHTTPDirectURI() in
+// panel/worker/src/lib/subscription.ts.
+func BuildVLESSXHTTPDirectURI(name, uuid, host, path, mode string) string {
+	enc := EncodeURIComponent
+	return fmt.Sprintf(
+		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=%s&sni=%s#%s-XHTTP-Direct",
+		uuid, host, enc(host), encodeVLESSPath(path), enc(mode), enc(host), enc(name),
+	)
+}
+
 // BuildHy2URI builds the Hysteria2 client URI. Mirrors buildHy2URI() in
 // panel/worker/src/lib/subscription.ts.
 //

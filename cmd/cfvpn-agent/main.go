@@ -46,24 +46,26 @@ func firstNonEmpty(values ...string) string {
 }
 
 type statusResponse struct {
-	Xray           string `json:"xray"`
-	Cloudflared    string `json:"cloudflared"`
-	Hysteria       string `json:"hysteria"`
-	VpnHost        string `json:"vpn_host"`
-	Zone           string `json:"zone,omitempty"`
-	PublicIP       string `json:"public_ip,omitempty"`
-	Mode           string `json:"mode,omitempty"`
-	Hy2Host        string `json:"hy2_host,omitempty"`
-	Hy2Port        int    `json:"hy2_port,omitempty"`
-	Hy2ObfsPW      string `json:"hy2_obfs_pw,omitempty"`
-	TunnelUUID     string `json:"tunnel_uuid"`
-	LastRotateAt   int64  `json:"last_rotate_at"`
-	RealityPubKey  string `json:"reality_pubkey,omitempty"`
-	RealityShortID string `json:"reality_sid,omitempty"`
-	RealitySNI     string `json:"reality_sni,omitempty"`
-	RealityDest    string `json:"reality_dest,omitempty"`
-	XHTTPPath      string `json:"xhttp_path,omitempty"`
-	XHTTPEnabled   bool   `json:"xhttp_enabled"`
+	Xray            string `json:"xray"`
+	Cloudflared     string `json:"cloudflared"`
+	Hysteria        string `json:"hysteria"`
+	VpnHost         string `json:"vpn_host"`
+	Zone            string `json:"zone,omitempty"`
+	PublicIP        string `json:"public_ip,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	Hy2Host         string `json:"hy2_host,omitempty"`
+	Hy2Port         int    `json:"hy2_port,omitempty"`
+	Hy2ObfsPW       string `json:"hy2_obfs_pw,omitempty"`
+	TunnelUUID      string `json:"tunnel_uuid"`
+	LastRotateAt    int64  `json:"last_rotate_at"`
+	RealityPubKey   string `json:"reality_pubkey,omitempty"`
+	RealityShortID  string `json:"reality_sid,omitempty"`
+	RealitySNI      string `json:"reality_sni,omitempty"`
+	RealityDest     string `json:"reality_dest,omitempty"`
+	XHTTPPath       string `json:"xhttp_path,omitempty"`
+	XHTTPEnabled    bool   `json:"xhttp_enabled"`
+	XHTTPDirectHost string `json:"xhttp_direct_host,omitempty"`
+	XHTTPDirectPath string `json:"xhttp_direct_path,omitempty"`
 }
 
 // hy2Field blanks an HY2 value on a node whose HY2 is disabled, so the panel
@@ -216,24 +218,26 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp := statusResponse{
-		Xray:           serviceState("cfvpn-xray.service"),
-		Cloudflared:    serviceState("cfvpn-cloudflared.service"),
-		Hysteria:       serviceState("cfvpn-hysteria.service"),
-		VpnHost:        env["DOMAIN"],
-		Zone:           zoneForHost(env["DOMAIN"]),
-		PublicIP:       env["PUBLIC_IP"],
-		Mode:           env["MODE"],
-		Hy2Host:        hy2Field(env, env["HY2_HOST"]),
-		Hy2Port:        parseInt(hy2Field(env, env["HY2_PORT"])),
-		Hy2ObfsPW:      hy2Field(env, env["HY2_OBFS_PW"]),
-		TunnelUUID:     firstNonEmpty(env["ADMIN_TUNNEL_UUID"], env["TUNNEL_UUID"]),
-		LastRotateAt:   parseInt64(env["LAST_ROTATE_AT"]),
-		RealityPubKey:  env[state.KeyRealityPub],
-		RealityShortID: env[state.KeyRealityShortID],
-		RealitySNI:     env[state.KeyRealitySNI],
-		RealityDest:    env[state.KeyRealityDest],
-		XHTTPPath:      env[state.KeyXHTTPPath],
-		XHTTPEnabled:   commands.XHTTPEnabled(env),
+		Xray:            serviceState("cfvpn-xray.service"),
+		Cloudflared:     serviceState("cfvpn-cloudflared.service"),
+		Hysteria:        serviceState("cfvpn-hysteria.service"),
+		VpnHost:         env["DOMAIN"],
+		Zone:            zoneForHost(env["DOMAIN"]),
+		PublicIP:        env["PUBLIC_IP"],
+		Mode:            env["MODE"],
+		Hy2Host:         hy2Field(env, env["HY2_HOST"]),
+		Hy2Port:         parseInt(hy2Field(env, env["HY2_PORT"])),
+		Hy2ObfsPW:       hy2Field(env, env["HY2_OBFS_PW"]),
+		TunnelUUID:      firstNonEmpty(env["ADMIN_TUNNEL_UUID"], env["TUNNEL_UUID"]),
+		LastRotateAt:    parseInt64(env["LAST_ROTATE_AT"]),
+		RealityPubKey:   env[state.KeyRealityPub],
+		RealityShortID:  env[state.KeyRealityShortID],
+		RealitySNI:      env[state.KeyRealitySNI],
+		RealityDest:     env[state.KeyRealityDest],
+		XHTTPPath:       env[state.KeyXHTTPPath],
+		XHTTPEnabled:    commands.XHTTPEnabled(env),
+		XHTTPDirectHost: env[state.KeyXHTTPDirectHost],
+		XHTTPDirectPath: env[state.KeyXHTTPDirectPath],
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -687,7 +691,7 @@ func renderXrayForMode(env map[string]string, users []commands.ExistingUser) (st
 	tplUsers := toTemplateUsers(users)
 	mode := strings.TrimSpace(env["MODE"])
 	if mode == "cloudflare" {
-		out, err := templates.RenderXrayCloudflare(tplUsers, env["DOMAIN"], commands.XrayDNSServersFromEnv(env), commands.XHTTPEnabled(env))
+		out, err := templates.RenderXrayCloudflareOpts(tplUsers, env["DOMAIN"], commands.XrayDNSServersFromEnv(env), commands.XrayCloudflareOptsFromEnv(env))
 		if err != nil {
 			return "", fmt.Errorf("render cloudflare xray: %w", err)
 		}

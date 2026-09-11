@@ -1,6 +1,6 @@
 import type { SubscriptionRow } from "./subscription";
-import { realityName, httpUpgradeName, hy2Name, xhttpName, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
-import { hasXHTTP } from "./subscription";
+import { realityName, httpUpgradeName, hy2Name, xhttpName, xhttpDirectName, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
+import { hasXHTTP, hasXHTTPDirect } from "./subscription";
 
 // Shadowrocket ".conf" companion to the base64 subscription. The subscription
 // carries the nodes; this file carries the policy groups and rules that the
@@ -34,6 +34,10 @@ export function availableNames(username: string, rows: SubscriptionRow[]): strin
       names.push(httpUpgradeName(username, r.node_id));
       if (hasXHTTP(r)) {
         names.push(xhttpName(username, r.node_id));
+      }
+      // Direct route: a standalone backup node in PROXY, never in AUTO.
+      if (hasXHTTPDirect(r)) {
+        names.push(xhttpDirectName(username, r.node_id));
       }
     } else {
       continue;

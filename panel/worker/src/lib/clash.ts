@@ -70,6 +70,9 @@ export function hy2Name(username: string, nodeId: string): string {
 export function xhttpName(username: string, nodeId: string): string {
   return `${username}@${nodeId}-XHTTP`;
 }
+export function xhttpDirectName(username: string, nodeId: string): string {
+  return `${username}@${nodeId}-XHTTP-Direct`;
+}
 
 const AUTO_GROUP = "Auto";
 const SELECT_GROUP = "Proxy";

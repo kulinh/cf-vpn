@@ -503,7 +503,7 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		return RotateDirectResult{}, err
 	}
 
-	xrayRendered, err := templates.RenderXrayCloudflare(users, in.NewHost, xrayDNSServersFromEnv(env), XHTTPEnabled(env))
+	xrayRendered, err := templates.RenderXrayCloudflareOpts(users, in.NewHost, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 	}

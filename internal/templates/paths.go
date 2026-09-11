@@ -16,3 +16,11 @@ const XHTTPMode = "packet-up"
 
 // XHTTPPort is the local port of the XHTTP inbound (HTTPUpgrade is 10001).
 const XHTTPPort = 10002
+
+// XHTTPDirectPort is the local port of the direct (not via Cloudflare) XHTTP
+// inbound; a TLS front on :443 reverse-proxies one secret path to it.
+const XHTTPDirectPort = 10003
+
+// XHTTPDirectMode is the client mode for the direct route: no CDN in the way,
+// so a single bidirectional stream is fine.
+const XHTTPDirectMode = "stream-one"
