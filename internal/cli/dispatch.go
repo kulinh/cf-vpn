@@ -46,6 +46,8 @@ func installFromEnv(env map[string]string) (commands.InstallInputs, error) {
 		Hy2PassUser1:    env["HY2_PASS_USER1"],
 		AdminTunnelUUID: env["ADMIN_TUNNEL_UUID"],
 		XrayDNSServers:  env["XRAY_DNS_SERVERS"],
+		RealityDest:     env["REALITY_DEST"],
+		RealitySNI:      env["REALITY_SNI"],
 	}, nil
 }
 
@@ -324,6 +326,39 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 2
 		}
 		if err := commands.RunTuneNet(ctx, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "rotate-reality":
+		var dest, sni string
+		usage := "usage: cfvpnctl rotate-reality --dest <host:443> [--sni <host>]"
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--dest":
+				if i+1 >= len(args) {
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+				dest = args[i+1]
+				i++
+			case "--sni":
+				if i+1 >= len(args) {
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+				sni = args[i+1]
+				i++
+			default:
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+		}
+		if dest == "" {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := commands.RunRotateReality(ctx, commands.RotateRealityInputs{Dest: dest, SNI: sni}, systemd.ExecRunner{}, nil, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}

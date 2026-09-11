@@ -55,6 +55,10 @@ type InstallInputs struct {
 	// XrayDNSServers is the optional comma-separated resolver override from
 	// XRAY_DNS_SERVERS. Empty means the international DoH default.
 	XrayDNSServers string
+	// RealityDest / RealitySNI pick the Reality steal target for a fresh
+	// install (REALITY_DEST / REALITY_SNI in the env file); empty = package default.
+	RealityDest string
+	RealitySNI  string
 }
 
 // InstallCFClient is the Cloudflare dependency required by RunInstall.
@@ -465,7 +469,9 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 		var ok bool
 		realityParams, ok = loadRealityFromEnv(env)
 		if !ok {
-			realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{})
+			// Honor an operator-chosen dest/SNI already in the env file so a
+			// per-node steal target survives a key regeneration.
+			realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{Dest: env[state.KeyRealityDest], SNI: env[state.KeyRealitySNI]})
 			if err != nil {
 				return fail(fmt.Errorf("generate reality params: %w", err))
 			}
@@ -1166,11 +1172,11 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	var realityParams xray.RealityParams
 	if in.Mode == "direct" {
 		var err error
-		realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{})
+		realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{Dest: in.RealityDest, SNI: in.RealitySNI})
 		if err != nil {
 			return fmt.Errorf("generate reality params: %w", err)
 		}
-		fmt.Fprintf(stdout, "generated Reality keypair (pub: %s)\n", realityParams.PublicKey)
+		fmt.Fprintf(stdout, "generated Reality keypair (pub: %s, dest %s)\n", realityParams.PublicKey, realityParams.Dest)
 	}
 
 	fmt.Fprintln(stdout, "configuring dns...")
