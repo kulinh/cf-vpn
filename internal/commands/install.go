@@ -1322,7 +1322,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	fmt.Fprintf(stdout, "install complete: %s mode %s -> %s, admin %s\n", in.Mode, domain, ip, adminHost)
 	var vlessURI string
 	if in.Mode == "direct" {
-		vlessURI = subscription.BuildVLESSRealityURI(in.User1Name, userUUID, domain,
+		vlessURI = subscription.BuildVLESSRealityURI(in.User1Name, userUUID, ip,
 			realityParams.SNI, realityParams.PublicKey, realityParams.ShortID)
 	} else {
 		// Phase 0: XHTTP failed through cloudflared; using HTTPUpgrade instead

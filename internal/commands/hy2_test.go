@@ -79,3 +79,19 @@ func TestRunReconcileUnitsRetiresHysteriaWhenDisabled(t *testing.T) {
 		t.Fatalf("second run must be a no-op, got:\n%s", recorderCalls(rec2))
 	}
 }
+
+func TestDirectURIUsesPublicIP(t *testing.T) {
+	env := map[string]string{
+		"MODE": "direct", "NODE_ID": "SIN-01", "PUBLIC_IP": "96.9.231.74", "HY2_ENABLED": "0",
+		"REALITY_PUBLIC_KEY": "pbk", "REALITY_SHORT_ID": "sid", "REALITY_SNI": "www.singaporeair.com",
+	}
+	lines := buildUserURIs("kulinh", "uuid", "assets-b7e69185.rwl.one", "", env, nil)
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "vless://uuid@96.9.231.74:443?") {
+		t.Fatalf("got %v", lines)
+	}
+	delete(env, "PUBLIC_IP")
+	lines = buildUserURIs("kulinh", "uuid", "assets-b7e69185.rwl.one", "", env, nil)
+	if !strings.HasPrefix(lines[0], "vless://uuid@assets-b7e69185.rwl.one:443?") {
+		t.Fatalf("without PUBLIC_IP the domain must be used, got %v", lines)
+	}
+}

@@ -2,6 +2,10 @@ export interface SubscriptionRow {
   vless_uuid: string;
   hy2_pw: string;
   vpn_host: string;
+  // Public IPv4 of a direct node. Reality URIs address the node by IP so the
+  // client never resolves vpn_host (DNS for it is interfered with from China).
+  // Optional so older callers/tests that predate the column still type-check.
+  public_ip?: string | null;
   hy2_host: string | null;
   hy2_port: number | null;
   hy2_obfs_pw: string | null;
@@ -36,6 +40,25 @@ export function buildHy2URI(tag: string, username: string, password: string, hos
   return `hysteria2://${enc(username)}:${enc(password)}@${host}:${port}/?obfs=salamander&obfs-password=${enc(obfsPw)}&sni=${enc(host)}&insecure=0#${enc(tag)}-HY2`;
 }
 
+// Row predicates shared by the base64, Clash and Shadowrocket builders so the
+// three formats never disagree about which nodes a user has.
+export function isRealityRow(r: SubscriptionRow): boolean {
+  return r.mode === "direct" && !!r.reality_pubkey && !!r.reality_sid && !!r.reality_sni;
+}
+export function isCloudflareRow(r: SubscriptionRow): boolean {
+  return r.mode === "cloudflare";
+}
+export function hasHy2(r: SubscriptionRow): boolean {
+  return !!r.hy2_host && !!r.hy2_port && !!r.hy2_obfs_pw;
+}
+
+// realityHost is what a Reality client dials: the node's public IP when D1
+// has one, else the hostname (legacy rows, or a node whose agent has not yet
+// reported an IP).
+export function realityHost(r: SubscriptionRow): string {
+  return r.public_ip && r.public_ip.length > 0 ? r.public_ip : r.vpn_host;
+}
+
 const warnedMissingObfs = new Set<string>();
 
 function warnMissingObfs(nodeId: string): void {
@@ -51,10 +74,10 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
   for (const r of rows) {
     const tag = `${username}@${r.node_id}`;
     let uri: string;
-    if (r.mode === "direct" && r.reality_pubkey && r.reality_sid && r.reality_sni) {
-      uri = buildVLESSRealityURI(tag, r.vless_uuid, r.vpn_host,
-        r.reality_sni, r.reality_pubkey, r.reality_sid);
-    } else if (r.mode === "cloudflare") {
+    if (isRealityRow(r)) {
+      uri = buildVLESSRealityURI(tag, r.vless_uuid, realityHost(r),
+        r.reality_sni!, r.reality_pubkey!, r.reality_sid!);
+    } else if (isCloudflareRow(r)) {
       const path = r.xhttp_path ?? "/api/v1/sync";
       uri = buildVLESSHTTPUpgradeURI(tag, r.vless_uuid, r.vpn_host, path);
     } else {
@@ -63,8 +86,8 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
       continue;
     }
     lines.push(uri);
-    if (r.hy2_host && r.hy2_port && r.hy2_obfs_pw) {
-      lines.push(buildHy2URI(tag, username, r.hy2_pw, r.hy2_host, r.hy2_port, r.hy2_obfs_pw));
+    if (hasHy2(r)) {
+      lines.push(buildHy2URI(tag, username, r.hy2_pw, r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!));
     } else if (r.hy2_host && r.hy2_port) {
       // The node has a Hysteria2 endpoint but no obfs password, so the line is
       // dropped and the user silently loses HY2 on that node. Output is

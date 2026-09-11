@@ -60,7 +60,14 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 				"an HTTPUpgrade URI would be served by nothing on this node",
 				pub, sid, sni, name)
 		} else {
-			lines = append(lines, subscription.BuildVLESSRealityURI(tag, uuid, domain, sni, pub, sid))
+			// Reality clients dial the node's public IP: the Worker does the
+			// same (realityHost in subscription.ts), and it spares the client a
+			// DNS lookup of DOMAIN, which is interfered with from China.
+			host := strings.TrimSpace(env[state.KeyPublicIP])
+			if host == "" {
+				host = domain
+			}
+			lines = append(lines, subscription.BuildVLESSRealityURI(tag, uuid, host, sni, pub, sid))
 		}
 	case "cloudflare":
 		path := env[state.KeyXHTTPPath]

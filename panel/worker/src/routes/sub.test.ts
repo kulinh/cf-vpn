@@ -204,6 +204,7 @@ describe("publicSubscription", () => {
 
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe("invalid_format");
+    expect((await res.json().catch(() => ({})) as { detail?: string }).detail ?? "supported: clash, shadowrocket").toContain("shadowrocket");
   });
 
   it("keeps the default (no format) body byte-identical", async () => {
@@ -343,5 +344,26 @@ describe("buildSubscriptionURIs mode branching", () => {
     }];
     const uris = buildSubscriptionURIs("kulinh", rows);
     expect(uris).toBe("");
+  });
+});
+
+describe("Reality URIs address the node by public IP", () => {
+  const base = {
+    vless_uuid: "u1", hy2_pw: "p1", vpn_host: "assets-b7e69185.rwl.one", node_id: "SIN-01",
+    hy2_host: null, hy2_port: null, hy2_obfs_pw: null,
+    mode: "direct" as const, reality_pubkey: "pk", reality_sid: "sid", reality_sni: "www.singaporeair.com", xhttp_path: null as string | null,
+  };
+  it("uses public_ip when D1 has it", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: "96.9.231.74" }]).split("\n");
+    expect(lines[0].startsWith("vless://u1@96.9.231.74:443?")).toBe(true);
+    expect(lines[0]).toContain("sni=www.singaporeair.com");
+  });
+  it("falls back to vpn_host when public_ip is null", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: null }]).split("\n");
+    expect(lines[0].startsWith("vless://u1@assets-b7e69185.rwl.one:443?")).toBe(true);
+  });
+  it("keeps the hostname for cloudflare routes even when public_ip is set", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, mode: "cloudflare" as const, node_id: "OR-001", vpn_host: "static-df60bd79.duylinh.org", public_ip: "51.81.245.144", xhttp_path: "/api/v1/sync" }]).split("\n");
+    expect(lines[0].startsWith("vless://u1@static-df60bd79.duylinh.org:443?")).toBe(true);
   });
 });

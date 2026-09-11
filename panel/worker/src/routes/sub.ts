@@ -2,6 +2,7 @@ import type { Env } from "../types";
 import { all, one } from "../lib/db";
 import { buildSubscriptionURIs, encodeSubscriptionBody, type SubscriptionRow } from "../lib/subscription";
 import { buildClashConfig } from "../lib/clash";
+import { buildShadowrocketConfig } from "../lib/shadowrocket";
 import { error } from "../lib/http";
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
@@ -24,8 +25,9 @@ export async function publicSubscription(env: Env, token: string, format?: strin
   // typo'd ?format= would otherwise hand a Clash client a base64 blob it cannot
   // parse, with no clue why.
   const wantsClash = format === "clash";
-  if (format != null && format !== "" && !wantsClash) {
-    return error(400, { error: "invalid_format", detail: "supported: clash (omit for base64)" });
+  const wantsShadowrocket = format === "shadowrocket";
+  if (format != null && format !== "" && !wantsClash && !wantsShadowrocket) {
+    return error(400, { error: "invalid_format", detail: "supported: clash, shadowrocket (omit for base64)" });
   }
 
   const user = await one<{ id: string }>(
@@ -37,9 +39,22 @@ export async function publicSubscription(env: Env, token: string, format?: strin
 
   const rows = await all<SubscriptionRow>(
     env.DB.prepare(
-      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, un.node_id, n.hy2_host, n.hy2_port, n.hy2_obfs_pw, n.mode, n.reality_pubkey, n.reality_sid, n.reality_sni, n.xhttp_path FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
+      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, n.public_ip, un.node_id, n.hy2_host, n.hy2_port, n.hy2_obfs_pw, n.mode, n.reality_pubkey, n.reality_sid, n.reality_sni, n.xhttp_path FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
     ).bind(user.id)
   );
+
+  if (wantsShadowrocket) {
+    // A Shadowrocket .conf: policy groups + rules only. The nodes themselves
+    // come from the base64 subscription, whose names the groups reference.
+    return new Response(buildShadowrocketConfig(user.id, rows), {
+      status: 200,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+        "content-disposition": `attachment; filename="${PROFILE_TITLE}.conf"`,
+        "cache-control": "no-store, private"
+      }
+    });
+  }
 
   if (wantsClash) {
     return new Response(buildClashConfig(user.id, rows), {
