@@ -89,6 +89,36 @@ User mutations (add/remove/sync) re-render the xray config in-place using the ac
 
 `cfvpnctl rotate-domain <new-domain>` (without `--cleanup`) is **deprecated**; domain rotation is now driven from the panel (`POST /api/nodes/:id/rotate`) which calls the agent's `/admin/v1/rotate-domain`.
 
+## DERP relays and china-mode
+
+The tailnet runs its own DERP relays (`derper` on HKG-01 and JPY-01, see
+`docs/prep/tailscale-derp.md`). `cfvpnctl derp` edits the tailnet policy
+file's `derpMap` through the Tailscale API and touches nothing else in the
+policy (comments included). It needs an OAuth client with the **Policy File:
+Write** scope in `/etc/cfvpn/tailscale-oauth.env` (mode 600):
+
+```
+TS_OAUTH_CLIENT_ID=...
+TS_OAUTH_CLIENT_SECRET=...
+```
+
+```bash
+cfvpnctl derp show                 # current flag + regions
+cfvpnctl derp china-mode on        # before flying to China: devices use ONLY our relays
+cfvpnctl derp china-mode off       # back home: public relays + our relays (normal)
+cfvpnctl derp region add --id 901 --code jpy --name JPY-01 --host derp-xxxx.duylinh.net   # ports default 8443/3478
+cfvpnctl derp region remove --id 901
+```
+
+Every edit snapshots the policy before and after into
+`/root/cfvpn-backups/acl/<timestamp>.{before,after}.json`, validates it with
+the API's dry run, and writes with `If-Match` so a concurrent console edit is
+refused rather than overwritten. `china-mode` then runs `tailscale netcheck`
+on this machine and prints it, so you see the regions that are in effect.
+`china-mode on` refuses to run when no custom region exists, and `region
+remove` refuses to delete the last region while china-mode is on — either
+would strand every device without a direct path.
+
 ## Network tuning (BBR)
 
 `cfvpnctl install` and `cfvpnctl upgrade` apply the node network tuning
