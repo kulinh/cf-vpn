@@ -119,9 +119,12 @@ Secrets in `/etc/cfvpn/fleet-probe.env` (mode 600): `TELEGRAM_BOT_TOKEN`
 `docs/prep/` gets three documents with copy-paste configs, enable steps and
 rollback steps:
 
-- `naiveproxy-sin-01.md`: Caddy + forwardproxy on `:8443` (Reality keeps
-  443), hostname under `duylinh.net`, Let's Encrypt via Caddy, ufw rule,
-  Shadowrocket line. Kept out of AUTO; exported as its own file.
+- `naiveproxy-jpy-01-or-001.md`: Caddy + forwardproxy on JPY-01 and OR-001
+  (operator decision 2026-09-12: not SIN-01). Both are cloudflare-mode nodes,
+  so `:443` is free (xray listens on 127.0.0.1:10001 and cloudflared dials
+  out); Caddy takes the standard `:443`. One hostname per node under
+  `duylinh.net`, Let's Encrypt via Caddy DNS-01, ufw rule, Shadowrocket line.
+  Kept out of AUTO; exported as its own file.
 - `xhttp-cloudflare-nodes.md`: XHTTP inbound for OR-001, VNM-01, JPY-01 as a
   second inbound on 10002 with a distinct path, cloudflared ingress line,
   client URI; enable = add inbound + ingress, rollback = remove both. Notes
