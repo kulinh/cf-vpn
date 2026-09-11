@@ -99,9 +99,15 @@ dest, probe 204, drift khớp.
 
 `scripts/fleet-probe.py` (hiểu reality/httpupgrade/xhttp mọi mode + HY2), cron
 10 phút, log `/var/log/cfvpn-fleet-probe.log`, state
-`/var/lib/cfvpn/fleet-probe.state`, Telegram sau 2 lần fail liên tiếp. Cron tự
-chạy từ 20:20Z, không có FAIL nào từ cron. **Cần anh:** dán
-`TELEGRAM_BOT_TOKEN` vào `/etc/cfvpn/fleet-probe.env`.
+`/var/lib/cfvpn/fleet-probe.state`, Telegram sau 2 lần fail liên tiếp (và một
+lần khi hồi phục). Cron tự chạy từ 20:20Z, không có FAIL nào từ cron.
+
+**Telegram đã hoạt động (21:5xZ):** token `@rwl_vpn_bot` nằm trong
+`/etc/cfvpn/fleet-probe.env` (mode 600, gitignore), chat id `-1003806233980`
+= group "RWL Hub". Ban đầu Telegram trả "chat not found" vì bot chưa ở trong
+group — khác bot của Worker; anh thêm `@rwl_vpn_bot` vào group là gửi được.
+Đã gửi một tin nhắn test thật qua đúng hàm `send_telegram` của probe và nhận
+`ok=true`.
 
 ## Việc 6 — đã deploy
 
@@ -225,9 +231,7 @@ pass, shellcheck sạch. Test thật từ Trung Quốc vẫn là bước kiểm 
 
 ## Việc anh còn phải làm tay
 
-1. **Telegram token** cho fleet-probe: dán `TELEGRAM_BOT_TOKEN` vào
-   `/etc/cfvpn/fleet-probe.env` trên VNM-01.
-2. **Import `final/RWL8899.conf`** trên Shadowrocket, xác nhận AUTO (5),
+1. **Import `final/RWL8899.conf`** trên Shadowrocket, xác nhận AUTO (5),
    HY2-BACKUP (6) và node lẻ `JPY-01-XHTTP-Direct`.
 3. **Gỡ forward 5373→443** trên NAT TierHive (do anh tạo tay, không còn gì trả lời sau nó).
 4. **Cloudflare API token** trong `.claude/settings.local.json`: xoay hoặc dọn rule.
