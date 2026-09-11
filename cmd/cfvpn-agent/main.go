@@ -65,6 +65,15 @@ type statusResponse struct {
 	XHTTPPath      string `json:"xhttp_path,omitempty"`
 }
 
+// hy2Field blanks an HY2 value on a node whose HY2 is disabled, so the panel
+// never learns an endpoint nothing is listening on.
+func hy2Field(env map[string]string, v string) string {
+	if !commands.Hy2Enabled(env) {
+		return ""
+	}
+	return v
+}
+
 type healthcheckResponse struct {
 	OK        bool  `json:"ok"`
 	Code      int   `json:"code"`
@@ -213,9 +222,9 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		Zone:           zoneForHost(env["DOMAIN"]),
 		PublicIP:       env["PUBLIC_IP"],
 		Mode:           env["MODE"],
-		Hy2Host:        env["HY2_HOST"],
-		Hy2Port:        parseInt(env["HY2_PORT"]),
-		Hy2ObfsPW:      env["HY2_OBFS_PW"],
+		Hy2Host:        hy2Field(env, env["HY2_HOST"]),
+		Hy2Port:        parseInt(hy2Field(env, env["HY2_PORT"])),
+		Hy2ObfsPW:      hy2Field(env, env["HY2_OBFS_PW"]),
 		TunnelUUID:     firstNonEmpty(env["ADMIN_TUNNEL_UUID"], env["TUNNEL_UUID"]),
 		LastRotateAt:   parseInt64(env["LAST_ROTATE_AT"]),
 		RealityPubKey:  env[state.KeyRealityPub],
@@ -620,7 +629,7 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	if err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("load env: %w", err)
 	}
-	result := commands.RotateDirectResult{VpnHost: env["DOMAIN"], PublicIP: env["PUBLIC_IP"], Hy2Host: env["HY2_HOST"], Hy2Port: parseInt(env["HY2_PORT"]), Hy2ObfsPW: env["HY2_OBFS_PW"]}
+	result := commands.RotateDirectResult{VpnHost: env["DOMAIN"], PublicIP: env["PUBLIC_IP"], Hy2Host: hy2Field(env, env["HY2_HOST"]), Hy2Port: parseInt(hy2Field(env, env["HY2_PORT"])), Hy2ObfsPW: hy2Field(env, env["HY2_OBFS_PW"])}
 	rendered, err := renderXrayForMode(env, users)
 	if err != nil {
 		return nil, commands.RotateDirectResult{}, err
@@ -652,11 +661,16 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	for i, u := range reqUsers {
 		hy2Users[i] = hysteria.User{Name: u.Name, Password: u.Hy2PW}
 	}
+	// The hysteria user list is kept current even on a node with HY2 disabled
+	// (so `cfvpnctl hy2 enable` comes back with the right passwords), but the
+	// unit is gone on such a node, so there is nothing to reload.
 	if err := hysteria.SetUsers(hysteriaConfigPath, hy2Users); err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("set hysteria users: %w", err)
 	}
-	if err := hysteria.ReloadService(ctx, systemd.ExecRunner{}); err != nil {
-		return nil, commands.RotateDirectResult{}, fmt.Errorf("reload hysteria: %w", err)
+	if commands.Hy2Enabled(env) {
+		if err := hysteria.ReloadService(ctx, systemd.ExecRunner{}); err != nil {
+			return nil, commands.RotateDirectResult{}, fmt.Errorf("reload hysteria: %w", err)
+		}
 	}
 	if err := commands.RegenerateSubscriptions(env["DOMAIN"]); err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("regenerate subscriptions: %w", err)

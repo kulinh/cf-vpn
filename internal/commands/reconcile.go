@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
 )
 
@@ -15,18 +17,34 @@ import (
 // a node, keyed by filename and rendered against the current config paths.
 // Units are deterministic functions of these constant paths (no state, no
 // randomness), so rewriting them is always safe and idempotent. Both install
-// and reconcile derive their unit set from here.
+// and reconcile derive their unit set from here. The only input is whether
+// HY2 is enabled for this node (HY2_ENABLED in cfvpn.env).
 func canonicalUnits() map[string]string {
-	return map[string]string{
+	env, err := state.Load(envFilePath)
+	if err != nil {
+		env = map[string]string{}
+	}
+	return canonicalUnitsFor(Hy2Enabled(env))
+}
+
+// hysteriaUnit is the unit reconcile retires when HY2 is disabled.
+const hysteriaUnit = "cfvpn-hysteria.service"
+
+// canonicalUnitsFor is canonicalUnits with the HY2 decision made explicit.
+func canonicalUnitsFor(hy2 bool) map[string]string {
+	units := map[string]string{
 		"cfvpn-xray.service":        systemd.XrayService(xrayConfigPath),
 		"cfvpn-cloudflared.service": systemd.CloudflaredService(cloudflaredConfig),
 		"cfvpn-agent.service":       systemd.AgentService(),
-		"cfvpn-hysteria.service":    systemd.HysteriaService(hysteriaConfigPath),
 		"cfvpn-cert-renew.service":  systemd.CertRenewService(),
 		"cfvpn-cert-renew.timer":    systemd.CertRenewTimer(),
 		"cfvpn-healthcheck.service": systemd.HealthcheckService(),
 		"cfvpn-healthcheck.timer":   systemd.HealthcheckTimer(),
 	}
+	if hy2 {
+		units[hysteriaUnit] = systemd.HysteriaService(hysteriaConfigPath)
+	}
+	return units
 }
 
 // longRunningUnits are the daemon services that must be restarted to pick up a
@@ -83,12 +101,19 @@ func runReconcileUnitsLocked(ctx context.Context, runner systemd.Runner, stdout 
 	if err != nil {
 		return err
 	}
-	if len(changed) == 0 {
+	retired, err := retireHysteriaUnit(ctx, r)
+	if err != nil {
+		return err
+	}
+	if len(changed) == 0 && !retired {
 		fmt.Fprintln(stdout, "systemd units already in sync")
 		return nil
 	}
 	if err := systemd.DaemonReload(ctx, r); err != nil {
 		return fmt.Errorf("systemctl daemon-reload: %w", err)
+	}
+	if retired {
+		fmt.Fprintf(stdout, "reconciled %s (HY2 disabled: stopped, disabled, unit removed)\n", hysteriaUnit)
 	}
 	for _, name := range changed {
 		switch {
@@ -104,4 +129,26 @@ func runReconcileUnitsLocked(ctx context.Context, runner systemd.Runner, stdout 
 		fmt.Fprintf(stdout, "reconciled %s\n", name)
 	}
 	return nil
+}
+
+// retireHysteriaUnit stops, disables and removes cfvpn-hysteria.service when
+// HY2 is disabled for this node and the unit file is still present. Returns
+// true when it did something; enabled nodes and already-retired nodes are
+// untouched. The hysteria config and cert stay on disk so `hy2 enable` can
+// bring the unit straight back.
+func retireHysteriaUnit(ctx context.Context, r systemd.Runner) (bool, error) {
+	if _, ok := canonicalUnits()[hysteriaUnit]; ok {
+		return false, nil
+	}
+	path := filepath.Join(systemdUnitDir, hysteriaUnit)
+	if _, err := os.Stat(path); err != nil {
+		return false, nil
+	}
+	if err := systemd.DisableNow(ctx, r, hysteriaUnit); err != nil {
+		return false, fmt.Errorf("disable %s: %w", hysteriaUnit, err)
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("remove %s: %w", path, err)
+	}
+	return true, nil
 }

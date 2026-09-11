@@ -87,6 +87,9 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 // tag names the fragment (matches the Worker's `<user>@<node>`); name is the
 // bare username used for the userpass auth in the URI's authority.
 func buildHy2Line(tag, name, hy2PW string, env map[string]string, warn io.Writer) (string, bool) {
+	if !Hy2Enabled(env) {
+		return "", false
+	}
 	host := env[state.KeyHy2Host]
 	if host == "" {
 		return "", false

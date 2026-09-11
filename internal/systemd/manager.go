@@ -35,6 +35,12 @@ func EnableNow(ctx context.Context, r Runner, unit string) error {
 	return r.Run(ctx, "systemctl", "enable", "--now", unit)
 }
 
+// DisableNow stops the unit and removes it from the boot set in one call
+// (`systemctl disable --now`), the inverse of EnableNow.
+func DisableNow(ctx context.Context, r Runner, unit string) error {
+	return r.Run(ctx, "systemctl", "disable", "--now", unit)
+}
+
 func Restart(ctx context.Context, r Runner, unit string) error {
 	return r.Run(ctx, "systemctl", "restart", unit)
 }

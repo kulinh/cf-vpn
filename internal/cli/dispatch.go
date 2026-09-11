@@ -328,6 +328,21 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "hy2":
+		if len(args) != 2 || (args[1] != "enable" && args[1] != "disable") {
+			fmt.Fprintln(stderr, "usage: cfvpnctl hy2 {enable|disable}")
+			return 2
+		}
+		env, err := state.Load(envFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", envFile, err)
+			return 1
+		}
+		if err := commands.RunHy2Set(ctx, args[1] == "enable", buildInstallDeps(env), stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "reconcile-units":
 		if err := commands.RunReconcileUnits(ctx, systemd.ExecRunner{}, stdout); err != nil {
 			fmt.Fprintln(stderr, err)

@@ -69,6 +69,8 @@ type InstallCFClient interface {
 
 type UFWRunner interface {
 	Allow(ctx context.Context, rule string) error
+	// Delete removes a rule previously added with Allow (`ufw delete allow <rule>`).
+	Delete(ctx context.Context, rule string) error
 }
 
 type PortProber interface {
@@ -1372,6 +1374,10 @@ type execUFW struct{}
 func NewExecUFW() UFWRunner { return execUFW{} }
 func (execUFW) Allow(ctx context.Context, rule string) error {
 	return systemd.ExecRunner{}.Run(ctx, "ufw", "allow", rule)
+}
+
+func (execUFW) Delete(ctx context.Context, rule string) error {
+	return systemd.ExecRunner{}.Run(ctx, "ufw", "delete", "allow", rule)
 }
 
 type TCP443Prober struct{}

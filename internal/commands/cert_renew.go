@@ -45,6 +45,10 @@ func RunCertRenew(ctx context.Context, env map[string]string, deps CertRenewDeps
 		return fmt.Errorf("CF_API_TOKEN is required for cert renewal")
 	}
 
+	if !Hy2Enabled(env) {
+		fmt.Fprintln(stdout, "cert-renew: HY2 disabled on this node (HY2_ENABLED=0); nothing to do")
+		return nil
+	}
 	hy2Host := strings.TrimSpace(env[state.KeyHy2Host])
 	if hy2Host == "" {
 		fmt.Fprintln(stdout, "cert-renew: no cert hosts configured (HY2_HOST empty); nothing to do")
