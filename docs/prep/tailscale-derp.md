@@ -1,9 +1,11 @@
-# Custom Tailscale DERP relay on HKG-01 — DEPLOYED, ACL APPLIED 2026-09-12
+# Custom Tailscale DERP relay on HKG-01 — DEPLOYED 2026-09-12
 
-Status: `derper` runs on HKG-01 and the tailnet policy now carries
-`derpMap` with `"OmitDefaultRegions": true` — region 900 (HKG-01) is the
-**only** relay for the tailnet. Applied through the Tailscale API in two steps
-(region added first and verified, then the defaults omitted).
+Status: `derper` runs on HKG-01 and the tailnet policy carries `derpMap`
+with region 900 (HKG-01). `OmitDefaultRegions` was set to `true` for ~40
+minutes on 2026-09-12 and then **reverted to `false`** (operator decision,
+see the SIN-01 gap below): the public relays are back and region 900 is an
+extra region. The flag is now managed by `cfvpnctl derp china-mode on|off`
+(on = only the custom regions, for travel inside China).
 
 | Item | Value |
 |---|---|
@@ -22,13 +24,13 @@ reports a successful DERP connection and an IPv4 STUN response; 8 clients
 connected to derper; SSH over Tailscale to USA-01, SIN-01, JPY-02 still works
 (direct paths).
 
-## Known gap: SIN-01 cannot reach the relay
+## Known gap: SIN-01 cannot reach the HKG-01 relay
 
 From SIN-01 (GreenCloud SG, 96.9.231.74) the public IP of HKG-01 (GreenCloud
 HK, 96.9.228.81) is unreachable on every port and to ping, in **both**
 directions, while SIN-01 reaches other providers fine. This predates the DERP
 work (it is the providers' routing between their own sites) but it means
-SIN-01 has **no relay** now: it still connects directly to every peer that
+SIN-01 has **no relay while `OmitDefaultRegions` is true**: it still connects directly to every peer that
 has a public IP (verified), but a SIN-01 ↔ HKG-01 Tailscale path cannot
 exist, and any SIN-01 peer that needs a relay cannot be reached. Options:
 
@@ -43,7 +45,7 @@ The SSH fallback via public IP `:17722` is unaffected.
 
 ```json
 "derpMap": {
-  "OmitDefaultRegions": true,
+  "OmitDefaultRegions": false,
   "Regions": {
     "900": {
       "RegionID": 900, "RegionCode": "hkg", "RegionName": "HKG-01",
