@@ -13,7 +13,8 @@ Branch `feat/fleet-refresh-2026-09` (PR #9), một commit cho mỗi việc. Spec
 - `nodes/<NODE>/etc-cfvpn.tgz` — toàn bộ `/etc/cfvpn` của 9 node + `system.txt`.
 - `d1/{nodes,users,user_nodes}.json` — dump D1 trước khi sửa.
 - `sub/` — subscription cũ. `after/`…`after3/` — các mốc trung gian.
-- **`after4/`** — bản cuối cùng: `base64.txt`, `decoded.txt`, `RWL8899.conf`, `clash.yaml`.
+- **`final/`** — bản cuối cùng: `base64.txt`, `decoded.txt`, `RWL8899.conf`, `clash.yaml`.
+- `/root/cfvpn-backups/acl/<ts>.{before,after}.json` — mọi lần sửa policy Tailscale.
 
 Khôi phục một node: giải nén tgz vào `/etc/cfvpn`, `systemctl restart
 cfvpn-xray cfvpn-cloudflared`, rồi `bash scripts/d1-set-node.sh <NODE> reality`
@@ -24,8 +25,8 @@ cfvpn-xray cfvpn-cloudflared`, rồi `bash scripts/d1-set-node.sh <NODE> reality
 | Node | IP | Mode | Reality dest / SNI | HY2 | XHTTP (qua CF) | Khác |
 |---|---|---|---|---|---|---|
 | HAN-01 | 103.199.17.69 | direct | vtv.vn | có (:44283) | — | |
-| HKG-01 | 96.9.228.81 | direct | www.cathaypacific.com | có (:31300) | — | DERP relay :8443 + STUN :3478 |
-| JPY-01 | 45.143.131.36 | cloudflare | — | có (:56028) | có | cloudflared `http2`; **XHTTP-Direct** qua Caddy :443 (`cdn-82169439.duylinh.net`) |
+| HKG-01 | 96.9.228.81 | direct | www.cathaypacific.com | có (:31300) | — | DERP region 900 :8443 + STUN :3478 |
+| JPY-01 | 45.143.131.36 | cloudflare | — | có (:56028) | có | cloudflared `http2`; **XHTTP-Direct** qua Caddy :443 (`cdn-82169439.duylinh.net`); DERP region 901 :8443 + STUN :3478 |
 | JPY-02 | 185.200.65.215 | direct | www.amazon.co.jp | **không** | — | Reality chính |
 | OR-001 | 51.81.245.144 (NAT) | cloudflare | — | có (:5331) | có | |
 | SIN-01 | 96.9.231.74 | direct | www.singaporeair.com | **không** | — | Reality chính |
@@ -92,7 +93,7 @@ dest, probe 204, drift khớp.
   ```
 
   Import subscription base64 để có node, rồi import file `.conf`. Bản cuối ở
-  `after4/RWL8899.conf`. Worker version cuối `cc4db87d-feda-48c9-a945-cc4467070be7`.
+  `final/RWL8899.conf`. Worker version cuối `cc4db87d-feda-48c9-a945-cc4467070be7`.
 
 ## Việc 5 — health check từ VNM-01
 
@@ -111,23 +112,9 @@ OR-001: `packet-up` chạy (611 ms), `auto` chạy, `stream-up`/`stream-one` fai
 `<node>-XHTTP`, cột D1 `xhttp_enabled` (migration 0020). Bật trên OR-001,
 JPY-01, VNM-01. Có trong PROXY, không trong AUTO.
 
-**DERP** (`docs/prep/tailscale-derp.md`): `derper` trên HKG-01
-(`derp-f2a4f360.duylinh.net`, TCP 8443, STUN 3478, cert lego DNS-01,
-`--verify-clients`). **ACL đã apply bằng API key anh đưa**, đúng 2 bước: thêm
-region 900 → verify (VNM-01 thấy HKG-01 50 ms, `debug derp 900` kết nối và STUN
-OK) → `OmitDefaultRegions: true` → verify lại (VNM-01 và USA-01 chỉ còn
-HKG-01, 8 client đang nối vào derper, SSH qua Tailscale tới USA-01/SIN-01/JPY-02
-vẫn OK). Cron renew cert đã cài: `/etc/cron.d/derper-cert-renew` (hàng tháng,
-chạy thử: chưa cần renew, cert tới 10/12/2026). Key expiry anh đã tắt trên toàn
-bộ server, em không cần làm gì.
-
-**Khoảng trống phát hiện:** SIN-01 (GreenCloud SG) và HKG-01 (GreenCloud HK)
-**không tới được IP public của nhau** trên mọi port, cả hai chiều, dù SIN-01
-tới nhà mạng khác bình thường. Đây là lỗi routing của nhà cung cấp, có từ
-trước, nhưng hệ quả là SIN-01 hiện **không có relay** (vẫn nối direct tới mọi
-peer có IP public, đã verify). Anh chọn một trong hai: thêm region thứ hai
-(derper trên USA-01 hoặc SIN-01, em khuyên cách này) hoặc bỏ
-`OmitDefaultRegions` để quay lại relay công cộng kèm region 900.
+**DERP** (`docs/prep/tailscale-derp.md`): xem "Bổ sung 3" — trạng thái cuối
+là 2 region riêng (900 HKG-01, 901 JPY-01), `OmitDefaultRegions: false`, quản
+lý bằng `cfvpnctl derp china-mode on|off`.
 
 **NaiveProxy**: đã deploy rồi gỡ theo yêu cầu (xem Bổ sung).
 
@@ -163,31 +150,87 @@ peer có IP public, đã verify). Anh chọn một trong hai: thêm region thứ
 - **Anh tự gỡ:** rule forward 5373→443 (TCP+UDP) trên NAT TierHive do anh tạo
   tay; hiện port 5373 không còn gì trả lời.
 
+## Bổ sung 3 — Tailscale DERP: API key thu hồi, OAuth client, china-mode, region 901
+
+- **Việc A.** API key cũ đã thu hồi. OAuth client (scope duy nhất Policy File:
+  Write) nằm ở `/etc/cfvpn/tailscale-oauth.env` (root, 600, gitignore).
+  `OmitDefaultRegions` về **false**, giữ region 900. Verify: VNM-01 netcheck
+  thấy Hong Kong/Singapore/Tokyo + HKG-01, `debug derp 900` OK, SIN-01 có
+  relay trở lại (sin 0.4 ms), SSH qua Tailscale tới SIN-01/JPY-02/USA-01 OK.
+- **Việc B.** `cfvpnctl derp china-mode on|off`, `derp show`, `derp region
+  add|remove` (README có hướng dẫn: gõ `on` trước khi bay Trung Quốc, `off`
+  khi về). Đọc policy qua OAuth, patch đúng khoá bằng RFC 6902 qua thư viện
+  `tailscale/hujson` nên comment và định dạng giữ nguyên, validate bằng API,
+  ghi với `If-Match`, snapshot trước/sau vào `/root/cfvpn-backups/acl/`, rồi
+  chạy `tailscale netcheck` và in ra. Test: 11 unit test (hujson patch, HTTP
+  client với server giả, lệnh); test thật on → off: hai snapshot chỉ khác đúng
+  khoá `OmitDefaultRegions`, kết thúc ở off. Lưu ý: `go.mod` nâng `go 1.22 →
+  1.26` do thư viện hujson (toolchain trên VNM-01 là 1.26.2).
+- **Việc C.** derper trên JPY-01 (`derp-da32d5af.duylinh.net`, TCP 8443, STUN
+  3478, cert lego DNS-01 tới 10/12/2026, cron renew hàng tháng, `--verify-clients`).
+  Region 901 thêm bằng `cfvpnctl derp region add`. Verify: probe 200, STUN
+  trả lời, `debug derp 901` OK từ VNM-01 **và từ SIN-01** (SIN-01 tới JPY-01
+  68 ms, khác với HKG-01 không tới được). china-mode on: VNM-01 chỉ thấy
+  HKG-01 58 ms + JPY-01 121 ms, SIN-01 thấy JPY-01 70 ms; SSH qua Tailscale
+  vẫn chạy; rồi off: relay công cộng quay lại kèm cả 2 region.
+
+## Bổ sung 4 — Đo lại XHTTP-Direct (Việc D)
+
+10 request xen kẽ mỗi đường trong cùng cửa sổ thời gian, từ VNM-01, ms:
+
+| Đường | median | p90 | min | max |
+|---|---|---|---|---|
+| JPY-01-HTTPUpgrade | 353 | 368 | 340 | 385 |
+| JPY-01-XHTTP (qua CF) | 94 | 178 | 90 | 277 |
+| JPY-01-XHTTP-Direct | 128 | 366 | 120 | 390 |
+| JPY-02-Reality | 366 | 395 | 328 | 400 |
+
+XHTTP-Direct **nhanh hơn** HTTPUpgrade 225 ms median, không cần chỉnh Caddy
+(đã có `flush_interval -1`, upstream h2c, stream-one ở cả server lẫn
+subscription). p90 của XHTTP-Direct dao động (366) do vài request lẻ chậm,
+không phải buffering.
+
+## Bổ sung 5 — Dọn secret (Việc E)
+
+- Quét toàn bộ lịch sử nhánh (`git log -p main..HEAD`) và working tree: không
+  có API key Tailscale, OAuth secret, Cloudflare token, Telegram token, mật
+  khẩu hay private key Reality trong bất kỳ commit nào. Không cần rewrite lịch sử.
+- `.gitignore` nay phủ `*.env` (trừ `*.env.example`), `/etc/cfvpn/*.env`,
+  `cfvpn-backups/`, `/root/cfvpn-backups/`; kiểm tra bằng `git check-ignore`.
+- Ngoài repo: `.claude/settings.local.json` (gitignore toàn cục, không track)
+  vẫn chứa Cloudflare API token dạng plaintext trong các rule allow; anh nên
+  xoay token đó hoặc dọn các rule.
+- Cron probe: 245 dòng log, 4 dòng FAIL đều là test tay của em (XHTTP
+  stream-up/stream-one qua CF và packet-up/auto vào đường direct), không phải
+  sự cố.
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
-| Đường | Trước (19:38Z) | Cuối |
+| Đường | Trước (19:38Z) | Cuối (21:32Z) |
 |---|---|---|
-| HAN-01 Reality / HY2 | 173 / 98 | 87 / 78 |
-| HKG-01 Reality / HY2 | 204 / 102 | 193 / 113 |
-| JPY-01 HTTPUpgrade / XHTTP / XHTTP-Direct / HY2 | 344 / — / — / 265 | 350 / 287 / 379 / 218 |
-| JPY-02 Reality (HY2 gỡ) | 595 / 246 | 350 |
-| OR-001 HTTPUpgrade / XHTTP / HY2 | 788 / — / 405 | 824 / 340 / 393 |
-| SIN-01 Reality (HY2 gỡ) | 214 / 143 | 138 |
-| USA-01 Reality / HY2 | 695 / 430 | 644 / 430 |
-| VNM-01 HTTPUpgrade / XHTTP | 223 / — | 218 / 164 |
-| VNM-02 Reality / HY2 | 419 / 198 | 670 / 220 |
+| HAN-01 Reality / HY2 | 173 / 98 | 132 / 76 |
+| HKG-01 Reality / HY2 | 204 / 102 | 165 / 113 |
+| JPY-01 HTTPUpgrade / XHTTP / XHTTP-Direct / HY2 | 344 / — / — / 265 | 369 / 164 / 390 / 232 |
+| JPY-02 Reality (HY2 gỡ) | 595 / 246 | 347 |
+| OR-001 HTTPUpgrade / XHTTP / HY2 | 788 / — / 405 | 850 / 332 / 383 |
+| SIN-01 Reality (HY2 gỡ) | 214 / 143 | 150 |
+| USA-01 Reality / HY2 | 695 / 430 | 659 / 431 |
+| VNM-01 HTTPUpgrade / XHTTP | 223 / — | 233 / 169 |
+| VNM-02 Reality / HY2 | 419 / 198 | 551 / 183 |
 
-Drift check cuối 9/9 khớp. Go 0 fail, Worker 141 pass, pytest 8 pass. Test
-thật từ Trung Quốc vẫn là bước kiểm chứng cuối.
+**19 đường**: 6 Reality, 3 HTTPUpgrade, 3 XHTTP qua Cloudflare, 1 XHTTP-Direct,
+6 HY2. DERP: 2 region riêng (900 HKG-01, 901 JPY-01), china-mode **off**.
+Drift check cuối 9/9 khớp. Go 0 fail (17 package), Worker 141 pass, pytest 8
+pass, shellcheck sạch. Test thật từ Trung Quốc vẫn là bước kiểm chứng cuối.
 
-## Việc cần anh quyết hoặc tự làm
+## Việc anh còn phải làm tay
 
-1. **Telegram token** cho fleet-probe.
-2. **Import `after4/RWL8899.conf`** trên Shadowrocket, xác nhận AUTO (5),
+1. **Telegram token** cho fleet-probe: dán `TELEGRAM_BOT_TOKEN` vào
+   `/etc/cfvpn/fleet-probe.env` trên VNM-01.
+2. **Import `final/RWL8899.conf`** trên Shadowrocket, xác nhận AUTO (5),
    HY2-BACKUP (6) và node lẻ `JPY-01-XHTTP-Direct`.
-3. **DERP cho SIN-01**: thêm region thứ hai hay bỏ `OmitDefaultRegions`.
-4. **Gỡ forward 5373** trên TierHive.
-5. **Thu hồi API key Tailscale** anh đưa trong chat (em chỉ lưu tạm ở scratch
-   mode 600 trong phiên, không vào repo; nhưng key đã xuất hiện trong lịch sử
-   chat).
-6. **Merge PR #9**.
+3. **Gỡ forward 5373→443** trên NAT TierHive (do anh tạo tay, không còn gì trả lời sau nó).
+4. **Cloudflare API token** trong `.claude/settings.local.json`: xoay hoặc dọn rule.
+5. **Trước khi bay Trung Quốc:** `cfvpnctl derp china-mode on` trên VNM-01;
+   về nhà: `cfvpnctl derp china-mode off`. Nhớ SIN-01 chỉ relay được qua JPY-01.
+6. **Merge PR #9.**
