@@ -1,19 +1,25 @@
-# Custom Tailscale DERP relay on HKG-01 — DEPLOYED 2026-09-12
+# Custom Tailscale DERP relays on HKG-01 and JPY-01 — DEPLOYED 2026-09-12
 
 Status: `derper` runs on HKG-01 and the tailnet policy carries `derpMap`
-with region 900 (HKG-01). `OmitDefaultRegions` was set to `true` for ~40
+with regions 900 (HKG-01) and 901 (JPY-01). `OmitDefaultRegions` was set to `true` for ~40
 minutes on 2026-09-12 and then **reverted to `false`** (operator decision,
 see the SIN-01 gap below): the public relays are back and region 900 is an
 extra region. The flag is now managed by `cfvpnctl derp china-mode on|off`
 (on = only the custom regions, for travel inside China).
 
+| Item | HKG-01 (region 900) | JPY-01 (region 901) |
+|---|---|---|
+| Hostname | `derp-f2a4f360.duylinh.net` → 96.9.228.81 | `derp-da32d5af.duylinh.net` → 45.143.131.36 |
+| Why | first relay | reachable from SIN-01 (HKG-01 is not, see below) |
+
+Both: A record not proxied, no AAAA (tailscale logs a harmless v6 lookup error); same unit, ports, cert handling and renew cron (`/etc/cron.d/derper-cert-renew`, 04:17 on HKG-01 / 04:23 on JPY-01 on the 1st of each month); certs expire 2026-12-10.
+
 | Item | Value |
 |---|---|
-| Hostname | `derp-f2a4f360.duylinh.net` → 96.9.228.81 (A, not proxied; no AAAA — tailscale logs a harmless v6 lookup error) |
 | DERP | TCP **8443** (443 is xray Reality on this node) |
 | STUN | UDP **3478** |
 | Binary | `/usr/local/bin/derper` (tailscale.com/cmd/derper@latest, built on VNM-01) |
-| Unit | `derper.service`: `derper --hostname derp-f2a4f360.duylinh.net -a :8443 --http-port -1 --stun --stun-port 3478 --certmode manual --certdir /etc/derper --verify-clients` |
+| Unit | `derper.service`: `derper --hostname <host> -a :8443 --http-port -1 --stun --stun-port 3478 --certmode manual --certdir /etc/derper --verify-clients` |
 | Cert | Let's Encrypt via lego DNS-01, `/etc/derper/lego/certificates/` symlinked to `/etc/derper/<host>.crt|.key`, expires 2026-12-10 |
 | Renewal | `/etc/cron.d/derper-cert-renew`: monthly `lego … renew --days 30 && systemctl restart derper`, log `/var/log/derper-cert-renew.log` (dry run 2026-09-12: "renewal is not needed") |
 | ufw | `8443/tcp`, `3478/udp` |
@@ -29,17 +35,22 @@ connected to derper; SSH over Tailscale to USA-01, SIN-01, JPY-02 still works
 From SIN-01 (GreenCloud SG, 96.9.231.74) the public IP of HKG-01 (GreenCloud
 HK, 96.9.228.81) is unreachable on every port and to ping, in **both**
 directions, while SIN-01 reaches other providers fine. This predates the DERP
-work (it is the providers' routing between their own sites) but it means
-SIN-01 has **no relay while `OmitDefaultRegions` is true**: it still connects directly to every peer that
-has a public IP (verified), but a SIN-01 ↔ HKG-01 Tailscale path cannot
-exist, and any SIN-01 peer that needs a relay cannot be reached. Options:
+work (it is the providers' routing between their own sites) which is why region 901 on
+JPY-01 exists: with china-mode on, SIN-01 relays through JPY-01 (verified
+`tailscale debug derp 901` from SIN-01: DERP connection + STUN OK; SIN-01
+netcheck shows `jpy 70 ms`, HKG-01 blank). A SIN-01 ↔ HKG-01 Tailscale path
+still cannot exist. The SSH fallback via public IP `:17722` is unaffected.
 
-1. add a second region (e.g. `derper` on USA-01 or SIN-01 itself) to
-   `derpMap.Regions` — recommended;
-2. or drop `"OmitDefaultRegions": true` again (public relays return within a
-   minute) and keep 900 as an extra region.
+## china-mode test (2026-09-12, via `cfvpnctl derp`)
 
-The SSH fallback via public IP `:17722` is unaffected.
+| | VNM-01 netcheck | SIN-01 netcheck |
+|---|---|---|
+| china-mode **on** | only `hkg 58 ms (HKG-01)`, `jpy 121 ms (JPY-01)` | `jpy 70 ms (JPY-01)`; HKG-01 unreachable | 
+| china-mode **off** | Hong Kong 25, HKG-01 50, Singapore 54, Tokyo 64, JPY-01 111 ms | public relays back |
+
+SSH over Tailscale to SIN-01, JPY-02, USA-01 worked in both states. Final
+state: **off**. Managed with `cfvpnctl derp china-mode on|off` (README);
+every run snapshots the policy under `/root/cfvpn-backups/acl/`.
 
 ## The policy snippet that is live
 
@@ -47,10 +58,8 @@ The SSH fallback via public IP `:17722` is unaffected.
 "derpMap": {
   "OmitDefaultRegions": false,
   "Regions": {
-    "900": {
-      "RegionID": 900, "RegionCode": "hkg", "RegionName": "HKG-01",
-      "Nodes": [{ "Name": "900a", "RegionID": 900, "HostName": "derp-f2a4f360.duylinh.net", "DERPPort": 8443, "STUNPort": 3478 }]
-    }
+    "900": { "RegionID": 900, "RegionCode": "hkg", "RegionName": "HKG-01", "Nodes": [{ "Name": "900a", "RegionID": 900, "HostName": "derp-f2a4f360.duylinh.net", "DERPPort": 8443, "STUNPort": 3478 }] },
+    "901": { "RegionID": 901, "RegionCode": "jpy", "RegionName": "JPY-01", "Nodes": [{ "Name": "901a", "RegionID": 901, "HostName": "derp-da32d5af.duylinh.net", "DERPPort": 8443, "STUNPort": 3478 }] }
   }
 }
 ```
