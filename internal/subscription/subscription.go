@@ -91,13 +91,16 @@ func BuildVLESSHTTPUpgradeURI(name, uuid, domain, path string) string {
 //
 // The server runs `auth.type: userpass`, so the URI must carry
 // "username:password@" — password alone gets a 404 auth error from the server.
-// The host in the authority is deliberately NOT escaped (it is a hostname, and
-// the Worker leaves it raw); it IS escaped in the sni= parameter.
-func BuildHy2URI(tag, username, password, host string, port int, obfsPw string) string {
+// address is what the client dials (the node's public IP, so no DNS lookup of
+// the HY2 hostname is needed from China); sniHost is the hostname the HY2
+// certificate was issued for and goes into sni=. The address in the authority
+// is deliberately NOT escaped (an IP or hostname; the Worker leaves it raw);
+// sniHost IS escaped in the sni= parameter.
+func BuildHy2URI(tag, username, password, address, sniHost string, port int, obfsPw string) string {
 	enc := EncodeURIComponent
-	return "hysteria2://" + enc(username) + ":" + enc(password) + "@" + host + ":" + strconv.Itoa(port) +
+	return "hysteria2://" + enc(username) + ":" + enc(password) + "@" + address + ":" + strconv.Itoa(port) +
 		"/?obfs=salamander&obfs-password=" + enc(obfsPw) +
-		"&sni=" + enc(host) + "&insecure=0#" + enc(tag) + "-HY2"
+		"&sni=" + enc(sniHost) + "&insecure=0#" + enc(tag) + "-HY2"
 }
 
 func BuildSubscriptionB64(uris ...string) string {

@@ -2,6 +2,7 @@
 # d1-set-node.sh — push one node's live env values into the panel's D1 row.
 #
 #   bash scripts/d1-set-node.sh <NODE_ID> hy2-off   # NULL hy2_host/hy2_port/hy2_obfs_pw
+#   bash scripts/d1-set-node.sh <NODE_ID> hy2-on    # copy HY2_HOST/HY2_PORT/HY2_OBFS_PW from the node
 #   bash scripts/d1-set-node.sh <NODE_ID> reality   # copy REALITY_* + PUBLIC_IP from the node
 #
 # Why: the Worker only persists reality_*/hy2_* when the panel itself calls
@@ -11,8 +12,8 @@
 # Verify afterwards with scripts/check-fleet-drift.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-NODE="${1:?usage: d1-set-node.sh <NODE_ID> hy2-off|reality}"
-ACTION="${2:?usage: d1-set-node.sh <NODE_ID> hy2-off|reality}"
+NODE="${1:?usage: d1-set-node.sh <NODE_ID> hy2-off|hy2-on|reality}"
+ACTION="${2:?usage: d1-set-node.sh <NODE_ID> hy2-off|hy2-on|reality}"
 HOSTS_FILE="${CFVPN_FLEET_HOSTS:-/etc/cfvpn/fleet-hosts}"
 SSH_KEY="${CFVPN_SSH_KEY:-/root/rwl01.key}"
 LOCAL_TARGET="${CFVPN_LOCAL_TARGET:-root@100.78.174.15}"
@@ -42,6 +43,15 @@ case "$ACTION" in
     payload="$(jq -cn --arg id "$NODE" \
       '{sql:"UPDATE nodes SET hy2_host=NULL, hy2_port=NULL, hy2_obfs_pw=NULL WHERE id=?", params:[$id]}')"
     ;;
+  hy2-on)
+    envtxt="$(node_env)"
+    g() { printf '%s\n' "$envtxt" | awk -F= -v k="$1" '$1==k{print substr($0, length(k)+2); exit}'; }
+    host="$(g HY2_HOST)"; port="$(g HY2_PORT)"; obfs="$(g HY2_OBFS_PW)"
+    [ -n "$host" ] && [ -n "$port" ] && [ -n "$obfs" ] \
+      || { echo "$NODE: HY2_* incomplete in cfvpn.env; refusing to write" >&2; exit 1; }
+    payload="$(jq -cn --arg id "$NODE" --arg h "$host" --argjson p "$port" --arg o "$obfs" \
+      '{sql:"UPDATE nodes SET hy2_host=?, hy2_port=?, hy2_obfs_pw=? WHERE id=?", params:[$h,$p,$o,$id]}')"
+    ;;
   reality)
     envtxt="$(node_env)"
     g() { printf '%s\n' "$envtxt" | awk -F= -v k="$1" '$1==k{print substr($0, length(k)+2); exit}'; }
@@ -51,7 +61,7 @@ case "$ACTION" in
     payload="$(jq -cn --arg id "$NODE" --arg pk "$pk" --arg sid "$sid" --arg sni "$sni" --arg dest "$dest" --arg ip "$ip" \
       '{sql:"UPDATE nodes SET reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, public_ip=? WHERE id=?", params:[$pk,$sid,$sni,$dest,$ip,$id]}')"
     ;;
-  *) echo "unknown action: $ACTION (hy2-off|reality)" >&2; exit 2 ;;
+  *) echo "unknown action: $ACTION (hy2-off|hy2-on|reality)" >&2; exit 2 ;;
 esac
 
 out="$(d1_query "$payload")"

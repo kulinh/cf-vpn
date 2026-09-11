@@ -1,4 +1,4 @@
-import { hasHy2, isCloudflareRow, isRealityRow, realityHost, type SubscriptionRow } from "./subscription";
+import { hasHy2, hy2Address, isCloudflareRow, isRealityRow, realityHost, type SubscriptionRow } from "./subscription";
 
 export { hasHy2, isCloudflareRow, isRealityRow };
 
@@ -118,7 +118,7 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
       proxies.push({
         name: hy2Name(username, r.node_id),
         type: "hysteria2",
-        server: r.hy2_host!,
+        server: hy2Address(r),
         port: r.hy2_port!,
         // Server-side hysteria uses auth.type: userpass.
         password: `${username}:${r.hy2_pw}`,

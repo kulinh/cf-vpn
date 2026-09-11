@@ -108,8 +108,8 @@ func TestGoldenHTTPUpgradeURIEscapesFullPath(t *testing.T) {
 }
 
 func TestGoldenHy2URIMatchesWorker(t *testing.T) {
-	got := BuildHy2URI("alice@hkg-01", "alice", "Zm9vYmFy_-abc", "hy2-c3d4.rwl.one", 24430, "kQ3x")
-	want := "hysteria2://alice:Zm9vYmFy_-abc@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40hkg-01-HY2"
+	got := BuildHy2URI("alice@hkg-01", "alice", "Zm9vYmFy_-abc", "96.9.228.81", "hy2-c3d4.rwl.one", 24430, "kQ3x")
+	want := "hysteria2://alice:Zm9vYmFy_-abc@96.9.228.81:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40hkg-01-HY2"
 	if got != want {
 		t.Fatalf("hy2 URI drifted from Worker\n got: %s\nwant: %s", got, want)
 	}
@@ -118,7 +118,7 @@ func TestGoldenHy2URIMatchesWorker(t *testing.T) {
 // The password may hold ":" "@" "/" "+" and spaces — escaping them wrong makes
 // the client parse a different host or password.
 func TestGoldenHy2URIEscapesLikeWorker(t *testing.T) {
-	got := BuildHy2URI("alice", "alice", "p@ss w/rd:1+2", "hy2-c3d4.rwl.one", 24430, "obfs_PW-1~2*3'4(5)!6")
+	got := BuildHy2URI("alice", "alice", "p@ss w/rd:1+2", "hy2-c3d4.rwl.one", "hy2-c3d4.rwl.one", 24430, "obfs_PW-1~2*3'4(5)!6")
 	want := "hysteria2://alice:p%40ss%20w%2Frd%3A1%2B2@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=obfs_PW-1~2*3'4(5)!6&sni=hy2-c3d4.rwl.one&insecure=0#alice-HY2"
 	if got != want {
 		t.Fatalf("hy2 URI drifted from Worker\n got: %s\nwant: %s", got, want)

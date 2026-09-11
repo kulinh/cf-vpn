@@ -367,3 +367,19 @@ describe("Reality URIs address the node by public IP", () => {
     expect(lines[0].startsWith("vless://u1@static-df60bd79.duylinh.org:443?")).toBe(true);
   });
 });
+
+describe("HY2 URIs dial the public IP and keep the hostname as sni", () => {
+  const base = {
+    vless_uuid: "u1", hy2_pw: "p1", vpn_host: "media.example.com", node_id: "HKG-01",
+    hy2_host: "hy-c36ca6bd.dongnat247.com", hy2_port: 31300, hy2_obfs_pw: "obfs",
+    mode: "direct" as const, reality_pubkey: "pk", reality_sid: "sid", reality_sni: "www.cathaypacific.com", xhttp_path: null as string | null,
+  };
+  it("uses public_ip in the authority and the hostname in sni", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: "96.9.228.81" }]).split("\n");
+    expect(lines[1]).toBe("hysteria2://kulinh:p1@96.9.228.81:31300/?obfs=salamander&obfs-password=obfs&sni=hy-c36ca6bd.dongnat247.com&insecure=0#kulinh%40HKG-01-HY2");
+  });
+  it("falls back to the hostname without public_ip", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: null }]).split("\n");
+    expect(lines[1].startsWith("hysteria2://kulinh:p1@hy-c36ca6bd.dongnat247.com:31300/?")).toBe(true);
+  });
+});

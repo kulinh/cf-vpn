@@ -46,8 +46,16 @@ describe("buildShadowrocketConfig", () => {
     const conf = buildShadowrocketConfig("kulinh", fleet);
     const proxyLine = conf.split("\n").find((l) => l.startsWith("PROXY = select, "));
     expect(proxyLine).toBe(
-      "PROXY = select, AUTO, kulinh@HAN-01-Reality, kulinh@HKG-01-Reality, kulinh@HKG-01-HY2, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-HY2, kulinh@JPY-02-Reality, kulinh@OR-001-HTTPUpgrade, kulinh@SIN-01-Reality, kulinh@USA-01-Reality"
+      "PROXY = select, AUTO, HY2-BACKUP, kulinh@HAN-01-Reality, kulinh@HKG-01-Reality, kulinh@HKG-01-HY2, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-HY2, kulinh@JPY-02-Reality, kulinh@OR-001-HTTPUpgrade, kulinh@SIN-01-Reality, kulinh@USA-01-Reality"
     );
+  });
+
+  it("emits HY2-BACKUP as a select over every HY2 route, and omits it when there is none", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet);
+    expect(conf).toContain("\nHY2-BACKUP = select, kulinh@HKG-01-HY2, kulinh@JPY-01-HY2\n");
+    const none = buildShadowrocketConfig("kulinh", [row("SIN-01", "direct", false)]);
+    expect(none).not.toContain("HY2-BACKUP");
+    expect(none).toContain("PROXY = select, AUTO, kulinh@SIN-01-Reality");
   });
 
   it("skips AUTO members the user does not have", () => {

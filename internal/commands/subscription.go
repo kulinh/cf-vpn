@@ -116,7 +116,13 @@ func buildHy2Line(tag, name, hy2PW string, env map[string]string, warn io.Writer
 			"(run `cfvpnctl add-user` or a panel sync to provision it)", name)
 		return "", false
 	}
-	return subscription.BuildHy2URI(tag, name, hy2PW, host, port, obfs), true
+	// Dial the public IP, present the HY2 hostname as SNI (the cert is for the
+	// hostname) — same rule as the Reality line and as the Worker.
+	address := strings.TrimSpace(env[state.KeyPublicIP])
+	if address == "" {
+		address = host
+	}
+	return subscription.BuildHy2URI(tag, name, hy2PW, address, host, port, obfs), true
 }
 
 // hy2PasswordsByName reads the node's hysteria config and returns password by

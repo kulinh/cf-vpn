@@ -62,18 +62,31 @@ var longRunningUnits = map[string]bool{
 // returns the changed filenames in deterministic (sorted) order. It performs no
 // systemd actions — the caller decides whether to daemon-reload and restart.
 func reconcileUnits() ([]string, error) {
-	var changed []string
+	changed, _, err := reconcileUnitsTracked()
+	return changed, err
+}
+
+// reconcileUnitsTracked is reconcileUnits that also reports which of the
+// changed units did not exist before (created, e.g. cfvpn-hysteria.service
+// coming back after `hy2 enable`); those must be enabled, not just restarted.
+func reconcileUnitsTracked() (changed []string, created map[string]bool, err error) {
+	created = map[string]bool{}
 	for name, content := range canonicalUnits() {
-		didChange, err := writeIfChanged(filepath.Join(systemdUnitDir, name), []byte(content), 0o644)
-		if err != nil {
-			return changed, fmt.Errorf("write %s: %w", name, err)
+		path := filepath.Join(systemdUnitDir, name)
+		_, statErr := os.Stat(path)
+		didChange, werr := writeIfChanged(path, []byte(content), 0o644)
+		if werr != nil {
+			return changed, created, fmt.Errorf("write %s: %w", name, werr)
 		}
 		if didChange {
 			changed = append(changed, name)
+			if statErr != nil {
+				created[name] = true
+			}
 		}
 	}
 	sort.Strings(changed)
-	return changed, nil
+	return changed, created, nil
 }
 
 // RunReconcileUnits brings this node's systemd unit files back in line with the
@@ -97,7 +110,7 @@ func RunReconcileUnits(ctx context.Context, runner systemd.Runner, stdout io.Wri
 // config lock.
 func runReconcileUnitsLocked(ctx context.Context, runner systemd.Runner, stdout io.Writer) error {
 	r := resolveRunner(runner)
-	changed, err := reconcileUnits()
+	changed, created, err := reconcileUnitsTracked()
 	if err != nil {
 		return err
 	}
@@ -118,6 +131,10 @@ func runReconcileUnitsLocked(ctx context.Context, runner systemd.Runner, stdout 
 	for _, name := range changed {
 		switch {
 		case strings.HasSuffix(name, ".timer"):
+			if err := systemd.EnableNow(ctx, r, name); err != nil {
+				return fmt.Errorf("enable %s: %w", name, err)
+			}
+		case longRunningUnits[name] && created[name]:
 			if err := systemd.EnableNow(ctx, r, name); err != nil {
 				return fmt.Errorf("enable %s: %w", name, err)
 			}

@@ -57,8 +57,15 @@ export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[
   if (members.length > 0) {
     out.push(`AUTO = url-test, ${members.join(", ")}, ${AUTO_URL_TEST_OPTS}`);
   }
+  // HY2-BACKUP: every Hysteria2 route the user has, as a manual pick for when
+  // TCP 443 is throttled but UDP still flows (operator decision 2026-09-12).
+  const hy2 = all.filter((n) => n.endsWith("-HY2"));
+  if (hy2.length > 0) {
+    out.push(`HY2-BACKUP = select, ${hy2.join(", ")}`);
+  }
   if (all.length > 0) {
-    out.push(`PROXY = select, ${members.length > 0 ? "AUTO, " : ""}${all.join(", ")}`);
+    const groups = [members.length > 0 ? "AUTO" : "", hy2.length > 0 ? "HY2-BACKUP" : ""].filter(Boolean);
+    out.push(`PROXY = select, ${groups.length > 0 ? groups.join(", ") + ", " : ""}${all.join(", ")}`);
   } else {
     out.push("PROXY = select, DIRECT");
   }
