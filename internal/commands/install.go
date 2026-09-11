@@ -496,12 +496,12 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	}
 	var cfRendered string
 	if in.Mode == "direct" {
-		cfRendered, err = templates.RenderCloudflaredAdmin(oldTunnel, adminHost)
+		cfRendered, err = templates.RenderCloudflaredAdmin(oldTunnel, adminHost, env[state.KeyCloudflaredProtocol])
 		if err != nil {
 			return fail(fmt.Errorf("render cloudflared admin config: %w", err))
 		}
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(oldTunnel, newHost, adminHost)
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(oldTunnel, newHost, adminHost, env[state.KeyCloudflaredProtocol])
 		if err != nil {
 			return fail(fmt.Errorf("render cloudflared config: %w", err))
 		}
@@ -649,9 +649,9 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 
 	var cfRendered string
 	if in.Mode == "direct" {
-		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelUUID, adminHost)
+		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelUUID, adminHost, env[state.KeyCloudflaredProtocol])
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost)
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost, env[state.KeyCloudflaredProtocol])
 	}
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("render cloudflared config: %w", err)
@@ -1232,12 +1232,12 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 	var cfRendered string
 	if in.Mode == "direct" {
-		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelID, adminHost)
+		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelID, adminHost, "")
 		if err != nil {
 			return fmt.Errorf("render cloudflared admin config: %w", err)
 		}
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelID, domain, adminHost)
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelID, domain, adminHost, "")
 		if err != nil {
 			return fmt.Errorf("render cloudflared config: %w", err)
 		}

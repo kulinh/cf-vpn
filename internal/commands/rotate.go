@@ -507,7 +507,7 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 	}
-	cfRendered, err := templates.RenderCloudflaredWithAdmin(tunnelUUID, in.NewHost, adminHost)
+	cfRendered, err := templates.RenderCloudflaredWithAdmin(tunnelUUID, in.NewHost, adminHost, env[state.KeyCloudflaredProtocol])
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("render cloudflared config: %w", err)
 	}

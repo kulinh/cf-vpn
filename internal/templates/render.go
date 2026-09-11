@@ -44,7 +44,8 @@ type HysteriaInputs struct {
 
 const cloudflaredAdminTemplate = `tunnel: {{.TunnelUUID}}
 credentials-file: /etc/cfvpn/cloudflared/{{.TunnelUUID}}.json
-ingress:
+{{if .Protocol}}protocol: {{.Protocol}}
+{{end}}ingress:
   - hostname: {{.AdminHost}}
     service: http://127.0.0.1:6788
   - service: http_status:404
@@ -52,7 +53,8 @@ ingress:
 
 const cloudflaredWithAdminTemplate = `tunnel: {{.TunnelUUID}}
 credentials-file: /etc/cfvpn/cloudflared/{{.TunnelUUID}}.json
-ingress:
+{{if .Protocol}}protocol: {{.Protocol}}
+{{end}}ingress:
   - hostname: {{.Domain}}
     path: ^/api/v1/sync
     service: http://127.0.0.1:10001
@@ -88,8 +90,24 @@ func validateCloudflaredInputs(tunnelUUID string, hosts map[string]string) error
 	return nil
 }
 
-func RenderCloudflaredAdmin(tunnelUUID, adminHost string) (string, error) {
+// validateCloudflaredProtocol pins the optional transport override to the two
+// values cloudflared accepts. The value lands unquoted in YAML, so anything
+// else (a newline, an extra key) is rejected the same way hostnames are.
+func validateCloudflaredProtocol(p string) error {
+	switch p {
+	case "", "quic", "http2":
+		return nil
+	}
+	return fmt.Errorf("cloudflared config: protocol %q is not one of quic, http2", p)
+}
+
+// RenderCloudflaredAdmin renders the direct-mode tunnel config (admin ingress
+// only). protocol is "" for cloudflared's default, or "quic"/"http2".
+func RenderCloudflaredAdmin(tunnelUUID, adminHost, protocol string) (string, error) {
 	if err := validateCloudflaredInputs(tunnelUUID, map[string]string{"admin host": adminHost}); err != nil {
+		return "", err
+	}
+	if err := validateCloudflaredProtocol(protocol); err != nil {
 		return "", err
 	}
 	t, err := template.New("cloudflared-admin").Parse(cloudflaredAdminTemplate)
@@ -97,12 +115,17 @@ func RenderCloudflaredAdmin(tunnelUUID, adminHost string) (string, error) {
 		return "", err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "AdminHost": adminHost})
+	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "AdminHost": adminHost, "Protocol": protocol})
 	return b.String(), err
 }
 
-func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, error) {
+// RenderCloudflaredWithAdmin renders the cloudflare-mode tunnel config (VPN +
+// admin ingress). protocol as in RenderCloudflaredAdmin.
+func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost, protocol string) (string, error) {
 	if err := validateCloudflaredInputs(tunnelUUID, map[string]string{"domain": domain, "admin host": adminHost}); err != nil {
+		return "", err
+	}
+	if err := validateCloudflaredProtocol(protocol); err != nil {
 		return "", err
 	}
 	t, err := template.New("cloudflared-with-admin").Parse(cloudflaredWithAdminTemplate)
@@ -110,7 +133,7 @@ func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, e
 		return "", err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "Domain": domain, "AdminHost": adminHost})
+	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "Domain": domain, "AdminHost": adminHost, "Protocol": protocol})
 	return b.String(), err
 }
 
