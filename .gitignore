@@ -43,3 +43,6 @@ panel/worker/.wrangler/
 
 # vitest cache accidentally created under src/
 panel/worker/src/node_modules/
+
+# python caches from scripts/tests
+__pycache__/
