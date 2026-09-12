@@ -1,6 +1,6 @@
 import type { SubscriptionRow } from "./subscription";
-import { realityName, httpUpgradeName, hy2Name, xhttpName, xhttpDirectName, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
-import { hasXHTTP, hasXHTTPDirect } from "./subscription";
+import { realityName, httpUpgradeName, hy2Name, xhttpName, xhttpDirectName, xhttpH3Name, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
+import { hasXHTTP, hasXHTTPDirect, hasXHTTPH3 } from "./subscription";
 import type { ModuleRules } from "./cnrules";
 
 // Shadowrocket ".conf" companion to the base64 subscription. The subscription
@@ -19,6 +19,13 @@ const AUTO_MEMBERS: ReadonlyArray<readonly [string, (u: string, n: string) => st
   // JPY-03 (Oracle Osaka, added 2026-09-12): a Japan route on a different
   // provider than JPY-01/JPY-02, so a GreenCloud problem cannot take every
   // Japanese member of the group with it.
+  //
+  // Its XHTTP-over-H3 route (2026-09-13) goes first: measured from VNM-01 on
+  // the home VNPT line it ran 2-3x faster than the same node's REALITY route
+  // on both throughput and TTFB, QUIC being immune to the TCP head-of-line
+  // blocking that the lossy VN->APAC path inflicts. REALITY stays in the group
+  // right behind it as the fallback for when UDP 443 is throttled.
+  ["JPY-03", xhttpH3Name],
   ["JPY-03", realityName],
   ["JPY-01", hy2Name],
   ["HKG-01", hy2Name],
@@ -35,6 +42,11 @@ export function availableNames(username: string, rows: SubscriptionRow[]): strin
   for (const r of rows) {
     if (isRealityRow(r)) {
       names.push(realityName(username, r.node_id));
+      // Same inbound-level gate as buildSubscriptionURIs: H3 is independent of
+      // REALITY and lives on the same direct node.
+      if (hasXHTTPH3(r)) {
+        names.push(xhttpH3Name(username, r.node_id));
+      }
     } else if (isCloudflareRow(r)) {
       names.push(httpUpgradeName(username, r.node_id));
       if (hasXHTTP(r)) {

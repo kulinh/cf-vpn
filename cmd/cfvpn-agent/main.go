@@ -66,6 +66,11 @@ type statusResponse struct {
 	XHTTPEnabled    bool   `json:"xhttp_enabled"`
 	XHTTPDirectHost string `json:"xhttp_direct_host,omitempty"`
 	XHTTPDirectPath string `json:"xhttp_direct_path,omitempty"`
+	// Direct-mode XHTTP-over-H3 route. omitempty is deliberate: the panel
+	// reads an absent key as "not reported, keep the row" and an explicit ""
+	// as "cleared", and `cfvpnctl xhttp-h3 disable` writes empty strings.
+	XHTTPH3Host string `json:"xhttp_h3_host,omitempty"`
+	XHTTPH3Path string `json:"xhttp_h3_path,omitempty"`
 }
 
 // hy2Field blanks an HY2 value on a node whose HY2 is disabled, so the panel
@@ -243,6 +248,8 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		XHTTPEnabled:    commands.XHTTPEnabled(env),
 		XHTTPDirectHost: env[state.KeyXHTTPDirectHost],
 		XHTTPDirectPath: env[state.KeyXHTTPDirectPath],
+		XHTTPH3Host:     env[state.KeyXHTTPH3Host],
+		XHTTPH3Path:     env[state.KeyXHTTPH3Path],
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

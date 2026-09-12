@@ -414,7 +414,7 @@ async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
     // The runtime columns must be read here: persistNodeRuntime falls back to
     // `row.<col>` for whatever the agent did not report, and a column missing
     // from this SELECT would be written back as NULL/undefined.
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid,reality_pubkey,reality_sid,reality_sni,reality_dest,xhttp_path,xhttp_enabled,xhttp_direct_host,xhttp_direct_path FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid,reality_pubkey,reality_sid,reality_sni,reality_dest,xhttp_path,xhttp_enabled,xhttp_direct_host,xhttp_direct_path,xhttp_h3_host,xhttp_h3_path FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -476,6 +476,36 @@ function mergeXhttpRuntime(
   };
 }
 
+interface H3Runtime {
+  xhttp_h3_host: string | null;
+  xhttp_h3_path: string | null;
+}
+
+// The H3 inbound only exists on a direct-mode node, so — unlike xhttp_* above,
+// which is the cloudflare-mode inbound — this merge rides the direct gate. An
+// absent key means "not reported" and keeps the row; an explicit "" means
+// "unset" and clears it, which is what `cfvpnctl xhttp-h3 disable` produces
+// (Go's omitempty then drops the empty strings, hence the keep-on-absent rule).
+function mergeH3Runtime(
+  row: NodeRow,
+  agent: { xhttp_h3_host?: string; xhttp_h3_path?: string },
+  apply: boolean
+): H3Runtime {
+  const fromRow: H3Runtime = {
+    xhttp_h3_host: row.xhttp_h3_host ?? null,
+    xhttp_h3_path: row.xhttp_h3_path ?? null
+  };
+  if (!apply) {
+    return fromRow;
+  }
+  const textOrKeep = (v: string | undefined, keep: string | null): string | null =>
+    v === undefined ? keep : v || null;
+  return {
+    xhttp_h3_host: textOrKeep(agent.xhttp_h3_host, fromRow.xhttp_h3_host),
+    xhttp_h3_path: textOrKeep(agent.xhttp_h3_path, fromRow.xhttp_h3_path)
+  };
+}
+
 async function persistNodeRuntime(
   env: Env,
   id: string,
@@ -492,11 +522,12 @@ async function persistNodeRuntime(
     reality_sni: string | null;
     reality_dest: string | null;
     xhttp: XhttpRuntime;
+    h3: H3Runtime;
     tunnel_uuid: string | null;
   }
 ): Promise<void> {
   await env.DB.prepare(
-    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, xhttp_enabled=?, xhttp_direct_host=?, xhttp_direct_path=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, xhttp_enabled=?, xhttp_direct_host=?, xhttp_direct_path=?, xhttp_h3_host=?, xhttp_h3_path=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
   )
     .bind(
       fields.vpn_host,
@@ -516,6 +547,8 @@ async function persistNodeRuntime(
       fields.xhttp.xhttp_enabled,
       fields.xhttp.xhttp_direct_host,
       fields.xhttp.xhttp_direct_path,
+      fields.h3.xhttp_h3_host,
+      fields.h3.xhttp_h3_path,
       fields.tunnel_uuid,
       id
     )
@@ -547,6 +580,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       reality_sni: syncRuntimeFields ? status.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp: mergeXhttpRuntime(row, status, syncCloudflareFields),
+      h3: mergeH3Runtime(row, status, syncRuntimeFields),
       // The agent is only as trustworthy as the VPS it runs on: a compromised
       // node could report a tunnel_uuid crafted to escape the Cloudflare API
       // path template on the next deleteNode. Persist it only if it looks like
@@ -952,6 +986,7 @@ export async function nodeSyncCore(
       reality_sni: syncRuntimeFields ? out.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? out.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp: mergeXhttpRuntime(row, out, syncCloudflareFields),
+      h3: mergeH3Runtime(row, out, syncRuntimeFields),
       tunnel_uuid: row.tunnel_uuid, // sync response carries no tunnel_uuid; preserve persisted value
     });
     // Log a safe projection — never the full AgentSyncResponse, which carries

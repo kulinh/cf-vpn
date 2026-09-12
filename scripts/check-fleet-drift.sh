@@ -8,8 +8,9 @@
 # over 2 when both happen — confirmed drift is not a transient problem.
 #
 # Two comparisons run: the per-user credentials (vless uuid, hy2 password) and
-# the per-node transport flags (HY2_ENABLED / XHTTP_ENABLED / XHTTP_DIRECT_HOST
-# on the node vs nodes.hy2_host / xhttp_enabled / xhttp_direct_host in D1).
+# the per-node transport flags (HY2_ENABLED / XHTTP_ENABLED / XHTTP_DIRECT_HOST /
+# XHTTP_H3_HOST on the node vs nodes.hy2_host / xhttp_enabled /
+# xhttp_direct_host / xhttp_h3_host in D1).
 #
 # Why this exists: the panel builds every subscription link from D1
 # `user_nodes`, while the node serves whatever is in its xray/hysteria config.
@@ -75,12 +76,12 @@ say "D1: $(wc -l < "$WORK/d1.tsv") user/node binding(s)"
 # Which transports the panel believes each node runs. Kept as the RAW values
 # (NULL -> empty) so drift_transport_compare owns the default-on/default-off
 # rules and matches commands.Hy2Enabled / commands.XHTTPEnabled exactly.
-NRESP="$(d1_query "$(jq -n '{sql:"SELECT id,hy2_host,xhttp_enabled,xhttp_direct_host FROM nodes ORDER BY id", params:[]}')")"
+NRESP="$(d1_query "$(jq -n '{sql:"SELECT id,hy2_host,xhttp_enabled,xhttp_direct_host,xhttp_h3_host FROM nodes ORDER BY id", params:[]}')")"
 if [ "$(printf '%s' "$NRESP" | jq -r '.success // false')" != "true" ]; then
   echo "D1 nodes query failed: $(printf '%s' "$NRESP" | jq -r '.errors[0].message // "unknown"')" >&2
   exit 2
 fi
-printf '%s' "$NRESP" | jq -r '.result[0].results[] | [.id, (.hy2_host // ""), (.xhttp_enabled // ""), (.xhttp_direct_host // "")] | @tsv' > "$WORK/d1.nodes.tsv"
+printf '%s' "$NRESP" | jq -r '.result[0].results[] | [.id, (.hy2_host // ""), (.xhttp_enabled // ""), (.xhttp_direct_host // ""), (.xhttp_h3_host // "")] | @tsv' > "$WORK/d1.nodes.tsv"
 
 # ----- 2. what each node actually serves --------------------------------------
 # Emitted by the node itself so one ssh round-trip covers both configs.
@@ -88,17 +89,18 @@ REMOTE='
 # One FLAGS line first: which transports this node is configured for. Read with
 # split-on-first-= (like internal/state/store.go), never by sourcing cfvpn.env —
 # that would execute any $(...) in a value as root on every node we check.
-hy2_enabled=""; xhttp_enabled=""; xhttp_direct_host=""
+hy2_enabled=""; xhttp_enabled=""; xhttp_direct_host=""; xhttp_h3_host=""
 if [ -r /etc/cfvpn/cfvpn.env ]; then
   while IFS="=" read -r k v; do
     case "$k" in
       HY2_ENABLED)       hy2_enabled="$v" ;;
       XHTTP_ENABLED)     xhttp_enabled="$v" ;;
       XHTTP_DIRECT_HOST) xhttp_direct_host="$v" ;;
+      XHTTP_H3_HOST)     xhttp_h3_host="$v" ;;
     esac
   done < /etc/cfvpn/cfvpn.env
 fi
-printf "FLAGS\t%s\t%s\t%s\n" "$hy2_enabled" "$xhttp_enabled" "$xhttp_direct_host"
+printf "FLAGS\t%s\t%s\t%s\t%s\n" "$hy2_enabled" "$xhttp_enabled" "$xhttp_direct_host" "$xhttp_h3_host"
 
 xray=/etc/cfvpn/xray/config.json
 hy=/etc/cfvpn/hysteria/config.yaml
@@ -122,7 +124,7 @@ while read -r node target; do
   fi
   [ -n "$out" ] || { UNREACHABLE="$UNREACHABLE $node"; continue; }
   # The FLAGS line is the transport row; everything else is a (user, uuid, pw) row.
-  printf '%s\n' "$out" | awk -v n="$node" -F'\t' '$1=="FLAGS" {print n "\t" $2 "\t" $3 "\t" $4}' >> "$WORK/node.flags.tsv"
+  printf '%s\n' "$out" | awk -v n="$node" -F'\t' '$1=="FLAGS" {print n "\t" $2 "\t" $3 "\t" $4 "\t" $5}' >> "$WORK/node.flags.tsv"
   printf '%s\n' "$out" | awk -v n="$node" -F'\t' '$1!="FLAGS" && NF>=2 {print n "\t" $1 "\t" $2 "\t" ($3==""?"-":$3)}' >> "$WORK/node.tsv"
 done < "$HOSTS_FILE"
 
@@ -174,7 +176,7 @@ if [ -n "$TDRIFT" ]; then
   printf '%s\n' "$TDRIFT" | sed 's/^/  /'
   echo
   echo "Fix: make D1 match the node with scripts/d1-set-node.sh <NODE> hy2-on|hy2-off|"
-  echo "xhttp-on|xhttp-off|xhttp-direct (or flip the node with cfvpnctl hy2/xhttp)."
+  echo "xhttp-on|xhttp-off|xhttp-direct|xhttp-h3 (or flip the node with cfvpnctl hy2/xhttp/xhttp-h3)."
 fi
 if [ -n "$UNREACHABLE" ]; then echo "UNREACHABLE (not checked):$UNREACHABLE"; RC="$(drift_rank_rc "$RC" 2)"; fi
 if [ -n "$SKIPPED" ];     then echo "NOT IN HOSTS FILE (not checked):$SKIPPED"; RC="$(drift_rank_rc "$RC" 2)"; fi
