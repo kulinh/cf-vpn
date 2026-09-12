@@ -505,9 +505,62 @@ không đáp STUN thô nên đo bằng bộ đếm iptables), rồi `cfvpnctl de
 
 SIN-01 giờ có hai relay riêng dùng được (JPY-01 và JPY-03) thay vì một.
 
-**Anh còn làm tay:** bỏ rule `22/tcp` trên VCN (SSH public giờ đi 17722). Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
+**Anh còn làm tay:** bỏ rule `22/tcp` trên VCN (SSH public giờ đi 17722); xoay
+token bot `7848387381:…` ở BotFather rồi xoá journal cũ trên VNM-01 (xem Bổ
+sung 14 mục 2). Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
 group AUTO (danh sách cố định trong Worker, hiện JPY-02/SIN-01/JPY-01-HY2/
 HKG-01-HY2/OR-001).
+
+## Bổ sung 14 — review toàn bộ code và sửa hết, 12/09/2026
+
+Tiểu Bạch (13 agent con) quét toàn bộ `/opt/cf-vpn` và `/opt/xiaoqie_bot`, cả
+code cũ lẫn code viết trong ngày, tìm cả bug lập trình lẫn chỗ trùng lặp/lệch
+giữa cũ và mới: **5 mục Cao, 17 Trung, 14 Thấp + 15 mục trùng lặp**. Đã sửa
+hết, chia ba commit (Go / Worker / scripts) và một commit ở repo xiaoqie_bot.
+
+**Năm mục Cao:**
+
+| # | Lỗi | Sửa |
+|---|---|---|
+| 1 | `*url.Error` in cả URL nên **token bot lọt vào journal** mỗi lần lỗi mạng tới Telegram | lọc token khỏi mọi lỗi/log, có test dựng lỗi kết nối thật |
+| 2 | Journal VNM-01 đã chứa ~967k dòng có token `7848387381:…` của một bot Python dùng httpx (không phải cf-vpn/xiaoqie) | **việc của anh**: xoay token ở BotFather rồi `journalctl --vacuum-time=1s` |
+| 3 | `fleet-probe` không báo khi **chính nó** không tải được subscription → panel chết mà Telegram im | báo qua đúng cơ chế đếm lần lỗi (khoá `__fetch__`), báo một lần và một lần khi hồi phục |
+| 4 | `rotate-domain` ghi đè cert HY2 (đường dẫn cố định) trước khi commit, lỗi giữa chừng thì lần restart sau hysteria phục vụ cert của host chưa bao giờ sống | giữ cặp cert/key cũ và phục hồi trên mọi đường thất bại |
+| 5 | `cfvpnctl install` lỗi thì gợi ý `rotate-domain --cleanup <uuid>` **cho cả tunnel đang tái dùng** → làm theo là xoá tunnel của node đang chạy | tunnel tái dùng in dòng "không được xoá", không bao giờ in cờ đó |
+
+**Mức trung đáng kể:** `xhttp enable/disable` ghi env trước khi restart (giờ
+write → restart → restore → env như `rotate-reality`); agent nhận `sync` rỗng
+là xoá sạch user (giờ từ chối trừ khi có `confirm_empty`, Worker gửi cờ này
+khi D1 thật sự rỗng); Worker nuốt lỗi webhook không log, không cắt tin dài,
+`MAX_ENTITY_ID_LEN` tính theo wrapper ngắn hơn thực tế nên `/rotate` im lặng;
+id node chưa whitelist nên một dấu phẩy phá config Shadowrocket của mọi user;
+suy zone bằng cắt hai nhãn sai với host ba nhãn; tgbot cắt tin theo byte làm
+hỏng UTF-8 tiếng Việt; watcher không escape HTML nên mất cả báo cáo; `state.Load`
+âm thầm bỏ dòng sai dạng (đã kiểm: cả 10 node không có dòng nào sai); cert và
+key là hai rename riêng nên có thể lệch cặp; grep trong pipeline `set -euo
+pipefail` làm chết script installer trước khi tới nhánh kiểm tra.
+
+**Trùng lặp / lệch cũ–mới đã hợp nhất:** cờ XHTTP là hai nguồn sự thật — Worker
+giờ ghi lại `xhttp_enabled/xhttp_direct_*` vào D1 (phân biệt "agent không báo"
+với "agent báo tắt") và `check-fleet-drift` so luôn các cờ transport, nên không
+cần `d1-set-node.sh` sửa tay nữa; `FORCE_REINSTALL` giữ lại lựa chọn vận hành
+(HY2_ENABLED, XHTTP_*, CLOUDFLARED_PROTOCOL, REALITY_DEST/SNI); bốn parser env
+về cùng ngữ nghĩa (bỏ strip dấu nháy ở fleet-probe); `cfvpn_env_read` thay cho
+`source cfvpn.env` trong installer CN; `cfvpn_ensure_ufw_ssh_allowed` mở đúng
+cổng 17722 thay vì profile OpenSSH (= 22); bỏ code chết trong `xiaoqie_bot`.
+
+**Một chỗ em siết hơn đề xuất của review:** hàm sửa tường lửa OCI giờ chỉ tắt
+`netfilter-persistent` **khi ufw đã active** — dừng unit đó flush chain của nó,
+làm trên máy chưa bật ufw sẽ để node không còn tường lửa nào, tệ hơn mặc định
+của image. Có test cho cả hai nhánh.
+
+**Đã triển khai và kiểm chứng:** binary Go mới trên **cả 10 node** (JPY-03 bản
+arm64), agent active và `cfvpnctl status` chạy được ở từng node (chứng minh
+parser env siết chặt không làm chết máy nào); Worker version `f1bce86a`; bot
+`cfvpn-tgbot` bản mới trên JPY-03 trả lời đúng; `fleet-probe` code mới chạy từ
+cả hai điểm đo: **21/21 OK ở mỗi bên**; D1 giờ khớp node về cờ XHTTP và
+subscription vẫn đủ 4 đường XHTTP. Test: Go toàn bộ pass (+12 test mới), Worker
+193, shell 198 (trước 102), pytest 16, xiaoqie 41.
 
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
