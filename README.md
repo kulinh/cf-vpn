@@ -110,6 +110,43 @@ cfvpnctl derp region add --id 901 --code jpy --name JPY-01 --host derp-xxxx.duyl
 cfvpnctl derp region remove --id 901
 ```
 
+### Driving it from Telegram
+
+`cfvpn-tgbot` (unit `cfvpn-tgbot.service`, VNM-01 only) long-polls
+**@rwl_vpn_bot** and accepts exactly these commands in the group chat
+`TELEGRAM_CHAT_ID`:
+
+```
+/china status     # or /derp — show the regions and whether china-mode is on
+/china on         # before flying to China
+/china off        # back home
+```
+
+It runs the same `cfvpnctl derp` code in-process, so snapshots, validation and
+the netcheck afterwards are identical; the reply carries that output. The
+Tailscale OAuth client never leaves this box, which is why the bot lives here
+and not in the panel Worker.
+
+The bot shares the group with the Worker's bot, so it answers only the two
+commands above and stays silent on everything else (`/status`, `/nodes`,
+`/sub` … belong to the Worker). Privacy mode is on, so it only ever receives
+slash commands. Token and chat id come from `/etc/cfvpn/fleet-probe.env`
+(optionally overridden by `/etc/cfvpn/tgbot.env`).
+
+```bash
+# install / update
+go build -o bin/cfvpn-tgbot ./cmd/cfvpn-tgbot
+install -m 0755 bin/cfvpn-tgbot /usr/local/bin/cfvpn-tgbot
+install -m 644 scripts/cfvpn-tgbot.service /etc/systemd/system/cfvpn-tgbot.service
+systemctl daemon-reload && systemctl enable --now cfvpn-tgbot
+cfvpn-tgbot --setup                  # register the command menu for the chat
+cfvpn-tgbot --simulate "/derp"       # self-test: runs the command and replies in the chat
+journalctl -u cfvpn-tgbot -f
+```
+
+A restart never replays a command that was queued while the bot was down: it
+skips the backlog and only acts on updates that arrive afterwards.
+
 Every edit snapshots the policy before and after into
 `/root/cfvpn-backups/acl/<timestamp>.{before,after}.json`, validates it with
 the API's dry run, and writes with `If-Match` so a concurrent console edit is
