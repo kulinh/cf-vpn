@@ -84,7 +84,19 @@ have no `apt` and the installer refuses them — then:
 3. Give the instance a **reserved public IP** (the default ephemeral one changes
    when the VM is recreated, and subscriptions dial Reality/HY2 by IP).
 4. Then the usual `sudo -E CF_API_TOKEN=… CF_ACCOUNT_ID=… NODE_ID=… bash
-   scripts/install-node.sh`.
+   scripts/install-node.sh` (pass `HY2_PORT=` to pick the UDP port up front so
+   the VCN rule can be added before the install).
+5. When applying the fleet firewall baseline (ufw) afterwards, also
+   `systemctl disable --now netfilter-persistent`: the image's remaining rules
+   (`--dport 22 ACCEPT` and friends) are restored ahead of ufw's chains at boot,
+   so public :22 stays open no matter what ufw says. With ufw as the only
+   in-box firewall, SSH is reachable on 17722 publicly and on 22 over the
+   tailnet (`ufw allow in on tailscale0`), like the rest of the fleet.
+6. Ubuntu 24.04 ships Go 1.22: `go.mod` pins `toolchain go1.26.8`, which the
+   build downloads automatically (go.dev must be reachable).
+
+First real run: JPY-03 (Osaka, 2026-09-12) — direct mode, Reality on 443 with
+dest `www.sony.jp`, HY2 on 32443/udp, DERP region 902.
 
 ## Upgrading an existing VPS
 
