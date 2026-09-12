@@ -15,6 +15,10 @@ export interface Env {
   // served on *.workers.dev, where /sub/* is 404 by design, so subscription
   // links must be built from this rather than from the request origin.
   PANEL_PUBLIC_ORIGIN?: string;
+  // Override for where the sr_proxy_list_<CN|UAE>.module files inlined into
+  // the Shadowrocket .conf are fetched from (default: the raw GitHub URL of
+  // kulinh/shadowrocket-vietnamese, see lib/cnrules.ts).
+  RULES_BASE_URL?: string;
   // Username/password fallback used when Cloudflare Access is not in front of
   // the Worker. Both must be set for it to apply; see lib/auth.ts.
   PANEL_BASIC_USER?: string;

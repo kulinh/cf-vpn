@@ -1,4 +1,6 @@
-import type { SubscriptionRow } from "./subscription";
+import { hasHy2, hy2Address, isCloudflareRow, isRealityRow, realityHost, type SubscriptionRow } from "./subscription";
+
+export { hasHy2, isCloudflareRow, isRealityRow };
 
 // Minimal YAML emitter. mihomo/Clash configs are a fixed shape here, so a full
 // YAML library would be a dependency for no benefit. Every string is
@@ -63,6 +65,14 @@ export function httpUpgradeName(username: string, nodeId: string): string {
 export function hy2Name(username: string, nodeId: string): string {
   return `${username}@${nodeId}-HY2`;
 }
+// XHTTP routes exist in the base64 subscription and the Shadowrocket groups
+// only: mihomo has no xhttp transport, so the Clash output omits them.
+export function xhttpName(username: string, nodeId: string): string {
+  return `${username}@${nodeId}-XHTTP`;
+}
+export function xhttpDirectName(username: string, nodeId: string): string {
+  return `${username}@${nodeId}-XHTTP-Direct`;
+}
 
 const AUTO_GROUP = "Auto";
 const SELECT_GROUP = "Proxy";
@@ -72,25 +82,25 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
   for (const r of rows) {
     // Same gating as buildSubscriptionURIs, so the two formats never disagree
     // about which nodes a user has.
-    if (r.mode === "direct" && r.reality_pubkey && r.reality_sid && r.reality_sni) {
+    if (isRealityRow(r)) {
       proxies.push({
         name: realityName(username, r.node_id),
         type: "vless",
-        server: r.vpn_host,
+        server: realityHost(r),
         port: 443,
         uuid: r.vless_uuid,
         network: "tcp",
         tls: true,
         udp: true,
         flow: "xtls-rprx-vision",
-        servername: r.reality_sni,
+        servername: r.reality_sni!,
         "client-fingerprint": "chrome",
         "reality-opts": {
-          "public-key": r.reality_pubkey,
-          "short-id": r.reality_sid
+          "public-key": r.reality_pubkey!,
+          "short-id": r.reality_sid!
         }
       });
-    } else if (r.mode === "cloudflare") {
+    } else if (isCloudflareRow(r)) {
       const path = r.xhttp_path ?? "/api/v1/sync";
       proxies.push({
         name: httpUpgradeName(username, r.node_id),
@@ -112,17 +122,17 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
     } else {
       continue;
     }
-    if (r.hy2_host && r.hy2_port && r.hy2_obfs_pw) {
+    if (hasHy2(r)) {
       proxies.push({
         name: hy2Name(username, r.node_id),
         type: "hysteria2",
-        server: r.hy2_host,
-        port: r.hy2_port,
+        server: hy2Address(r),
+        port: r.hy2_port!,
         // Server-side hysteria uses auth.type: userpass.
         password: `${username}:${r.hy2_pw}`,
-        sni: r.hy2_host,
+        sni: r.hy2_host!,
         obfs: "salamander",
-        "obfs-password": r.hy2_obfs_pw
+        "obfs-password": r.hy2_obfs_pw!
       });
     }
   }

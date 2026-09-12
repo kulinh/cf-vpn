@@ -108,8 +108,8 @@ func TestGoldenHTTPUpgradeURIEscapesFullPath(t *testing.T) {
 }
 
 func TestGoldenHy2URIMatchesWorker(t *testing.T) {
-	got := BuildHy2URI("alice@hkg-01", "alice", "Zm9vYmFy_-abc", "hy2-c3d4.rwl.one", 24430, "kQ3x")
-	want := "hysteria2://alice:Zm9vYmFy_-abc@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40hkg-01-HY2"
+	got := BuildHy2URI("alice@hkg-01", "alice", "Zm9vYmFy_-abc", "96.9.228.81", "hy2-c3d4.rwl.one", 24430, "kQ3x")
+	want := "hysteria2://alice:Zm9vYmFy_-abc@96.9.228.81:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40hkg-01-HY2"
 	if got != want {
 		t.Fatalf("hy2 URI drifted from Worker\n got: %s\nwant: %s", got, want)
 	}
@@ -118,7 +118,7 @@ func TestGoldenHy2URIMatchesWorker(t *testing.T) {
 // The password may hold ":" "@" "/" "+" and spaces — escaping them wrong makes
 // the client parse a different host or password.
 func TestGoldenHy2URIEscapesLikeWorker(t *testing.T) {
-	got := BuildHy2URI("alice", "alice", "p@ss w/rd:1+2", "hy2-c3d4.rwl.one", 24430, "obfs_PW-1~2*3'4(5)!6")
+	got := BuildHy2URI("alice", "alice", "p@ss w/rd:1+2", "hy2-c3d4.rwl.one", "hy2-c3d4.rwl.one", 24430, "obfs_PW-1~2*3'4(5)!6")
 	want := "hysteria2://alice:p%40ss%20w%2Frd%3A1%2B2@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=obfs_PW-1~2*3'4(5)!6&sni=hy2-c3d4.rwl.one&insecure=0#alice-HY2"
 	if got != want {
 		t.Fatalf("hy2 URI drifted from Worker\n got: %s\nwant: %s", got, want)
@@ -165,5 +165,21 @@ func TestBuildSubscriptionB64JoinsWithNewline(t *testing.T) {
 	// base64("a\nb")
 	if got != "YQpi" {
 		t.Fatalf("got %q, want %q", got, "YQpi")
+	}
+}
+
+func TestGoldenXHTTPURIMatchesWorker(t *testing.T) {
+	got := BuildVLESSXHTTPURI("alice@or-001", "2f8a1c3e-1111-4222-8333-abcdefabcdef", "static-df60bd79.duylinh.org", "/api/v2/stream", "packet-up")
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#alice%40or-001-XHTTP"
+	if got != want {
+		t.Fatalf("\n got %s\nwant %s", got, want)
+	}
+}
+
+func TestGoldenXHTTPDirectURIMatchesWorker(t *testing.T) {
+	got := BuildVLESSXHTTPDirectURI("kulinh@JPY-01", "2f8a1c3e-1111-4222-8333-abcdefabcdef", "cdn-82169439.duylinh.net", "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10", "stream-one")
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#kulinh%40JPY-01-XHTTP-Direct"
+	if got != want {
+		t.Fatalf("\n got %s\nwant %s", got, want)
 	}
 }

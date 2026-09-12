@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"text/template"
 
 	"github.com/kulinh/cf-vpn/internal/hysteria"
@@ -44,7 +45,8 @@ type HysteriaInputs struct {
 
 const cloudflaredAdminTemplate = `tunnel: {{.TunnelUUID}}
 credentials-file: /etc/cfvpn/cloudflared/{{.TunnelUUID}}.json
-ingress:
+{{if .Protocol}}protocol: {{.Protocol}}
+{{end}}ingress:
   - hostname: {{.AdminHost}}
     service: http://127.0.0.1:6788
   - service: http_status:404
@@ -52,8 +54,12 @@ ingress:
 
 const cloudflaredWithAdminTemplate = `tunnel: {{.TunnelUUID}}
 credentials-file: /etc/cfvpn/cloudflared/{{.TunnelUUID}}.json
-ingress:
-  - hostname: {{.Domain}}
+{{if .Protocol}}protocol: {{.Protocol}}
+{{end}}ingress:
+{{if .XHTTP}}  - hostname: {{.Domain}}
+    path: ^/api/v2/stream
+    service: http://127.0.0.1:10002
+{{end}}  - hostname: {{.Domain}}
     path: ^/api/v1/sync
     service: http://127.0.0.1:10001
   - hostname: {{.AdminHost}}
@@ -88,8 +94,24 @@ func validateCloudflaredInputs(tunnelUUID string, hosts map[string]string) error
 	return nil
 }
 
-func RenderCloudflaredAdmin(tunnelUUID, adminHost string) (string, error) {
+// validateCloudflaredProtocol pins the optional transport override to the two
+// values cloudflared accepts. The value lands unquoted in YAML, so anything
+// else (a newline, an extra key) is rejected the same way hostnames are.
+func validateCloudflaredProtocol(p string) error {
+	switch p {
+	case "", "quic", "http2":
+		return nil
+	}
+	return fmt.Errorf("cloudflared config: protocol %q is not one of quic, http2", p)
+}
+
+// RenderCloudflaredAdmin renders the direct-mode tunnel config (admin ingress
+// only). protocol is "" for cloudflared's default, or "quic"/"http2".
+func RenderCloudflaredAdmin(tunnelUUID, adminHost, protocol string) (string, error) {
 	if err := validateCloudflaredInputs(tunnelUUID, map[string]string{"admin host": adminHost}); err != nil {
+		return "", err
+	}
+	if err := validateCloudflaredProtocol(protocol); err != nil {
 		return "", err
 	}
 	t, err := template.New("cloudflared-admin").Parse(cloudflaredAdminTemplate)
@@ -97,12 +119,30 @@ func RenderCloudflaredAdmin(tunnelUUID, adminHost string) (string, error) {
 		return "", err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "AdminHost": adminHost})
+	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "AdminHost": adminHost, "Protocol": protocol})
 	return b.String(), err
 }
 
-func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, error) {
+// CloudflaredOptions are the per-node knobs of the cloudflare-mode tunnel
+// config: the transport (see RenderCloudflaredAdmin) and whether the XHTTP
+// ingress rule (XHTTPPath -> XHTTPPort) is emitted ahead of HTTPUpgrade.
+type CloudflaredOptions struct {
+	Protocol string
+	XHTTP    bool
+}
+
+// RenderCloudflaredWithAdmin renders the cloudflare-mode tunnel config (VPN +
+// admin ingress). protocol as in RenderCloudflaredAdmin; no XHTTP rule.
+func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost, protocol string) (string, error) {
+	return RenderCloudflaredWithAdminOpts(tunnelUUID, domain, adminHost, CloudflaredOptions{Protocol: protocol})
+}
+
+// RenderCloudflaredWithAdminOpts is RenderCloudflaredWithAdmin with every knob.
+func RenderCloudflaredWithAdminOpts(tunnelUUID, domain, adminHost string, opts CloudflaredOptions) (string, error) {
 	if err := validateCloudflaredInputs(tunnelUUID, map[string]string{"domain": domain, "admin host": adminHost}); err != nil {
+		return "", err
+	}
+	if err := validateCloudflaredProtocol(opts.Protocol); err != nil {
 		return "", err
 	}
 	t, err := template.New("cloudflared-with-admin").Parse(cloudflaredWithAdminTemplate)
@@ -110,7 +150,7 @@ func RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost string) (string, e
 		return "", err
 	}
 	var b bytes.Buffer
-	err = t.Execute(&b, map[string]string{"TunnelUUID": tunnelUUID, "Domain": domain, "AdminHost": adminHost})
+	err = t.Execute(&b, map[string]any{"TunnelUUID": tunnelUUID, "Domain": domain, "AdminHost": adminHost, "Protocol": opts.Protocol, "XHTTP": opts.XHTTP})
 	return b.String(), err
 }
 
@@ -167,34 +207,105 @@ func standardRouting() map[string]any {
 	}
 }
 
+// RenderXrayCloudflareHTTPUpgrade renders the cloudflare-mode xray config
+// with the HTTPUpgrade inbound only.
 func RenderXrayCloudflareHTTPUpgrade(users []XrayUser, vpnHost string, dnsServers []string) (string, error) {
+	return RenderXrayCloudflare(users, vpnHost, dnsServers, false)
+}
+
+// XrayCloudflareOptions are the optional inbounds of a cloudflare-mode node.
+type XrayCloudflareOptions struct {
+	XHTTP      bool   // second inbound on XHTTPPort behind the Cloudflare tunnel
+	DirectHost string // direct XHTTP route: TLS hostname served by the local TLS front
+	DirectPath string // direct XHTTP route: the one path the front proxies to XHTTPDirectPort
+}
+
+// RenderXrayCloudflare renders the cloudflare-mode xray config: the
+// HTTPUpgrade inbound on 10001 and, when xhttp is set, a second VLESS inbound
+// on XHTTPPort with network xhttp / XHTTPPath / XHTTPMode for the same users.
+func RenderXrayCloudflare(users []XrayUser, vpnHost string, dnsServers []string, xhttp bool) (string, error) {
+	return RenderXrayCloudflareOpts(users, vpnHost, dnsServers, XrayCloudflareOptions{XHTTP: xhttp})
+}
+
+// RenderXrayCloudflareOpts is RenderXrayCloudflare with every optional inbound.
+func RenderXrayCloudflareOpts(users []XrayUser, vpnHost string, dnsServers []string, opts XrayCloudflareOptions) (string, error) {
+	xhttp := opts.XHTTP
+	if (opts.DirectHost == "") != (opts.DirectPath == "") {
+		return "", errors.New("direct xhttp route needs both host and path")
+	}
+	if opts.DirectPath != "" && !strings.HasPrefix(opts.DirectPath, "/") {
+		return "", errors.New("direct xhttp path must start with /")
+	}
 	clients := make([]map[string]string, 0, len(users))
 	for _, u := range users {
 		clients = append(clients, map[string]string{"id": u.UUID, "email": u.Name + "@vpn"})
 	}
-	cfg := map[string]any{
-		"log": map[string]string{"loglevel": "warning"},
-		"dns": dnsBlock(dnsServers),
-		"inbounds": []any{
-			map[string]any{
-				"tag":      "vless-httpupgrade",
-				"listen":   "127.0.0.1",
-				"port":     10001,
-				"protocol": "vless",
-				"settings": map[string]any{
-					"clients":    clients,
-					"decryption": "none",
-				},
-				"streamSettings": map[string]any{
-					"network": "httpupgrade",
-					"httpupgradeSettings": map[string]any{
-						"path": VLESSPath,
-						"host": vpnHost,
-					},
-				},
-				"sniffing": sniffingBlock(),
+	inbounds := []any{
+		map[string]any{
+			"tag":      "vless-httpupgrade",
+			"listen":   "127.0.0.1",
+			"port":     10001,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
 			},
+			"streamSettings": map[string]any{
+				"network": "httpupgrade",
+				"httpupgradeSettings": map[string]any{
+					"path": VLESSPath,
+					"host": vpnHost,
+				},
+			},
+			"sniffing": sniffingBlock(),
 		},
+	}
+	if xhttp {
+		inbounds = append(inbounds, map[string]any{
+			"tag":      "vless-xhttp",
+			"listen":   "127.0.0.1",
+			"port":     XHTTPPort,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]any{
+				"network": "xhttp",
+				"xhttpSettings": map[string]any{
+					"path": XHTTPPath,
+					"host": vpnHost,
+					"mode": XHTTPMode,
+				},
+			},
+			"sniffing": sniffingBlock(),
+		})
+	}
+	if opts.DirectHost != "" {
+		inbounds = append(inbounds, map[string]any{
+			"tag":      "vless-xhttp-direct",
+			"listen":   "127.0.0.1",
+			"port":     XHTTPDirectPort,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]any{
+				"network": "xhttp",
+				"xhttpSettings": map[string]any{
+					"path": opts.DirectPath,
+					"host": opts.DirectHost,
+					"mode": XHTTPDirectMode,
+				},
+			},
+			"sniffing": sniffingBlock(),
+		})
+	}
+	cfg := map[string]any{
+		"log":       map[string]string{"loglevel": "warning"},
+		"dns":       dnsBlock(dnsServers),
+		"inbounds":  inbounds,
 		"outbounds": standardOutbounds(),
 		"routing":   standardRouting(),
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/kulinh/cf-vpn/internal/cert"
@@ -13,6 +14,7 @@ import (
 	"github.com/kulinh/cf-vpn/internal/paths"
 	"github.com/kulinh/cf-vpn/internal/state"
 	"github.com/kulinh/cf-vpn/internal/systemd"
+	"github.com/kulinh/cf-vpn/internal/tailscale"
 )
 
 var envFile = paths.EnvFile
@@ -46,6 +48,8 @@ func installFromEnv(env map[string]string) (commands.InstallInputs, error) {
 		Hy2PassUser1:    env["HY2_PASS_USER1"],
 		AdminTunnelUUID: env["ADMIN_TUNNEL_UUID"],
 		XrayDNSServers:  env["XRAY_DNS_SERVERS"],
+		RealityDest:     env["REALITY_DEST"],
+		RealitySNI:      env["REALITY_SNI"],
 	}, nil
 }
 
@@ -328,6 +332,116 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 			return 1
 		}
 		return 0
+	case "rotate-reality":
+		var dest, sni string
+		usage := "usage: cfvpnctl rotate-reality --dest <host:443> [--sni <host>]"
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--dest":
+				if i+1 >= len(args) {
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+				dest = args[i+1]
+				i++
+			case "--sni":
+				if i+1 >= len(args) {
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+				sni = args[i+1]
+				i++
+			default:
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+		}
+		if dest == "" {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := commands.RunRotateReality(ctx, commands.RotateRealityInputs{Dest: dest, SNI: sni}, systemd.ExecRunner{}, nil, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "xhttp":
+		if len(args) != 2 || (args[1] != "enable" && args[1] != "disable") {
+			fmt.Fprintln(stderr, "usage: cfvpnctl xhttp {enable|disable}")
+			return 2
+		}
+		if err := commands.RunXHTTPSet(ctx, args[1] == "enable", systemd.ExecRunner{}, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "derp":
+		return runDerp(ctx, args[1:], stdout, stderr)
+	case "rules-mode":
+		return runRulesMode(ctx, args[1:], stdout, stderr)
+	case "xhttp-direct":
+		usage := "usage: cfvpnctl xhttp-direct enable --host <host> --path </long-random-path> | disable"
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		var host, path string
+		switch args[1] {
+		case "disable":
+			if len(args) != 2 {
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+		case "enable":
+			for i := 2; i < len(args); i++ {
+				switch args[i] {
+				case "--host":
+					if i+1 >= len(args) {
+						fmt.Fprintln(stderr, usage)
+						return 2
+					}
+					host = args[i+1]
+					i++
+				case "--path":
+					if i+1 >= len(args) {
+						fmt.Fprintln(stderr, usage)
+						return 2
+					}
+					path = args[i+1]
+					i++
+				default:
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+			}
+			if host == "" || path == "" {
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+		default:
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := commands.RunXHTTPDirectSet(ctx, host, path, systemd.ExecRunner{}, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "hy2":
+		if len(args) != 2 || (args[1] != "enable" && args[1] != "disable") {
+			fmt.Fprintln(stderr, "usage: cfvpnctl hy2 {enable|disable}")
+			return 2
+		}
+		env, err := state.Load(envFile)
+		if err != nil {
+			fmt.Fprintf(stderr, "cannot read env file %s: %v\n", envFile, err)
+			return 1
+		}
+		if err := commands.RunHy2Set(ctx, args[1] == "enable", buildInstallDeps(env), stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
 	case "reconcile-units":
 		if err := commands.RunReconcileUnits(ctx, systemd.ExecRunner{}, stdout); err != nil {
 			fmt.Fprintln(stderr, err)
@@ -338,4 +452,140 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown command: %s\n", args[0])
 		return 2
 	}
+}
+
+// runDerp handles `cfvpnctl derp ...`: the tailnet's custom DERP regions and
+// the china-mode flag (derpMap.OmitDefaultRegions), edited through the
+// Tailscale API with the OAuth client in /etc/cfvpn/tailscale-oauth.env.
+func runDerp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	usage := "usage: cfvpnctl derp china-mode on|off | derp show | derp region add --id N --code C --name NAME --host H [--derp-port 8443] [--stun-port 3478] | derp region remove --id N"
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	deps := commands.DerpDeps{}
+	switch args[0] {
+	case "china-mode":
+		if len(args) != 2 || (args[1] != "on" && args[1] != "off") {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := commands.RunDerpChinaMode(ctx, args[1] == "on", deps, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "show":
+		if err := commands.RunDerpShow(ctx, deps, stdout); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "region":
+		if len(args) < 2 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		r := tailscale.Region{DERPPort: 8443, STUNPort: 3478}
+		for i := 2; i < len(args); i++ {
+			if i+1 >= len(args) {
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+			v := args[i+1]
+			switch args[i] {
+			case "--id":
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+				r.ID = n
+			case "--code":
+				r.Code = v
+			case "--name":
+				r.Name = v
+			case "--host":
+				r.HostName = v
+			case "--derp-port":
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+				r.DERPPort = n
+			case "--stun-port":
+				n, err := strconv.Atoi(v)
+				if err != nil {
+					fmt.Fprintln(stderr, usage)
+					return 2
+				}
+				r.STUNPort = n
+			default:
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+			i++
+		}
+		switch args[1] {
+		case "add":
+			if err := commands.RunDerpRegionAdd(ctx, r, deps, stdout); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		case "remove":
+			if r.ID == 0 {
+				fmt.Fprintln(stderr, usage)
+				return 2
+			}
+			if err := commands.RunDerpRegionRemove(ctx, r.ID, deps, stdout); err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			return 0
+		}
+		fmt.Fprintln(stderr, usage)
+		return 2
+	default:
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+}
+
+// runRulesMode handles `cfvpnctl rules-mode show | set cn|uae|none`: the
+// fleet-wide blocked-site module the panel inlines into the Shadowrocket
+// .conf when a subscription link carries no ?rules=. Written straight into
+// D1 (settings.rules_mode) with the CF credentials in /etc/cfvpn/cfvpn.env.
+func runRulesMode(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	usage := "usage: cfvpnctl rules-mode show | rules-mode set cn|uae|none"
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	deps := commands.RulesModeDeps{}
+	switch args[0] {
+	case "show":
+		if len(args) != 1 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := commands.RunRulesModeShow(ctx, deps, stdout); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "set":
+		if len(args) != 2 {
+			fmt.Fprintln(stderr, usage)
+			return 2
+		}
+		if err := commands.RunRulesModeSet(ctx, args[1], deps, stdout); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintln(stderr, usage)
+	return 2
 }

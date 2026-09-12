@@ -89,6 +89,88 @@ User mutations (add/remove/sync) re-render the xray config in-place using the ac
 
 `cfvpnctl rotate-domain <new-domain>` (without `--cleanup`) is **deprecated**; domain rotation is now driven from the panel (`POST /api/nodes/:id/rotate`) which calls the agent's `/admin/v1/rotate-domain`.
 
+## DERP relays and china-mode
+
+The tailnet runs its own DERP relays (`derper` on HKG-01 and JPY-01, see
+`docs/prep/tailscale-derp.md`). `cfvpnctl derp` edits the tailnet policy
+file's `derpMap` through the Tailscale API and touches nothing else in the
+policy (comments included). It needs an OAuth client with the **Policy File:
+Write** scope in `/etc/cfvpn/tailscale-oauth.env` (mode 600):
+
+```
+TS_OAUTH_CLIENT_ID=...
+TS_OAUTH_CLIENT_SECRET=...
+```
+
+```bash
+cfvpnctl derp show                 # current flag + regions
+cfvpnctl derp china-mode on        # before flying to China: devices use ONLY our relays
+cfvpnctl derp china-mode off       # back home: public relays + our relays (normal)
+cfvpnctl rules-mode show           # which blocked-site list the Shadowrocket .conf inlines
+cfvpnctl rules-mode set uae        # cn (default) | uae | none — written to D1 settings.rules_mode
+cfvpnctl derp region add --id 901 --code jpy --name JPY-01 --host derp-xxxx.duylinh.net   # ports default 8443/3478
+cfvpnctl derp region remove --id 901
+```
+
+### Driving it from Telegram
+
+`cfvpn-tgbot` (unit `cfvpn-tgbot.service`, VNM-01 only) long-polls
+**@rwl_vpn_bot** and accepts exactly these commands in the group chat
+`TELEGRAM_CHAT_ID`:
+
+```
+/mode status      # travel mode: which list the RWL8899 config inlines + DERP state
+/mode china       # config inlines the CN list AND china-mode on
+/mode uae         # config inlines the UAE list (OTT calls), china-mode off
+/mode home        # back to the default: CN list, china-mode off
+/china status     # or /derp — show the regions and whether china-mode is on
+/china on         # DERP china-mode alone, before flying to China
+/china off        # back home
+```
+
+Replies are short Telegram HTML (what changed, relay latencies, what to do
+next) rather than raw `cfvpnctl` output. Every reply and the command it
+answers is **deleted after 24 h** (the bot is a group admin): each sent
+message is queued as one JSON file in `/var/lib/cfvpn/tg-ttl/`, a reaper in
+the bot deletes due ones every minute, and `scripts/fleet-probe.py` queues its
+alerts in the same directory. `TELEGRAM_TTL_DIR=` (empty) disables it,
+`TELEGRAM_MESSAGE_TTL_HOURS` changes the TTL; `cfvpn-tgbot --reap` runs one
+pass by hand.
+
+It runs the same `cfvpnctl derp` code in-process, so snapshots, validation and
+the netcheck afterwards are identical; the reply carries that output. The
+Tailscale OAuth client never leaves this box, which is why the bot lives here
+and not in the panel Worker.
+
+The bot shares the group with the Worker's bot, so it answers only the two
+commands above and stays silent on everything else (`/status`, `/nodes`,
+`/sub` … belong to the Worker). Privacy mode is on, so it only ever receives
+slash commands. Token and chat id come from `/etc/cfvpn/fleet-probe.env`
+(optionally overridden by `/etc/cfvpn/tgbot.env`).
+
+```bash
+# install / update
+go build -o bin/cfvpn-tgbot ./cmd/cfvpn-tgbot
+install -m 0755 bin/cfvpn-tgbot /usr/local/bin/cfvpn-tgbot
+install -m 644 scripts/cfvpn-tgbot.service /etc/systemd/system/cfvpn-tgbot.service
+systemctl daemon-reload && systemctl enable --now cfvpn-tgbot
+cfvpn-tgbot --setup                  # register the command menu for the chat
+cfvpn-tgbot --simulate "/derp"       # self-test: runs the command and replies in the chat
+journalctl -u cfvpn-tgbot -f
+```
+
+A restart never replays a command that was queued while the bot was down: it
+skips the backlog and only acts on updates that arrive afterwards.
+
+Every edit snapshots the policy before and after into
+`/root/cfvpn-backups/acl/<timestamp>.{before,after}.json`, validates it with
+the API's dry run, and writes with `If-Match` so a concurrent console edit is
+refused rather than overwritten. `china-mode` then runs `tailscale netcheck`
+on this machine and prints it, so you see the regions that are in effect.
+`china-mode on` refuses to run when no custom region exists, and `region
+remove` refuses to delete the last region while china-mode is on — either
+would strand every device without a direct path.
+
 ## Network tuning (BBR)
 
 `cfvpnctl install` and `cfvpnctl upgrade` apply the node network tuning

@@ -1,9 +1,14 @@
-# Secrets & runtime state
+# Secrets & runtime state — never commit any env file except the *.example templates
 .env
 .env.local
+*.env
+!*.env.example
 /etc/cfvpn/
+/etc/cfvpn/*.env
 /var/lib/cfvpn/subscriptions/
 /var/lib/cfvpn/state/
+cfvpn-backups/
+/root/cfvpn-backups/
 bin/
 
 # Editor
@@ -43,3 +48,6 @@ panel/worker/.wrangler/
 
 # vitest cache accidentally created under src/
 panel/worker/src/node_modules/
+
+# python caches from scripts/tests
+__pycache__/

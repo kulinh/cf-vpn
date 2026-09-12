@@ -10,6 +10,8 @@ type AllResult = unknown[];
 type StubSpec = {
   userByToken?: Record<string, FirstResult>;
   nodesByUser?: Record<string, AllResult>;
+  settings?: Record<string, string>;
+  settingsThrow?: boolean;
 };
 
 function makeDB(spec: StubSpec): D1Database {
@@ -24,6 +26,11 @@ function makeDB(spec: StubSpec): D1Database {
         if (/FROM users WHERE sub_token=\?/.test(sql)) {
           const token = state.args[0] as string;
           return (spec.userByToken?.[token] ?? null) as never;
+        }
+        if (/FROM settings WHERE key=\?/.test(sql)) {
+          if (spec.settingsThrow) throw new Error("no such table: settings");
+          const v = spec.settings?.[state.args[0] as string];
+          return (v == null ? null : { value: v }) as never;
         }
         return null as never;
       },
@@ -204,6 +211,7 @@ describe("publicSubscription", () => {
 
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe("invalid_format");
+    expect((await res.json().catch(() => ({})) as { detail?: string }).detail ?? "supported: clash, shadowrocket").toContain("shadowrocket");
   });
 
   it("keeps the default (no format) body byte-identical", async () => {
@@ -343,5 +351,201 @@ describe("buildSubscriptionURIs mode branching", () => {
     }];
     const uris = buildSubscriptionURIs("kulinh", rows);
     expect(uris).toBe("");
+  });
+});
+
+describe("Reality URIs address the node by public IP", () => {
+  const base = {
+    vless_uuid: "u1", hy2_pw: "p1", vpn_host: "assets-b7e69185.rwl.one", node_id: "SIN-01",
+    hy2_host: null, hy2_port: null, hy2_obfs_pw: null,
+    mode: "direct" as const, reality_pubkey: "pk", reality_sid: "sid", reality_sni: "www.singaporeair.com", xhttp_path: null as string | null,
+  };
+  it("uses public_ip when D1 has it", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: "96.9.231.74" }]).split("\n");
+    expect(lines[0].startsWith("vless://u1@96.9.231.74:443?")).toBe(true);
+    expect(lines[0]).toContain("sni=www.singaporeair.com");
+  });
+  it("falls back to vpn_host when public_ip is null", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: null }]).split("\n");
+    expect(lines[0].startsWith("vless://u1@assets-b7e69185.rwl.one:443?")).toBe(true);
+  });
+  it("keeps the hostname for cloudflare routes even when public_ip is set", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, mode: "cloudflare" as const, node_id: "OR-001", vpn_host: "static-df60bd79.duylinh.org", public_ip: "51.81.245.144", xhttp_path: "/api/v1/sync" }]).split("\n");
+    expect(lines[0].startsWith("vless://u1@static-df60bd79.duylinh.org:443?")).toBe(true);
+  });
+});
+
+describe("HY2 URIs dial the public IP and keep the hostname as sni", () => {
+  const base = {
+    vless_uuid: "u1", hy2_pw: "p1", vpn_host: "media.example.com", node_id: "HKG-01",
+    hy2_host: "hy-c36ca6bd.dongnat247.com", hy2_port: 31300, hy2_obfs_pw: "obfs",
+    mode: "direct" as const, reality_pubkey: "pk", reality_sid: "sid", reality_sni: "www.cathaypacific.com", xhttp_path: null as string | null,
+  };
+  it("uses public_ip in the authority and the hostname in sni", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: "96.9.228.81" }]).split("\n");
+    expect(lines[1]).toBe("hysteria2://kulinh:p1@96.9.228.81:31300/?obfs=salamander&obfs-password=obfs&sni=hy-c36ca6bd.dongnat247.com&insecure=0#kulinh%40HKG-01-HY2");
+  });
+  it("falls back to the hostname without public_ip", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: null }]).split("\n");
+    expect(lines[1].startsWith("hysteria2://kulinh:p1@hy-c36ca6bd.dongnat247.com:31300/?")).toBe(true);
+  });
+});
+
+describe("XHTTP line for cloudflare nodes with xhttp_enabled", () => {
+  const base = {
+    vless_uuid: "2f8a1c3e-1111-4222-8333-abcdefabcdef", hy2_pw: "p1", vpn_host: "static-df60bd79.duylinh.org", node_id: "or-001",
+    hy2_host: null, hy2_port: null, hy2_obfs_pw: null, public_ip: "51.81.245.144",
+    mode: "cloudflare" as const, reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: "/api/v1/sync",
+  };
+  it("matches the Go golden string byte for byte", () => {
+    const lines = buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 1 }]).split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#alice%40or-001-XHTTP");
+  });
+  it("emits nothing extra when disabled or for direct nodes", () => {
+    expect(buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 0 }]).split("\n")).toHaveLength(1);
+    expect(buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: null }]).split("\n")).toHaveLength(1);
+  });
+});
+
+describe("XHTTP-Direct line", () => {
+  const base = {
+    vless_uuid: "2f8a1c3e-1111-4222-8333-abcdefabcdef", hy2_pw: "p1", vpn_host: "edge-fd34b370.rwl247.dev", node_id: "JPY-01",
+    hy2_host: null, hy2_port: null, hy2_obfs_pw: null, public_ip: "45.143.131.36",
+    mode: "cloudflare" as const, reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: "/api/v1/sync", xhttp_enabled: 0,
+  };
+  it("matches the Go golden string and uses the hostname, not the IP", () => {
+    const lines = buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn-82169439.duylinh.net", xhttp_direct_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10" }]).split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#kulinh%40JPY-01-XHTTP-Direct");
+  });
+  it("needs both host and path", () => {
+    expect(buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn.example.com", xhttp_direct_path: null }]).split("\n")).toHaveLength(1);
+  });
+});
+
+describe("?format=shadowrocket&final=", () => {
+  it("rejects an unknown final value", async () => {
+    const env = makeEnv(makeDB({}));
+    const res = await publicSubscription(env, "a".repeat(32), "shadowrocket", "maybe");
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_final");
+  });
+});
+
+describe("?format=shadowrocket&rules=", () => {
+  const token = "c".repeat(32);
+  const db = () => makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] } });
+  const moduleText = "#!name=x\n[Rule]\n# c\nDOMAIN-SUFFIX,google.com,PROXY\nIP-CIDR,8.8.8.0/24,PROXY,no-resolve\n";
+
+  it("rejects an unknown rules value before touching the database", async () => {
+    const res = await publicSubscription(makeEnv(makeDB({})), token, "shadowrocket", null, "bogus");
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_rules");
+  });
+
+  it("inlines the module fetched at the edge by default", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      calls.push(input);
+      return new Response(moduleText, { status: 200, headers: { etag: '"abc"' } });
+    });
+    try {
+      const res = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, null);
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(calls).toEqual(["https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_CN.module"]);
+      expect(body).toContain("\nDOMAIN-SUFFIX,google.com,PROXY\n");
+      expect(body).toContain("\nIP-CIDR,8.8.8.0/24,PROXY,no-resolve\n");
+      expect(body).toContain("(2 rules, etag abc");
+      expect(body).not.toContain("RULE-SET,");
+      expect(body).toMatch(/FINAL,DIRECT\n$/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("falls back to a RULE-SET line pointing at the .list when GitHub is unreachable", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("connect timeout");
+    });
+    try {
+      const res = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "cn");
+      const body = await res.text();
+      expect(body).toContain("RULE-SET,https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_CN.list,PROXY\n");
+      expect(body).not.toContain("google.com");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rules=uae inlines the UAE module instead", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      calls.push(input);
+      return new Response("[Rule]\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
+    });
+    try {
+      const body = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "uae")).text();
+      expect(calls).toEqual(["https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_UAE.module"]);
+      expect(body).toContain("# sr_proxy_list_UAE from ");
+      expect(body).toContain("\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("follows the stored rules_mode setting when the link carries no ?rules=", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      calls.push(input);
+      return new Response("[Rule]\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
+    });
+    try {
+      const uaeDB = makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "uae" } });
+      const body = await (await publicSubscription(makeEnv(uaeDB), token, "shadowrocket", null, null)).text();
+      expect(calls.at(-1)).toContain("sr_proxy_list_UAE.module");
+      expect(body).toContain("# sr_proxy_list_UAE from ");
+
+      // An explicit ?rules= on the link still wins over the stored mode.
+      await publicSubscription(makeEnv(uaeDB), token, "shadowrocket", null, "cn");
+      expect(calls.at(-1)).toContain("sr_proxy_list_CN.module");
+
+      // rules_mode=none: bare tail, nothing fetched.
+      const n = calls.length;
+      const noneDB = makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "none" } });
+      const bare = await (await publicSubscription(makeEnv(noneDB), token, "shadowrocket", null, null)).text();
+      expect(bare).toContain("load the sr_proxy_list_CN (or _UAE) module");
+      expect(calls.length).toBe(n);
+
+      // Garbage or a missing settings table fall back to CN.
+      for (const db2 of [
+        makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "mars" } }),
+        makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settingsThrow: true })
+      ]) {
+        await publicSubscription(makeEnv(db2), token, "shadowrocket", null, null);
+        expect(calls.at(-1)).toContain("sr_proxy_list_CN.module");
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rules=none and final=proxy skip the fetch entirely", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      return new Response(moduleText);
+    });
+    try {
+      const none = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "none")).text();
+      expect(none).toContain("load the sr_proxy_list_CN (or _UAE) module above this config");
+      const full = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", "proxy", null)).text();
+      expect(full).toMatch(/FINAL,PROXY\n$/);
+      expect(full).not.toContain("RULE-SET,");
+      expect(calls).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

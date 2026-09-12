@@ -9,7 +9,7 @@ import (
 const testTunnelUUID = "2f8a1c3e-1111-4222-8333-abcdefabcdef"
 
 func TestRenderCloudflaredWithAdminHappyPath(t *testing.T) {
-	out, err := RenderCloudflaredWithAdmin(testTunnelUUID, "cdn-a1b2.rwl.one", "hkg-01.rwl247.dev")
+	out, err := RenderCloudflaredWithAdmin(testTunnelUUID, "cdn-a1b2.rwl.one", "hkg-01.rwl247.dev", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,13 +37,13 @@ func TestRenderCloudflaredWithAdminHappyPath(t *testing.T) {
 func TestRenderCloudflaredRejectsYAMLInjection(t *testing.T) {
 	inject := "evil.example.com\n    service: http://127.0.0.1:22\n  - hostname: x.example.com"
 
-	if out, err := RenderCloudflaredWithAdmin(testTunnelUUID, inject, "hkg-01.rwl247.dev"); err == nil {
+	if out, err := RenderCloudflaredWithAdmin(testTunnelUUID, inject, "hkg-01.rwl247.dev", ""); err == nil {
 		t.Fatalf("domain injection accepted, rendered:\n%s", out)
 	}
-	if out, err := RenderCloudflaredWithAdmin(testTunnelUUID, "cdn-a1b2.rwl.one", inject); err == nil {
+	if out, err := RenderCloudflaredWithAdmin(testTunnelUUID, "cdn-a1b2.rwl.one", inject, ""); err == nil {
 		t.Fatalf("admin host injection accepted, rendered:\n%s", out)
 	}
-	if out, err := RenderCloudflaredAdmin(testTunnelUUID, inject); err == nil {
+	if out, err := RenderCloudflaredAdmin(testTunnelUUID, inject, ""); err == nil {
 		t.Fatalf("admin-only host injection accepted, rendered:\n%s", out)
 	}
 }
@@ -57,20 +57,40 @@ func TestRenderCloudflaredRejectsBadTunnelUUID(t *testing.T) {
 		"uuid-1",
 		"2f8a1c3e-1111-4222-8333-abcdefabcdef\ningress: []",
 	} {
-		if _, err := RenderCloudflaredAdmin(bad, "hkg-01.rwl247.dev"); err == nil {
+		if _, err := RenderCloudflaredAdmin(bad, "hkg-01.rwl247.dev", ""); err == nil {
 			t.Errorf("RenderCloudflaredAdmin accepted tunnel uuid %q", bad)
 		}
-		if _, err := RenderCloudflaredWithAdmin(bad, "cdn-a1b2.rwl.one", "hkg-01.rwl247.dev"); err == nil {
+		if _, err := RenderCloudflaredWithAdmin(bad, "cdn-a1b2.rwl.one", "hkg-01.rwl247.dev", ""); err == nil {
 			t.Errorf("RenderCloudflaredWithAdmin accepted tunnel uuid %q", bad)
 		}
 	}
 }
 
 func TestRenderCloudflaredRejectsEmptyHost(t *testing.T) {
-	if _, err := RenderCloudflaredWithAdmin(testTunnelUUID, "", "hkg-01.rwl247.dev"); err == nil {
+	if _, err := RenderCloudflaredWithAdmin(testTunnelUUID, "", "hkg-01.rwl247.dev", ""); err == nil {
 		t.Error("empty domain accepted")
 	}
-	if _, err := RenderCloudflaredWithAdmin(testTunnelUUID, "cdn-a1b2.rwl.one", ""); err == nil {
+	if _, err := RenderCloudflaredWithAdmin(testTunnelUUID, "cdn-a1b2.rwl.one", "", ""); err == nil {
 		t.Error("empty admin host accepted")
+	}
+}
+
+func TestRenderCloudflaredProtocolLine(t *testing.T) {
+	got, err := RenderCloudflaredWithAdmin(testTunnelUUID, "edge.example.com", "jpy-01.example.com", "http2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "\nprotocol: http2\n") {
+		t.Fatalf("missing protocol line:\n%s", got)
+	}
+	got, err = RenderCloudflaredAdmin(testTunnelUUID, "jpy-01.example.com", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(got, "protocol:") {
+		t.Fatalf("empty protocol must render no line:\n%s", got)
+	}
+	if _, err := RenderCloudflaredAdmin(testTunnelUUID, "jpy-01.example.com", "h3\ningress: x"); err == nil {
+		t.Fatal("bad protocol must be rejected")
 	}
 }

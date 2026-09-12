@@ -285,3 +285,46 @@ func (c Client) deleteRecordsByName(ctx context.Context, zoneID, recordType, nam
 	}
 	return nil
 }
+
+// D1Query runs one parameterised SQL statement against a D1 database through
+// the REST API and returns the rows of its result as raw JSON (an array of
+// objects; empty for writes). Used from VNM-01 for the few settings the
+// operator flips by hand (cfvpnctl rules-mode, the Telegram bot), the same
+// path scripts/d1-set-node.sh takes in shell.
+func (c Client) D1Query(ctx context.Context, databaseID, sql string, params []any) (json.RawMessage, error) {
+	if err := validate.UUID(databaseID); err != nil {
+		return nil, fmt.Errorf("cloudflare: d1 database id: %w", err)
+	}
+	ap, err := c.accountPath()
+	if err != nil {
+		return nil, err
+	}
+	if params == nil {
+		params = []any{}
+	}
+	body, err := json.Marshal(map[string]any{"sql": sql, "params": params})
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.do(ctx, http.MethodPost, ap+"/d1/database/"+url.PathEscape(databaseID)+"/query", body)
+	if err != nil {
+		return nil, err
+	}
+	var stmts []struct {
+		Success bool            `json:"success"`
+		Results json.RawMessage `json:"results"`
+	}
+	if err := json.Unmarshal(resp.Result, &stmts); err != nil {
+		return nil, fmt.Errorf("cf api: d1 query: unexpected result shape: %w", err)
+	}
+	if len(stmts) == 0 {
+		return nil, fmt.Errorf("cf api: d1 query returned no statement result")
+	}
+	if !stmts[0].Success {
+		return nil, fmt.Errorf("cf api: d1 statement did not succeed")
+	}
+	if len(stmts[0].Results) == 0 {
+		return json.RawMessage("[]"), nil
+	}
+	return stmts[0].Results, nil
+}

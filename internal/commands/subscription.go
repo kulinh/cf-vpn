@@ -60,7 +60,14 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 				"an HTTPUpgrade URI would be served by nothing on this node",
 				pub, sid, sni, name)
 		} else {
-			lines = append(lines, subscription.BuildVLESSRealityURI(tag, uuid, domain, sni, pub, sid))
+			// Reality clients dial the node's public IP: the Worker does the
+			// same (realityHost in subscription.ts), and it spares the client a
+			// DNS lookup of DOMAIN, which is interfered with from China.
+			host := strings.TrimSpace(env[state.KeyPublicIP])
+			if host == "" {
+				host = domain
+			}
+			lines = append(lines, subscription.BuildVLESSRealityURI(tag, uuid, host, sni, pub, sid))
 		}
 	case "cloudflare":
 		path := env[state.KeyXHTTPPath]
@@ -68,6 +75,12 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 			path = templates.VLESSPath
 		}
 		lines = append(lines, subscription.BuildVLESSHTTPUpgradeURI(tag, uuid, domain, path))
+		if XHTTPEnabled(env) {
+			lines = append(lines, subscription.BuildVLESSXHTTPURI(tag, uuid, domain, templates.XHTTPPath, templates.XHTTPMode))
+		}
+		if dh, dp := strings.TrimSpace(env[state.KeyXHTTPDirectHost]), strings.TrimSpace(env[state.KeyXHTTPDirectPath]); dh != "" && dp != "" {
+			lines = append(lines, subscription.BuildVLESSXHTTPDirectURI(tag, uuid, dh, dp, templates.XHTTPDirectMode))
+		}
 	default:
 		warnf(warn, "warning: MODE=%q is not \"direct\" or \"cloudflare\"; emitting no VLESS URI for %q "+
 			"— this node's mode is unknown, so no transport can be described", mode, name)
@@ -87,6 +100,9 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 // tag names the fragment (matches the Worker's `<user>@<node>`); name is the
 // bare username used for the userpass auth in the URI's authority.
 func buildHy2Line(tag, name, hy2PW string, env map[string]string, warn io.Writer) (string, bool) {
+	if !Hy2Enabled(env) {
+		return "", false
+	}
 	host := env[state.KeyHy2Host]
 	if host == "" {
 		return "", false
@@ -106,7 +122,13 @@ func buildHy2Line(tag, name, hy2PW string, env map[string]string, warn io.Writer
 			"(run `cfvpnctl add-user` or a panel sync to provision it)", name)
 		return "", false
 	}
-	return subscription.BuildHy2URI(tag, name, hy2PW, host, port, obfs), true
+	// Dial the public IP, present the HY2 hostname as SNI (the cert is for the
+	// hostname) — same rule as the Reality line and as the Worker.
+	address := strings.TrimSpace(env[state.KeyPublicIP])
+	if address == "" {
+		address = host
+	}
+	return subscription.BuildHy2URI(tag, name, hy2PW, address, host, port, obfs), true
 }
 
 // hy2PasswordsByName reads the node's hysteria config and returns password by

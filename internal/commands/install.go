@@ -55,6 +55,10 @@ type InstallInputs struct {
 	// XrayDNSServers is the optional comma-separated resolver override from
 	// XRAY_DNS_SERVERS. Empty means the international DoH default.
 	XrayDNSServers string
+	// RealityDest / RealitySNI pick the Reality steal target for a fresh
+	// install (REALITY_DEST / REALITY_SNI in the env file); empty = package default.
+	RealityDest string
+	RealitySNI  string
 }
 
 // InstallCFClient is the Cloudflare dependency required by RunInstall.
@@ -69,6 +73,8 @@ type InstallCFClient interface {
 
 type UFWRunner interface {
 	Allow(ctx context.Context, rule string) error
+	// Delete removes a rule previously added with Allow (`ufw delete allow <rule>`).
+	Delete(ctx context.Context, rule string) error
 }
 
 type PortProber interface {
@@ -463,7 +469,9 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 		var ok bool
 		realityParams, ok = loadRealityFromEnv(env)
 		if !ok {
-			realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{})
+			// Honor an operator-chosen dest/SNI already in the env file so a
+			// per-node steal target survives a key regeneration.
+			realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{Dest: env[state.KeyRealityDest], SNI: env[state.KeyRealitySNI]})
 			if err != nil {
 				return fail(fmt.Errorf("generate reality params: %w", err))
 			}
@@ -480,7 +488,7 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 			return fail(fmt.Errorf("render xray reality config: %w", err))
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, newHost, xrayDNSServersFromEnv(env))
+		xrayRendered, err = templates.RenderXrayCloudflareOpts(users, newHost, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 		if err != nil {
 			return fail(fmt.Errorf("render xray cloudflare config: %w", err))
 		}
@@ -496,12 +504,12 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 	}
 	var cfRendered string
 	if in.Mode == "direct" {
-		cfRendered, err = templates.RenderCloudflaredAdmin(oldTunnel, adminHost)
+		cfRendered, err = templates.RenderCloudflaredAdmin(oldTunnel, adminHost, env[state.KeyCloudflaredProtocol])
 		if err != nil {
 			return fail(fmt.Errorf("render cloudflared admin config: %w", err))
 		}
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(oldTunnel, newHost, adminHost)
+		cfRendered, err = templates.RenderCloudflaredWithAdminOpts(oldTunnel, newHost, adminHost, templates.CloudflaredOptions{Protocol: env[state.KeyCloudflaredProtocol], XHTTP: XHTTPEnabled(env)})
 		if err != nil {
 			return fail(fmt.Errorf("render cloudflared config: %w", err))
 		}
@@ -641,7 +649,7 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 			return UpgradeResult{}, fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain, xrayDNSServersFromEnv(env))
+		xrayRendered, err = templates.RenderXrayCloudflareOpts(users, domain, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 		if err != nil {
 			return UpgradeResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 		}
@@ -649,9 +657,9 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 
 	var cfRendered string
 	if in.Mode == "direct" {
-		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelUUID, adminHost)
+		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelUUID, adminHost, env[state.KeyCloudflaredProtocol])
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelUUID, domain, adminHost)
+		cfRendered, err = templates.RenderCloudflaredWithAdminOpts(tunnelUUID, domain, adminHost, templates.CloudflaredOptions{Protocol: env[state.KeyCloudflaredProtocol], XHTTP: XHTTPEnabled(env)})
 	}
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("render cloudflared config: %w", err)
@@ -1164,11 +1172,11 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	var realityParams xray.RealityParams
 	if in.Mode == "direct" {
 		var err error
-		realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{})
+		realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{Dest: in.RealityDest, SNI: in.RealitySNI})
 		if err != nil {
 			return fmt.Errorf("generate reality params: %w", err)
 		}
-		fmt.Fprintf(stdout, "generated Reality keypair (pub: %s)\n", realityParams.PublicKey)
+		fmt.Fprintf(stdout, "generated Reality keypair (pub: %s, dest %s)\n", realityParams.PublicKey, realityParams.Dest)
 	}
 
 	fmt.Fprintln(stdout, "configuring dns...")
@@ -1232,12 +1240,12 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 	var cfRendered string
 	if in.Mode == "direct" {
-		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelID, adminHost)
+		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelID, adminHost, "")
 		if err != nil {
 			return fmt.Errorf("render cloudflared admin config: %w", err)
 		}
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelID, domain, adminHost)
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelID, domain, adminHost, "")
 		if err != nil {
 			return fmt.Errorf("render cloudflared config: %w", err)
 		}
@@ -1314,7 +1322,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	fmt.Fprintf(stdout, "install complete: %s mode %s -> %s, admin %s\n", in.Mode, domain, ip, adminHost)
 	var vlessURI string
 	if in.Mode == "direct" {
-		vlessURI = subscription.BuildVLESSRealityURI(in.User1Name, userUUID, domain,
+		vlessURI = subscription.BuildVLESSRealityURI(in.User1Name, userUUID, ip,
 			realityParams.SNI, realityParams.PublicKey, realityParams.ShortID)
 	} else {
 		// Phase 0: XHTTP failed through cloudflared; using HTTPUpgrade instead
@@ -1372,6 +1380,10 @@ type execUFW struct{}
 func NewExecUFW() UFWRunner { return execUFW{} }
 func (execUFW) Allow(ctx context.Context, rule string) error {
 	return systemd.ExecRunner{}.Run(ctx, "ufw", "allow", rule)
+}
+
+func (execUFW) Delete(ctx context.Context, rule string) error {
+	return systemd.ExecRunner{}.Run(ctx, "ufw", "delete", "allow", rule)
 }
 
 type TCP443Prober struct{}

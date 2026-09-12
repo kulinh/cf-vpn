@@ -76,6 +76,11 @@ func (f *fakeUFW) Allow(_ context.Context, rule string) error {
 	return nil
 }
 
+func (f *fakeUFW) Delete(_ context.Context, rule string) error {
+	f.rules = append(f.rules, "delete "+rule)
+	return nil
+}
+
 type fakeInstallIP struct{ ip string }
 
 func (f fakeInstallIP) Detect(context.Context) (string, error) { return f.ip, nil }

@@ -503,11 +503,11 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		return RotateDirectResult{}, err
 	}
 
-	xrayRendered, err := templates.RenderXrayCloudflareHTTPUpgrade(users, in.NewHost, xrayDNSServersFromEnv(env))
+	xrayRendered, err := templates.RenderXrayCloudflareOpts(users, in.NewHost, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
 	}
-	cfRendered, err := templates.RenderCloudflaredWithAdmin(tunnelUUID, in.NewHost, adminHost)
+	cfRendered, err := templates.RenderCloudflaredWithAdminOpts(tunnelUUID, in.NewHost, adminHost, templates.CloudflaredOptions{Protocol: env[state.KeyCloudflaredProtocol], XHTTP: XHTTPEnabled(env)})
 	if err != nil {
 		return RotateDirectResult{}, fmt.Errorf("render cloudflared config: %w", err)
 	}

@@ -6,7 +6,7 @@ import (
 )
 
 func TestRenderCloudflaredAdmin(t *testing.T) {
-	out, err := RenderCloudflaredAdmin(testTunnelUUID, "admin.example.com")
+	out, err := RenderCloudflaredAdmin(testTunnelUUID, "admin.example.com", "")
 	if err != nil {
 		t.Fatal(err)
 	}
