@@ -387,6 +387,32 @@ file dưới `RULES_BASE_URL`. Version `6f241700`, 161 test pass. Generator
 `docs/module2v2rayng.py` chạy cho cả CN và UAE (bản UAE không có ruleset
 "Direct - China"), sinh `sr_proxy_list_UAE.list` cho fallback RULE-SET.
 
+## Bổ sung 10 — `/mode china|uae|home`: link sub giữ nguyên, tự đổi list
+
+Anh hỏi có on/off bằng Telegram được không: được, và mặc định luôn là China.
+
+**Cách chạy.** D1 có bảng `settings` mới (migration 0022, đã apply prod) với
+khoá `rules_mode` ∈ {cn, uae, none}. Worker: link `?format=shadowrocket` mà
+KHÔNG có `&rules=` sẽ đọc khoá này để chọn list nhúng (chưa set hoặc giá trị
+lạ → cn; `&rules=` ghi rõ trên link vẫn thắng). Ghi khoá này từ VNM-01 bằng
+CF token có sẵn trong `cfvpn.env` (cùng đường `scripts/d1-set-node.sh`), nên
+không phải mở thêm gì qua Cloudflare Access:
+
+- CLI: `cfvpnctl rules-mode show | set cn|uae|none` (thêm `D1Query` vào client
+  Cloudflare Go).
+- Telegram `@rwl_vpn_bot`: `/mode status` (in rules_mode + DERP), `/mode china`
+  = list CN + china-mode **on**, `/mode uae` = list UAE + china-mode off,
+  `/mode home` = list CN + china-mode off. Một chuyến đi = một lệnh; nếu ghi
+  D1 lỗi thì không đụng DERP. `/china on|off` vẫn giữ để chỉnh DERP riêng.
+
+**Đã kiểm chứng live:** `rules-mode set uae` → conf tải từ link cũ nhúng
+`sr_proxy_list_UAE`; `set cn` → quay về CN; `set mars` bị từ chối; bot đã
+cài lại (`--setup` menu có `/mode`), `--simulate "/mode status"` trả lời vào
+group đúng. Go test toàn bộ pass, Worker 162 test pass, version `504b6afc`.
+
+**Anh nhớ:** sau `/mode …`, vào Shadowrocket kéo cập nhật config RWL8899 một
+lần (link không đổi). Ở UAE thêm bước bỏ module `zalo_zalopay`.
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |
@@ -412,12 +438,11 @@ pass, shellcheck sạch. Test thật từ Trung Quốc vẫn là bước kiểm 
    đuôi `[Rule]` mới), xác nhận AUTO (5 đường), HY2-BACKUP (6 đường) và node
    lẻ `JPY-01-XHTTP-Direct`. Không cần thêm module `sr_proxy_list_CN` nữa
    (conf đã nhúng sẵn); chọn group `PROXY` trên màn hình chính.
-2. **Đi UAE:** trong Shadowrocket thêm config từ link
-   `?format=shadowrocket&rules=uae` (hoặc sửa link config đang có), bỏ module
-   `zalo_zalopay`; không cần `/china on` (DERP mặc định vẫn tới được ở UAE).
-3. **Trước khi bay Trung Quốc:** gõ `/china on` trong group Telegram (hoặc
-   `cfvpnctl derp china-mode on` trên VNM-01); khi về gõ `/china off`. Nhớ
-   SIN-01 chỉ relay được qua JPY-01.
+2. **Đi UAE:** gõ `/mode uae` trong group Telegram, kéo cập nhật config
+   RWL8899 trong Shadowrocket, bỏ module `zalo_zalopay`. Về nhà: `/mode home`.
+3. **Trước khi bay Trung Quốc:** gõ `/mode china` (list CN + china-mode on),
+   kéo cập nhật config; khi về gõ `/mode home`. Nhớ SIN-01 chỉ relay được qua
+   JPY-01 khi china-mode on.
 4. **Merge PR #9.**
 
 Đã xong trong phiên, không cần làm gì thêm: Telegram alert cho fleet-probe
