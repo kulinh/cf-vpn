@@ -240,6 +240,41 @@ chạy qua đúng bot và group, on 14 s / off 12 s, netcheck in ra trong group,
 bằng `setMyCommands` chỉ cho chat này. Token lấy từ
 `/etc/cfvpn/fleet-probe.env` (mode 600, gitignore).
 
+## Bổ sung 7 — dọn secret tồn, quyết định giữ CF token, và một drift tìm ra
+
+**CF token: giữ nguyên theo quyết định của anh.** Em dò thật bằng các endpoint
+token cần dùng (D1 query, zones, DNS read, tunnels, workers scripts) — tất cả
+đều `success`, nên token đang dùng trên fleet vẫn sống và không có gì đứt.
+`GET /user/tokens/verify` trả "Invalid API Token" (code 1000) và `GET /user`
+trả 9109 chỉ vì đây là token **account-scoped**, hai endpoint đó là user-scoped
+— **không dùng chúng để kết luận token chết**. Nếu sau này muốn xoay thật thì
+phải cập nhật `CF_API_TOKEN` trong `/etc/cfvpn/cfvpn.env` của cả 9 node (lego,
+Caddy, derper đều đọc từ đây) cộng secret `CF_API_TOKEN` của Worker, và phân
+phối trước khi xoá token cũ.
+
+**`.claude/settings.local.json`:** xoá 27 rule có nhúng token Cloudflare hoặc
+mật khẩu SSH (`SSHPASS='…'`), còn 325 rule, JSON hợp lệ, không còn match nào.
+Các rule đó dư vì đã có `Bash(npx wrangler *)`, `Bash(npm *)`, `Bash(sshpass *)`
+không mang secret. File này được gitignore toàn cục nên không nằm trong repo.
+
+**Xoá file env backup tồn đọng:** 13 file `/etc/cfvpn/cfvpn.env.bak*` trên 7
+node (VNM-01 3 file từ tháng 4 còn khoá `TROJAN_PASS_USER1` thời trước HY2,
+JPY-02 5 file, còn lại 1 file mỗi node). Mỗi file chứa một bản copy của
+`CF_API_TOKEN`. Chỉ xoá sau khi kiểm tra env sống của node đó đủ khoá và xray
+đang active. USA-01 và HAN-01 vốn đã sạch. Kết quả: 0 file còn lại trên cả 9 node.
+
+**Drift phát hiện nhân lúc đó:** HKG-01, SIN-01 và JPY-02 **thiếu khoá
+`NODE_ID`** trong `/etc/cfvpn/cfvpn.env` (node cài từ trước khi có khoá này).
+Hệ quả: tag trong file subscription phía node là `kulinh-Reality` thay vì
+`kulinh@HKG-01-Reality`, lệch với tag panel sinh ra; và `cfvpnctl install` trên
+node đó sẽ hỏng ở bước `tunnelNameForNode`. Subscription anh import từ panel
+không bị ảnh hưởng vì Worker lấy id từ D1. Đã thêm `NODE_ID` và sinh lại file
+subscription phía node; tag giờ là `kulinh%40HKG-01-Reality`,
+`kulinh%40SIN-01-Reality`, `kulinh%40JPY-02-Reality`. Toàn fleet hiện đủ cả 5
+khoá `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `NODE_ID`, `MODE`, `DOMAIN`.
+
+Probe lại sau thay đổi: 19/19 đường 204, drift 9/9 khớp.
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |
