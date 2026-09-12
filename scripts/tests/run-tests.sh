@@ -142,6 +142,44 @@ b'; do
   if cfvpn_env_value_ok "$evil"; then bad "accepts unsafe [$evil]"; else ok "rejects unsafe value"; fi
 done
 
+section "cfvpn-common.sh — HY2_PORT bounds (shared by both installers)"
+for p in 1024 32443 65535; do
+  if cfvpn_port_ok "$p"; then ok "accepts port $p"; else bad "rejects valid port $p"; fi
+done
+# 443 is rejected on purpose: every cfvpn listener runs unprivileged. The rest are
+# the typos this is here to catch before the install mutates anything.
+for p in 443 1023 65536 0 "" "32443 " "3244a" "-1" "32.443" "0x80"; do
+  if cfvpn_port_ok "$p"; then bad "accepts invalid port [$p]"; else ok "rejects invalid port [$p]"; fi
+done
+out="$( ( cfvpn_require_port HY2_PORT 70000 ) 2>&1 )"; rc=$?
+is "$rc" "1" "cfvpn_require_port dies on an out-of-range port"
+contains "$out" "HY2_PORT must be an integer in [1024,65535] (got: 70000)" "…and names the key and the value"
+
+section "install-node-CN.sh — the remote stage dir is removed on failure (C5)"
+# The REAL function, lifted out of the installer (which cannot be sourced: its
+# top-level preflight hits the network), so the rm -rf guard under test is the
+# shipped one and not a copy.
+sed -n '/^cleanup_remote_stage() {/,/^}/p' "$ROOT/scripts/install-node-CN.sh" > "$TMPROOT/crs.sh"
+is "$(grep -c '^cleanup_remote_stage() {' "$TMPROOT/crs.sh")" "1" "cleanup_remote_stage was found in the installer"
+RM_LOG="$TMPROOT/rm.log"
+(
+  . "$TMPROOT/crs.sh"
+  # shellcheck disable=SC2034  # named in cleanup_remote_stage's log/warn lines
+  TARGET_HOST="root@target"
+  ssh_run() { printf '%s\n' "$*" >> "$RM_LOG"; }     # stub: record, never run
+  : >"$RM_LOG"
+  REMOTE_STAGE="/tmp/cfvpn-stage.abc123"; cleanup_remote_stage >/dev/null 2>&1
+  printf 'after=[%s]\n' "$REMOTE_STAGE"
+  # Anything that is not a stage dir must never be handed to rm -rf.
+  for danger in "/" "/etc" "" "/tmp" "/root/cfvpn-backups"; do
+    REMOTE_STAGE="$danger"; cleanup_remote_stage >/dev/null 2>&1
+  done
+) > "$TMPROOT/crs.out" 2>&1
+is "$(grep -c '^rm -rf /tmp/cfvpn-stage.abc123$' "$RM_LOG")" "1" "a real stage dir is removed on the target"
+contains "$(cat "$TMPROOT/crs.out")" "after=[]" "…and REMOTE_STAGE is cleared so the EXIT trap does not repeat it"
+is "$(grep -cvE '^rm -rf /tmp/cfvpn-stage\.' "$RM_LOG")" "0" \
+   "no path outside /tmp/cfvpn-stage.* is ever passed to rm -rf"
+
 section "cfvpn-common.sh — sha256 parsing"
 h1=0000000000000000000000000000000000000000000000000000000000000001
 h2=0000000000000000000000000000000000000000000000000000000000000002
@@ -218,6 +256,40 @@ is "$(grep -c '^AGENT_SHARED_SECRET=secret-two$' "$ENVF")" "1" "forced rewrite s
 is "$(grep -c '^ADMIN_TUNNEL_UUID=tunnel-old$' "$ENVF")" "1" \
    "forced rewrite CARRIES OVER ADMIN_TUNNEL_UUID (else the old tunnel is orphaned)"
 is "$(grep -c '^CF_ACCOUNT_ID=acct-1$' "$ENVF")" "1" "forced rewrite carries over the CF credentials"
+
+# --- C1: the operator's transport CHOICES must survive a forced re-provision --
+# A missing HY2_ENABLED means "on" in internal/state/keys.go, so dropping the key
+# is not neutral: a node deliberately running without hysteria came back with it
+# enabled, advertising an endpoint nothing was listening on.
+cat >"$ENVF" <<'EOF'
+REALITY_PRIVATE_KEY=priv
+UUID_USER1=uuid-1
+AGENT_SHARED_SECRET=secret-one
+ADMIN_TUNNEL_UUID=tunnel-old
+HY2_ENABLED=0
+XHTTP_ENABLED=1
+XHTTP_DIRECT_HOST=static-df60bd79.duylinh.org
+XHTTP_DIRECT_PATH=/api/v1/sync
+CLOUDFLARED_PROTOCOL=http2
+REALITY_DEST=www.sony.jp:443
+REALITY_SNI=www.sony.jp
+XRAY_DNS_SERVERS=https://223.5.5.5/dns-query
+EOF
+printf 'NODE_ID=chn-01\nAGENT_SHARED_SECRET=secret-two\n' | FORCE_REINSTALL=1 helper write >/dev/null
+is "$(grep -c '^HY2_ENABLED=0$' "$ENVF")" "1" \
+   "forced rewrite KEEPS HY2_ENABLED=0 (a missing key would silently re-enable HY2)"
+is "$(grep -c '^XHTTP_ENABLED=1$' "$ENVF")" "1"          "forced rewrite keeps XHTTP_ENABLED"
+is "$(grep -c '^XHTTP_DIRECT_HOST=static-df60bd79.duylinh.org$' "$ENVF")" "1" \
+   "forced rewrite keeps XHTTP_DIRECT_HOST"
+is "$(grep -c '^XHTTP_DIRECT_PATH=/api/v1/sync$' "$ENVF")" "1" "forced rewrite keeps XHTTP_DIRECT_PATH"
+is "$(grep -c '^CLOUDFLARED_PROTOCOL=http2$' "$ENVF")" "1"    "forced rewrite keeps CLOUDFLARED_PROTOCOL"
+is "$(grep -c '^REALITY_DEST=www.sony.jp:443$' "$ENVF")" "1"  "forced rewrite keeps the per-node REALITY_DEST"
+is "$(grep -c '^REALITY_SNI=www.sony.jp$' "$ENVF")" "1"       "forced rewrite keeps REALITY_SNI"
+is "$(grep -c '^XRAY_DNS_SERVERS=https://223.5.5.5/dns-query$' "$ENVF")" "1" \
+   "forced rewrite keeps XRAY_DNS_SERVERS (the CN nodes need domestic DNS)"
+# …while the generated secrets are still dropped, which is the whole point.
+is "$(grep -c '^REALITY_PRIVATE_KEY=' "$ENVF")" "0" "forced rewrite still drops the Reality private key"
+is "$(grep -c '^UUID_USER1=' "$ENVF")" "0"          "forced rewrite still drops the user UUID"
 
 # unforced re-run over a partial env file preserves keys we do not write
 printf 'NODE_ID=old\nUUID_USER1=uuid-keep\nADMIN_TUNNEL_UUID=tunnel-keep\n' >"$ENVF"
@@ -324,6 +396,51 @@ is "$(d1_zone_for_domain vpn.example.co.uk 2>/dev/null)" "co.uk" \
 contains "$(d1_zone_for_domain vpn.example.co.uk 2>&1 >/dev/null)" "falling back" \
    "fallback warns on stderr"
 
+section "cfvpn-d1.sh — d1_upsert_node NULLs the empty hy2 columns (C2)"
+# "No hysteria on this node" is NULL everywhere else in the system (that is what
+# `cfvpnctl hy2 disable` + d1-set-node.sh hy2-off write, and what the Worker
+# tests before putting an HY2 line in a subscription). An empty string is truthy
+# there, so an HY2-less install used to be advertised as "hysteria2://@:".
+# Captured to a FILE: d1_upsert_node calls d1_query inside a command
+# substitution, so a variable set by the stub never reaches this shell.
+CAPFILE="$TMPROOT/d1-upsert.json"
+d1_query() { printf '%s' "$1" >"$CAPFILE"; printf '{"success":true,"result":[{"meta":{"changes":1}}]}'; }
+# shellcheck disable=SC2034  # every one of these is read by d1_upsert_node
+{
+  DB_NODE_ID=JPY-03
+  NODE_LABEL="JPY-03"
+  ADMIN_HOST=admin-x.duylinh.net
+  DOMAIN=jpy-03.rwl247.dev
+  HY2_HOST=""
+  HY2_PORT=""
+  HY2_OBFS_PW=""
+  PUBLIC_IP=203.0.113.9
+  ZONE=rwl247.dev
+  MODE=direct
+  NOW_MS=1789300800000
+  AGENT_SHARED_SECRET=secret-one
+}
+d1_upsert_node >/dev/null 2>&1
+sql="$(jq -r '.sql' "$CAPFILE")"
+contains "$sql" "NULLIF(?, ''),NULLIF(?, ''),NULLIF(?, '')" \
+   "hy2_host/hy2_port/hy2_obfs_pw go through NULLIF(?, '')"
+is "$(printf '%s' "$sql" | grep -o '?' | wc -l)" "$(jq '.params | length' "$CAPFILE")" \
+   "placeholder count still matches the params array (the NULLIFs did not shift it)"
+# jq -c, not `// "MISSING"`: a JSON null is falsy in jq, so // would hide it.
+is "$(jq -c '.params[5]' "$CAPFILE")" "null" \
+   "an empty HY2_PORT is sent as JSON null, not as a string (hy2_port is an integer column)"
+# A node that DOES run HY2 is unaffected.
+# shellcheck disable=SC2034  # read by d1_upsert_node
+{
+  HY2_HOST=hy-c36ca6bd.dongnat247.com
+  HY2_PORT=31300
+  HY2_OBFS_PW=obfspw
+}
+d1_upsert_node >/dev/null 2>&1
+is "$(jq -r '.params[4]' "$CAPFILE")" "hy-c36ca6bd.dongnat247.com" "a real hy2_host is passed through"
+is "$(jq -r '.params[5]' "$CAPFILE")" "31300" "a real hy2_port stays an integer"
+unset -f d1_query
+
 # ---------------------------------------------------------------------------
 section "cfvpn-drift.sh — node config vs D1 (M-S11)"
 # shellcheck source=../lib/cfvpn-drift.sh
@@ -356,6 +473,201 @@ NODE_UUID=$(mk nodeuuid 'JPY-01\tkulinh\tuuid-WRONG\tpassword-aaaa\nSIN-01\tkuli
 OUT=$(drift_compare "$D1_OK" "$NODE_UUID")
 contains "$OUT" "vless_uuid" "vless uuid drift is reported"
 
+
+# ----- cfvpn_strip_oci_reject -------------------------------------------------
+oci_rules="$(mktemp)"
+cat >"$oci_rules" <<'OCI'
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -p icmp -j ACCEPT
+-A INPUT -i lo -j ACCEPT
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
+-A INPUT -j REJECT --reject-with icmp-host-prohibited
+-A FORWARD -j REJECT --reject-with icmp-host-prohibited
+COMMIT
+OCI
+is "$(cfvpn_strip_oci_reject "$oci_rules")" "2" "oci: both blanket REJECT rules counted"
+is "$(grep -c 'REJECT' "$oci_rules")" "0" "oci: REJECT lines removed"
+is "$(grep -c -- '--dport 22 -j ACCEPT' "$oci_rules")" "1" "oci: SSH accept kept"
+is "$(grep -c '^COMMIT' "$oci_rules")" "1" "oci: COMMIT kept"
+is "$(ls "$oci_rules".cfvpn-orig.* | wc -l)" "1" "oci: original backed up"
+is "$(cfvpn_strip_oci_reject "$oci_rules")" "0" "oci: second run is a no-op"
+plain_rules="$(mktemp)"
+printf '*filter\n-A INPUT -j DROP\nCOMMIT\n' >"$plain_rules"
+is "$(cfvpn_strip_oci_reject "$plain_rules")" "0" "oci: a non-OCI ruleset is left alone"
+is "$(cat "$plain_rules")" "$(printf '*filter\n-A INPUT -j DROP\nCOMMIT\n')" "oci: non-OCI file unchanged"
+is "$(cfvpn_strip_oci_reject /nonexistent/rules.v4)" "0" "oci: missing file is fine"
+rm -f "$oci_rules" "$oci_rules".cfvpn-orig.* "$plain_rules"
+
+# ----- cfvpn_is_oci -----------------------------------------------------------
+# The REJECT pattern above is the stock tail of any Red-Hat-style ruleset, not an
+# OCI fingerprint, so the wrapper must gate on the DMI before touching a file.
+DMI="$TMPROOT/dmi"; mkdir -p "$DMI"
+printf 'OracleCloud.com\n' > "$DMI/asset_oci"
+printf 'Oracle Corporation\n' > "$DMI/vendor_oci"
+printf 'oraclecloud.com\n' > "$DMI/asset_lower"
+printf 'Google\n' > "$DMI/asset_other"
+printf 'DigitalOcean\n' > "$DMI/vendor_other"
+cfvpn_is_oci "$DMI/asset_oci" "$DMI/vendor_other"
+is "$?" "0" "cfvpn_is_oci: chassis_asset_tag OracleCloud.com is enough"
+cfvpn_is_oci "$DMI/asset_other" "$DMI/vendor_oci"
+is "$?" "0" "cfvpn_is_oci: sys_vendor 'Oracle Corporation' is enough"
+cfvpn_is_oci "$DMI/asset_lower" "$DMI/vendor_other"
+is "$?" "0" "cfvpn_is_oci: match is case-insensitive"
+cfvpn_is_oci "$DMI/asset_other" "$DMI/vendor_other"
+is "$?" "1" "cfvpn_is_oci: a non-Oracle node is not OCI"
+cfvpn_is_oci "$DMI/nope" "$DMI/nope2"
+is "$?" "1" "cfvpn_is_oci: unreadable DMI is not OCI (never guess)"
+
+# The wrapper must not touch a single rule on a node that is not OCI. A real
+# REJECT-bearing ruleset is put in its way: if the early return is missing, the
+# node's own deliberate REJECT lines are deleted.
+not_oci_rules="$TMPROOT/notoci-rules.v4"
+printf '*filter\n-A INPUT -i lo -j ACCEPT\n-A INPUT -j REJECT --reject-with icmp-host-prohibited\nCOMMIT\n' >"$not_oci_rules"
+before="$(cat "$not_oci_rules")"
+out="$(CFVPN_FORCE_OCI=0 cfvpn_oci_firewall_fix 2>&1)"; rc=$?
+is "$rc" "0" "oci wrapper: non-OCI node returns 0"
+contains "$out" "not an Oracle Cloud instance" "oci wrapper: non-OCI node says so in one line"
+is "$(cat "$not_oci_rules")" "$before" "oci wrapper: non-OCI node's REJECT rules are untouched"
+is "$(ls "$TMPROOT"/notoci-rules.v4.cfvpn-orig.* 2>/dev/null | wc -l)" "0" \
+   "oci wrapper: non-OCI node gets no backup file either"
+# The CFVPN_KEEP_OCI_IPTABLES opt-out still wins on a node that IS OCI, and must
+# also leave netfilter-persistent alone.
+out="$(CFVPN_FORCE_OCI=1 CFVPN_KEEP_OCI_IPTABLES=1 cfvpn_oci_firewall_fix 2>&1)"
+contains "$out" "CFVPN_KEEP_OCI_IPTABLES=1" "oci wrapper: the opt-out is honoured on an OCI node"
+contains "$out" "netfilter-persistent" "oci wrapper: the opt-out message says the unit is left alone"
+
+# ----- cfvpn_env_read ---------------------------------------------------------
+section "cfvpn-common.sh — cfvpn_env_read (no sourcing)"
+ENV_READ="$TMPROOT/read.env"
+cat >"$ENV_READ" <<'ENVEOF'
+# comment
+PUBLIC_IP=$(touch /tmp/cfvpn-pwned-by-env-read)
+DOMAIN=vpn.rwl247.dev
+HY2_OBFS_PW=a`id`b
+UUID_USER1=1f0b0e0e-0000-4000-8000-000000000001
+XRAY_DNS_SERVERS=https://1.1.1.1/dns-query,https://9.9.9.9/dns-query
+IGNORED_KEY=should-not-be-exported
+ENVEOF
+rm -f /tmp/cfvpn-pwned-by-env-read
+(
+  cfvpn_env_read "$ENV_READ" PUBLIC_IP DOMAIN HY2_OBFS_PW UUID_USER1 XRAY_DNS_SERVERS
+  printf 'PUBLIC_IP=[%s]\n'   "${PUBLIC_IP:-}"
+  printf 'DOMAIN=[%s]\n'      "${DOMAIN:-}"
+  printf 'HY2_OBFS_PW=[%s]\n' "${HY2_OBFS_PW:-}"
+  printf 'DNS=[%s]\n'         "${XRAY_DNS_SERVERS:-}"
+  printf 'IGNORED=[%s]\n'     "${IGNORED_KEY:-}"
+) >"$TMPROOT/env-read.out" 2>&1
+out="$(cat "$TMPROOT/env-read.out")"
+is "$([ -e /tmp/cfvpn-pwned-by-env-read ] && echo pwned || echo clean)" "clean" \
+   "cfvpn_env_read does NOT execute \$(...) in a value (the reason not to source)"
+contains "$out" 'PUBLIC_IP=[$(touch /tmp/cfvpn-pwned-by-env-read)]' "value is kept literally"
+contains "$out" 'HY2_OBFS_PW=[a`id`b]' "backticks are kept literally too"
+contains "$out" "DOMAIN=[vpn.rwl247.dev]" "a normal value round-trips"
+contains "$out" "DNS=[https://1.1.1.1/dns-query,https://9.9.9.9/dns-query]" \
+   "a value containing '=' free text and commas survives (split on the FIRST '=')"
+contains "$out" "IGNORED=[]" "only the requested keys are exported"
+# A hand-edited cfvpn.env often has no trailing newline on its last line.
+printf 'DOMAIN=first\nUUID_USER1=no-trailing-newline' >"$TMPROOT/nonl.env"
+out="$( ( cfvpn_env_read "$TMPROOT/nonl.env" UUID_USER1; printf '[%s]\n' "${UUID_USER1:-}" ) 2>&1 )"
+contains "$out" "[no-trailing-newline]" "the last line is read even without a trailing newline"
+rm -f /tmp/cfvpn-pwned-by-env-read
+out="$( ( cfvpn_env_read "$TMPROOT/nope.env" DOMAIN ) 2>&1 )"; rc=$?
+is "$rc" "1" "cfvpn_env_read: an unreadable file is an error, not a silent empty read"
+contains "$out" "cannot read" "cfvpn_env_read: and it says which file"
+
+# ----- cfvpn_ensure_ufw_ssh_allowed ------------------------------------------
+section "cfvpn-common.sh — cfvpn_ensure_ufw_ssh_allowed"
+FAKEBIN="$TMPROOT/fakebin"; mkdir -p "$FAKEBIN"
+UFW_LOG="$TMPROOT/ufw.log"
+cat >"$FAKEBIN/ufw" <<'UFWEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$UFW_LOG"
+case "$1" in
+  status) printf '%s\n' "$UFW_STATUS_OUT" ;;
+  allow)  [ "${UFW_ALLOW_FAILS:-0}" = "1" ] && [ "$2" = "OpenSSH" ] && exit 1; printf 'Rule added\n' ;;
+esac
+exit 0
+UFWEOF
+chmod +x "$FAKEBIN/ufw"
+export UFW_LOG
+# A subshell per case: `VAR=x shell_function` leaves VAR set afterwards in bash,
+# which would leak UFW_ALLOW_FAILS into the later cases.
+try_ufw() { # try_ufw <status-output> <port> [allow_fails]
+  : >"$UFW_LOG"
+  (
+    PATH="$FAKEBIN:$PATH"
+    export PATH UFW_STATUS_OUT="$1" UFW_ALLOW_FAILS="${3:-0}"
+    cfvpn_ensure_ufw_ssh_allowed "$2"
+  ) >/dev/null 2>&1
+}
+
+# inactive ufw: nothing is touched (adding rules to a disabled firewall is noise)
+try_ufw "Status: inactive" 22
+is "$(grep -c 'allow' "$UFW_LOG")" "0" "ufw inactive: no allow rule is added"
+
+# active ufw on the default port: the OpenSSH profile is enough
+try_ufw "Status: active" 22
+is "$(grep -c '^allow OpenSSH$' "$UFW_LOG")" "1" "ufw active, port 22: allows the OpenSSH profile"
+is "$(grep -c '^allow 22/tcp$' "$UFW_LOG")" "0" "…and does not also add a redundant 22/tcp rule"
+
+# the fleet baseline port: the OpenSSH profile would open 22 and leave 17722
+# closed, which is how a remote install ends with an unreachable box.
+try_ufw "Status: active" 17722
+is "$(grep -c '^allow 17722/tcp$' "$UFW_LOG")" "1" "ufw active, port 17722: allows the REAL port"
+is "$(grep -c 'OpenSSH' "$UFW_LOG")" "0" "…and never falls back to the OpenSSH profile"
+
+# OpenSSH profile missing (minimal images): fall back to the numeric rule
+try_ufw "Status: active" 22 1
+is "$(grep -c '^allow 22/tcp$' "$UFW_LOG")" "1" "no OpenSSH profile: falls back to 22/tcp"
+
+# no ufw at all
+mkdir -p "$TMPROOT/empty-bin"
+# shellcheck disable=SC2123  # replacing PATH is the point: simulate "ufw not installed"
+( PATH="$TMPROOT/empty-bin"; export PATH; cfvpn_ensure_ufw_ssh_allowed 22 ) >/dev/null 2>&1
+is "$?" "0" "ufw not installed: returns 0 and does nothing"
+
+# ----- cfvpn_oci_firewall_fix: netfilter-persistent only goes away once ufw is up
+# Stopping that unit flushes the chains it owns. On a box where ufw is not
+# active yet that leaves NO in-box firewall (policy ACCEPT) — worse than the
+# image default — so the disable must wait for ufw.
+NFP_LOG="$TMPROOT/nfp.log"
+cat >"$FAKEBIN/systemctl" <<'SCEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$NFP_LOG"
+case "$1" in
+  cat) exit 0 ;;   # the unit exists on this image
+  *) exit 0 ;;
+esac
+SCEOF
+chmod +x "$FAKEBIN/systemctl"
+export NFP_LOG
+oci_rules2="$TMPROOT/oci-rules.v4"
+run_oci_fix() { # run_oci_fix <ufw-status>
+  : >"$NFP_LOG"; : >"$UFW_LOG"
+  printf '*filter\n:INPUT ACCEPT [0:0]\n-A INPUT -p tcp --dport 22 -j ACCEPT\n-A INPUT -j REJECT --reject-with icmp-host-prohibited\nCOMMIT\n' >"$oci_rules2"
+  (
+    PATH="$FAKEBIN:$PATH"
+    export PATH UFW_STATUS_OUT="$1" CFVPN_FORCE_OCI=1
+    # Point the function at the temp ruleset by running it from a shim that
+    # rewrites the paths: the wrapper hardcodes /etc/iptables, which tests must
+    # never touch, so only the netfilter-persistent decision is exercised here.
+    cfvpn_oci_firewall_fix
+  ) >/dev/null 2>&1
+  rm -f "$oci_rules2"
+}
+
+run_oci_fix "Status: inactive"
+is "$(grep -c 'disable --now netfilter-persistent' "$NFP_LOG")" "0" \
+  "oci wrapper: ufw inactive → netfilter-persistent is KEPT (node would be left open)"
+run_oci_fix "Status: active"
+is "$(grep -c 'disable --now netfilter-persistent' "$NFP_LOG")" "1" \
+  "oci wrapper: ufw active → netfilter-persistent is disabled"
+is "$(grep -c '^reload$' "$UFW_LOG")" "1" \
+  "…and ufw is reloaded right after, because stopping the unit flushes its chains"
+rm -f "$FAKEBIN/systemctl"
+
 # A user D1 promises but the node does not serve is just as broken.
 NODE_MISSING=$(mk nodemissing 'JPY-01\tkulinh\tuuid-a\tpassword-aaaa\n')
 OUT=$(drift_compare "$D1_OK" "$NODE_MISSING"); RC=$?
@@ -369,6 +681,81 @@ contains "$OUT" "d1=<absent>" "user only on the node is reported"
 
 OUT=$(drift_compare "$DRIFT_DIR/nope" "$NODE_OK" 2>/dev/null); RC=$?
 is "$RC" "2" "unreadable input exits 2 (not mistaken for 'in sync')"
+
+# ---------------------------------------------------------------------------
+section "cfvpn-drift.sh — transport flags: node cfvpn.env vs D1 (C6)"
+# d1:   <node>\t<hy2_host>\t<xhttp_enabled>\t<xhttp_direct_host>
+# node: <node>\t<HY2_ENABLED>\t<XHTTP_ENABLED>\t<XHTTP_DIRECT_HOST>
+# Both sides raw, so the default-on/default-off rules are what is under test.
+TD1=$(mk td1 'JPY-01\thy.a\t0\t\nSIN-01\t\t1\tstatic.x\n')
+TNODE=$(mk tnode 'JPY-01\t\t\t\nSIN-01\t0\t1\tstatic.x\n')
+OUT=$(drift_transport_compare "$TD1" "$TNODE"); RC=$?
+is "$RC" "0" "in sync exits 0 (absent HY2_ENABLED == hy2_host set == on)"
+is "$OUT" "" "in sync prints nothing"
+
+# The exact failure: `cfvpnctl hy2 disable` over SSH, D1 never told. The panel
+# keeps handing out a hysteria2:// link to a node with no hysteria listening.
+TNODE_OFF=$(mk tnodeoff 'JPY-01\t0\t\t\nSIN-01\t0\t1\tstatic.x\n')
+OUT=$(drift_transport_compare "$TD1" "$TNODE_OFF"); RC=$?
+is "$RC" "1" "hy2 disabled on the node but still set in D1 exits 1"
+contains "$OUT" "JPY-01	-	hy2_enabled	d1=on	node=off" "hy2 drift names the node and both sides"
+case "$OUT" in *SIN-01*) bad "in-sync node reported as drifted" ;; *) ok "only the drifted node is reported" ;; esac
+
+# The reverse: HY2 re-enabled on the node while D1 still has hy2_host NULL.
+TD1_NULL=$(mk td1null 'JPY-01\t\t0\t\n')
+TNODE_ON=$(mk tnodeon 'JPY-01\t1\t\t\n')
+contains "$(drift_transport_compare "$TD1_NULL" "$TNODE_ON")" \
+   "JPY-01	-	hy2_enabled	d1=off	node=on" "hy2 NULL in D1 while the node runs it is drift too"
+
+# Every documented spelling of off/on must normalise like commands.Hy2Enabled
+# and commands.XHTTPEnabled, or a node flipped by hand reads as drifted.
+for spelling in 0 false no off FALSE Off ' off '; do
+  n=$(mk tnodesp "JPY-01\t$spelling\t\t\n")
+  is "$(drift_transport_compare "$TD1_NULL" "$n" | grep -c hy2_enabled)" "0" \
+     "HY2_ENABLED='$spelling' reads as off (matches Hy2Enabled)"
+done
+for spelling in 1 true yes on TRUE On; do
+  n=$(mk tnodexh "SIN-01\t\t$spelling\t\n")
+  d=$(mk td1xh 'SIN-01\thy.b\t1\t\n')
+  is "$(drift_transport_compare "$d" "$n" | grep -c xhttp_enabled)" "0" \
+     "XHTTP_ENABLED='$spelling' reads as on (matches XHTTPEnabled)"
+done
+# A value that is neither: XHTTP is OFF by default, HY2 is ON by default.
+n=$(mk tnodejunk 'SIN-01\tmaybe\tmaybe\t\n')
+d=$(mk td1junk 'SIN-01\thy.b\t1\t\n')
+OUT=$(drift_transport_compare "$d" "$n")
+is "$(printf '%s\n' "$OUT" | grep -c hy2_enabled)" "0" "an unrecognised HY2_ENABLED still means on"
+contains "$OUT" "xhttp_enabled	d1=on	node=off" "an unrecognised XHTTP_ENABLED means off"
+
+# xhttp_direct_host is compared verbatim; empty on either side is "-".
+TNODE_DH=$(mk tnodedh 'SIN-01\t0\t1\tstale.x\n')
+contains "$(drift_transport_compare "$TD1" "$TNODE_DH")" \
+   "SIN-01	-	xhttp_direct_host	d1=static.x	node=stale.x" "a changed xhttp_direct_host is drift"
+TNODE_NODH=$(mk tnodenodh 'SIN-01\t0\t1\t\n')
+contains "$(drift_transport_compare "$TD1" "$TNODE_NODH")" \
+   "SIN-01	-	xhttp_direct_host	d1=static.x	node=-" "an empty xhttp_direct_host on the node is drift, shown as -"
+
+# Rows on only one side: a node D1 does not know is as broken as a wrong flag.
+OUT=$(drift_transport_compare "$TD1_NULL" "$TNODE"); RC=$?
+is "$RC" "1" "a node missing from D1 exits 1"
+contains "$OUT" "SIN-01	-	node_row	d1=<absent>	node=present" "the node absent from D1 is named"
+OUT=$(drift_transport_compare "$TD1" "$TNODE_ON"); RC=$?
+contains "$OUT" "SIN-01	-	node_row	d1=present	node=<absent>" "a D1 node that was not read back is named"
+
+OUT=$(drift_transport_compare "$DRIFT_DIR/nope" "$TNODE" 2>/dev/null); RC=$?
+is "$RC" "2" "unreadable input exits 2 (not mistaken for 'in sync')"
+
+# The exit-status RANKING check-fleet-drift.sh folds its statuses through.
+rank() { # rank <status>... — the real drift_rank_rc, folded like the script does
+  local rc=0 r
+  for r in "$@"; do rc="$(drift_rank_rc "$rc" "$r")"; done
+  printf '%s\n' "$rc"
+}
+is "$(rank 0 0)" "0" "rank: nothing wrong exits 0"
+is "$(rank 1 0 2)" "1" "rank: drift found plus an unreachable host exits 1, not 2"
+is "$(rank 0 2 1)" "1" "rank: order does not matter — drift still wins"
+is "$(rank 0 2 2)" "2" "rank: only an incomplete check exits 2"
+is "$(rank 0 1 0)" "1" "rank: a later clean comparison does not erase drift"
 
 
 printf '\n--------------------------------------------\n'

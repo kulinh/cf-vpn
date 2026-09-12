@@ -59,6 +59,55 @@ sudo -E \
 
 `AGENT_SHARED_SECRET` is generated automatically when not exported, written to `/etc/cfvpn/cfvpn.env` and mirrored into D1 (`nodes.agent_secret`) by the installer itself — nothing to copy by hand.
 
+### ARM (Oracle Cloud Ampere A1) and other OCI notes
+
+The installer is architecture-neutral: `cfvpnctl`/`cfvpn-agent` are built on the
+node, Xray and Hysteria come from their official install scripts (they detect
+the CPU), cloudflared from Cloudflare's apt repo and lego via `go install`. The
+Go fallback downloads in `internal/binary` pick `linux-amd64` or `linux-arm64`
+from the running CPU. `GOOS=linux GOARCH=arm64 go build ./...` is part of the
+checks. Only `scripts/install-node-CN.sh` (offline staging for nodes inside
+China) is still x86_64-only and says so.
+
+On Oracle Cloud pick **Ubuntu 24.04 (Minimal)** — Oracle Linux and AlmaLinux
+have no `apt` and the installer refuses them — then:
+
+1. **VCN security list** (subnet → Security Lists → Default): add ingress for
+   `443/tcp` and the Hysteria2 UDP port — that is `HY2_PORT` (random unless you
+   pass it, printed by the installer and stored in `cfvpn.env`), **not**
+   `443/udp`: nothing on the node listens on 443/udp. For a DERP relay also
+   `8443/tcp` and `3478/udp`.
+2. **In-instance iptables**: OCI images end `/etc/iptables/rules.v4` (and
+   `rules.v6`) with a blanket `REJECT` that leaves only `:22` open even after
+   step 1. The installer removes those lines (backup kept next to each file,
+   then `netfilter-persistent reload` or `ip{,6}tables-restore`) and
+   `systemctl disable --now netfilter-persistent`, so **ufw** is the only in-box
+   firewall and the VCN list guards the public ports. It does this **only on
+   Oracle Cloud** — the check is the DMI (`chassis_asset_tag` / `sys_vendor`),
+   because that REJECT line is also the stock tail of any Red-Hat-style ruleset
+   and a non-OCI node's own rules must not be touched. Set
+   `CFVPN_KEEP_OCI_IPTABLES=1` to keep the image rules and open ports yourself,
+   or `CFVPN_FORCE_OCI=1`/`0` to override the DMI detection.
+3. Give the instance a **reserved public IP** (the default ephemeral one changes
+   when the VM is recreated, and subscriptions dial Reality/HY2 by IP).
+4. Then the usual `sudo -E CF_API_TOKEN=… CF_ACCOUNT_ID=… NODE_ID=… bash
+   scripts/install-node.sh` (pass `HY2_PORT=` to pick the UDP port up front so
+   the VCN rule can be added before the install).
+5. Then apply the fleet firewall baseline (ufw). Step 2 already disabled
+   `netfilter-persistent` — verify with `systemctl is-enabled
+   netfilter-persistent` (expect `disabled`), because its remaining rules
+   (`--dport 22 ACCEPT` and friends) are restored ahead of ufw's chains at boot
+   and reopen public :22 no matter what ufw says. With ufw as the only in-box
+   firewall, SSH is reachable on 17722 publicly and on 22 over the tailnet
+   (`ufw allow in on tailscale0`), like the rest of the fleet. The installer
+   whitelists `${SSH_PORT:-22}` in ufw before touching anything, so pass
+   `SSH_PORT=17722` on a node whose sshd has already moved.
+6. Ubuntu 24.04 ships Go 1.22: `go.mod` pins `toolchain go1.26.8`, which the
+   build downloads automatically (go.dev must be reachable).
+
+First real run: JPY-03 (Osaka, 2026-09-12) — direct mode, Reality on 443 with
+dest `www.sony.jp`, HY2 on 32443/udp, DERP region 902.
+
 ## Upgrading an existing VPS
 
 ```bash
@@ -108,13 +157,13 @@ cfvpnctl derp china-mode on        # before flying to China: devices use ONLY ou
 cfvpnctl derp china-mode off       # back home: public relays + our relays (normal)
 cfvpnctl rules-mode show           # which blocked-site list the Shadowrocket .conf inlines
 cfvpnctl rules-mode set uae        # cn (default) | uae | none — written to D1 settings.rules_mode
-cfvpnctl derp region add --id 901 --code jpy --name JPY-01 --host derp-xxxx.duylinh.net   # ports default 8443/3478
+cfvpnctl derp region add --id 902 --code osa --name JPY-03 --host derp-xxxx.duylinh.net   # ports default 8443/3478; live: 900 HKG-01, 901 JPY-01, 902 JPY-03
 cfvpnctl derp region remove --id 901
 ```
 
 ### Driving it from Telegram
 
-`cfvpn-tgbot` (unit `cfvpn-tgbot.service`, VNM-01 only) long-polls
+`cfvpn-tgbot` (unit `cfvpn-tgbot.service`, on **JPY-03** since 2026-09-12) long-polls
 **@rwl_vpn_bot** and accepts exactly these commands in the group chat
 `TELEGRAM_CHAT_ID`:
 
@@ -134,13 +183,18 @@ answers is **deleted after 24 h** (the bot is a group admin): each sent
 message is queued as one JSON file in `/var/lib/cfvpn/tg-ttl/`, a reaper in
 the bot deletes due ones every minute, and `scripts/fleet-probe.py` queues its
 alerts in the same directory. `TELEGRAM_TTL_DIR=` (empty) disables it,
-`TELEGRAM_MESSAGE_TTL_HOURS` changes the TTL; `cfvpn-tgbot --reap` runs one
-pass by hand.
+`TELEGRAM_MESSAGE_TTL_HOURS` changes the TTL.
+
+Each box reaps its own queue, because the queue is a local directory: the bot's
+own reaper covers JPY-03, and on **VNM-01** — which has no bot process, only
+`fleet-probe.py` writing alerts — `/etc/cron.d/cfvpn-tgbot-reap` runs
+`cfvpn-tgbot --reap` every 5 minutes to delete them. `--reap` is a single pass
+and exits, so it is also the way to flush a queue by hand.
 
 It runs the same `cfvpnctl derp` code in-process, so snapshots, validation and
 the netcheck afterwards are identical; the reply carries that output. The
-Tailscale OAuth client never leaves this box, which is why the bot lives here
-and not in the panel Worker.
+Tailscale OAuth client never leaves the node the bot runs on, which is why the
+bot lives on a fleet node and not in the panel Worker.
 
 The bot shares the group with the Worker's bot, so it answers only the two
 commands above and stays silent on everything else (`/status`, `/nodes`,

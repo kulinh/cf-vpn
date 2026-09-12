@@ -95,15 +95,28 @@ d1_zone_for_domain() {
 # Reads: DB_NODE_ID NODE_LABEL ADMIN_HOST DOMAIN HY2_HOST HY2_PORT HY2_OBFS_PW
 #        PUBLIC_IP ZONE MODE REALITY_PUBLIC_KEY REALITY_SHORT_ID REALITY_SNI
 #        REALITY_DEST NOW_MS AGENT_SHARED_SECRET
+#
+# The hy2_* columns go through NULLIF(?, '') because "no hysteria on this node"
+# is NULL everywhere else in the system — that is what `cfvpnctl hy2 disable`
+# plus scripts/d1-set-node.sh hy2-off write, and what the Worker tests for when
+# it decides whether to put an HY2 line in a subscription. An empty string is
+# truthy there, so a node installed with HY2 off used to be advertised with
+# "hysteria2://@:" links. HY2_PORT is an integer column, so it is passed as JSON
+# (null when unset) rather than as a string.
 d1_upsert_node() {
   local resp ok changes
+  # Built here, in DOUBLE quotes, and handed to jq as --arg: inside jq's
+  # single-quoted program the SQL's own '' would close the bash quote and vanish
+  # (leaving "NULLIF(?, )", which D1 rejects).
+  local sql="INSERT OR REPLACE INTO nodes (id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,reality_pubkey,reality_sid,reality_sni,reality_dest,last_seen_at,latency_ms,created_at,agent_secret) VALUES (?,?,?,?,NULLIF(?, ''),NULLIF(?, ''),NULLIF(?, ''),?,?,?,?,?,?,?,?,null,null,?,?)"
   resp="$(d1_query "$(jq -n \
+    --arg sql   "$sql" \
     --arg id    "$DB_NODE_ID" \
     --arg label "$NODE_LABEL" \
     --arg ah    "$ADMIN_HOST" \
     --arg vh    "$DOMAIN" \
     --arg hh    "$HY2_HOST" \
-    --argjson hp "$HY2_PORT" \
+    --argjson hp "${HY2_PORT:-null}" \
     --arg how   "$HY2_OBFS_PW" \
     --arg ip    "$PUBLIC_IP" \
     --arg zone  "$ZONE" \
@@ -115,7 +128,7 @@ d1_upsert_node() {
     --argjson ts "$NOW_MS" \
     --arg sec   "$AGENT_SHARED_SECRET" \
     '{
-      sql: "INSERT OR REPLACE INTO nodes (id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,reality_pubkey,reality_sid,reality_sni,reality_dest,last_seen_at,latency_ms,created_at,agent_secret) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,null,null,?,?)",
+      sql: $sql,
       params: [$id,$label,$ah,$vh,$hh,$hp,$how,$ip,$zone,$mode,"active",$rpk,$rsid,$rsni,$rdest,$ts,$sec]
     }')")"
   ok="$(printf '%s' "$resp" | jq -r '.success // false')"

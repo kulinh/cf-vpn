@@ -93,8 +93,10 @@ func (b *Bot) deleteMessage(ctx context.Context, chatID, messageID int64) error 
 // already gone, too old, or not ours to delete.
 func permanentDeleteError(err error) bool {
 	s := strings.ToLower(err.Error())
+	// Kept in sync with PERMANENT_ERRORS in /opt/xiaoqie_bot/janitor.py.
 	return strings.Contains(s, "message to delete not found") ||
 		strings.Contains(s, "message can't be deleted") ||
+		strings.Contains(s, "message identifier is not specified") ||
 		strings.Contains(s, "message_id_invalid") ||
 		strings.Contains(s, "message not found")
 }
@@ -128,6 +130,15 @@ func (b *Bot) ReapOnce(ctx context.Context) (int, error) {
 		var e ttlEntry
 		if err := json.Unmarshal(raw, &e); err != nil || e.MessageID == 0 || e.ChatID == 0 {
 			b.logf("ttl: dropping unreadable %s", de.Name())
+			_ = os.Remove(path)
+			continue
+		}
+		// A file written by another tool (the xiaoqie_bot library uses the same
+		// directory layout with sent_at/kind instead) may carry no delete_at.
+		// Unix epoch 0 is "due since 1970", so treating it as due would delete
+		// a message the moment it was queued. Drop the file and say so.
+		if e.DeleteAt <= 0 {
+			b.logf("ttl: dropping %s: no delete_at", de.Name())
 			_ = os.Remove(path)
 			continue
 		}

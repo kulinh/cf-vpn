@@ -446,6 +446,129 @@ gửi lại dạng text thuần. Cảnh báo UDP bị chặn từ netcheck vẫn
 `internal/tgbot` dùng đúng output thật ghi từ VNM-01 ngày 12/09 để kiểm tra
 parser; Go toàn bộ pass, pytest 10 pass.
 
+## Bổ sung 13 — JPY-03: node ARM đầu tiên (Oracle Cloud Osaka), 12/09/2026
+
+**Máy:** Oracle Cloud region Osaka, shape Ampere A1 4 OCPU / 24 GB / 200 GB
+(tài khoản nâng PAYG để có capacity, vẫn 0 đồng trong hạn mức free), Ubuntu
+24.04 Minimal aarch64, IP `129.225.185.197`, Tailscale `100.96.82.34`,
+hostname `jpy-03`, múi giờ VN. Vì sao Ubuntu: installer chỉ chạy với apt.
+
+**Chuẩn bị repo cho ARM (PR #11):** chỉ đường tải dự phòng cloudflared/lego
+trong `internal/binary` gắn cứng amd64, giờ chọn theo CPU; mọi thứ khác vốn
+trung lập (Go build tại node, Xray/Hysteria qua script chính thức, cloudflared
+apt, lego `go install`). Hai bẫy bắt được khi chạy thật: (1) `go.mod` chỉ ghi
+`go 1.26` nên Go 1.22 của Ubuntu đòi tải toolchain tên "go1.26" không tồn tại
+→ ghim `toolchain go1.26.8`; (2) image OCI có iptables trong máy chỉ mở :22
+→ installer tự gỡ dòng REJECT (`cfvpn_oci_firewall_fix`, có test), và khi bật
+ufw theo chuẩn fleet phải `disable netfilter-persistent` vì bộ rule gốc của
+image nằm trước chain của ufw, khiến :22 public vẫn mở dù ufw không cho.
+
+**Cài:** `install-node.sh` mode direct, `HY2_PORT=32443` đặt trước để mở VCN
+một lần. Kết quả: xray Reality `:443` (dest `www.sony.jp`, đo TLS 1.3/h2/200
+từ chính máy; xoay bằng `rotate-reality --dest`, đồng bộ D1 bằng
+`d1-set-node.sh`), Hysteria2 `32443/udp`, cloudflared tunnel admin
+`jpy-03.rwl247.dev`, agent, bbr, healthcheck OK. D1: vpn_host
+`edge-64b43148.dongnat247.com`, drift 10/10. Probe **từ JPY-03**: 21/21 đường
+OK (JPY-01 43–89 ms, JPY-02 47, HKG 197–262, SIN 320, USA 298–454, VNM
+303–1670); **từ VNM-01**: JPY-03 Reality 268 ms, HY2 267 ms.
+
+**Bảo mật theo chuẩn fleet:** sshd `ListenAddress 100.96.82.34:22` +
+`0.0.0.0:17722` (giống JPY-01/SIN-01, ssh.service `After=tailscaled`, bỏ
+ssh.socket của Ubuntu); ufw default deny, mở 17722/tcp, 443/tcp+udp,
+32443/udp, 8443/tcp, 3478/udp, `in on tailscale0`; fail2ban jail sshd
+(ignoreip tailnet). Đã kiểm chứng từ VNM-01: public 17722 vào được, public 22
+đóng, Tailscale 22 vào được. Root SSH bằng `/root/rwl01.key`, user `ubuntu`
+giữ làm dự phòng. Tailscale: exit node đã duyệt, key expiry đã tắt.
+
+**Việc chuyển sang JPY-03 (máy datacenter 24/7 thay vì máy nhà):**
+
+| Việc | Trước | Sau |
+|---|---|---|
+| `cfvpn-tgbot` (`/mode`, `/china`) | VNM-01 | JPY-03 (binary arm64 build chéo, menu đăng ký lại, `/mode status` trả lời OK); VNM-01 tắt, giữ cron `cfvpn-tgbot --reap` 5 phút/lần để tự xoá cảnh báo của probe VNM-01; 10 tin chờ xoá đã chuyển theo |
+| `xiaoqie-watch` (canh site chặn) | VNM-01, 4 lượt/ngày | JPY-03, **09:00 và 21:00 giờ VN**, state và sổ tự xoá chuyển theo |
+| `fleet-probe` | chỉ VNM-01 | **cả hai**, tiêu đề cảnh báo ghi `@vnm-01` / `@jpy-03` (`PROBE_LABEL`): cả hai cùng lỗi = node chết, một bên lỗi = đường của bên đó |
+
+**DERP region 902:** derper 1.102.4 (build chéo arm64) chạy trên JPY-03 với
+cert Let's Encrypt cho `derp-de29e117.duylinh.net` (hết hạn 11/12/2026, cron gia hạn
+hàng tháng 04:31 ngày 1), STUN 3478, unit + ufw sẵn. **Chưa `region add`** vì
+Security List VCN chưa mở `8443/tcp` và `3478/udp`. **Cập nhật 21:40:** anh mở xong, em kiểm chứng
+DERP 8443 trả 200 từ VNM-01 và SIN-01, 3 gói UDP 3478 qua VCN đều tới (derper
+không đáp STUN thô nên đo bằng bộ đếm iptables), rồi `cfvpnctl derp region add
+--id 902 --code osa --name JPY-03 --host derp-de29e117.duylinh.net`. Netcheck sau đó
+(china-mode đang on nên chỉ thấy relay riêng):
+
+| Từ | Relay gần nhất | osa (JPY-03) | jpy (JPY-01) | hkg (HKG-01) |
+|---|---|---|---|---|
+| VNM-01 | HKG-01 | 121 ms | (không đo được lúc đó) | 86 ms |
+| SIN-01 | JPY-01 | 118 ms | 68 ms | (không tới, như đã biết) |
+| JPY-03 | JPY-03 | 0.5 ms | 9 ms | 108 ms |
+
+SIN-01 giờ có hai relay riêng dùng được (JPY-01 và JPY-03) thay vì một.
+
+**Đã xong (13/09 rạng sáng):** rule `22/tcp` trên VCN đã bỏ (kiểm chứng từ
+VNM-01: public 22 đóng, 17722 và Tailscale 22 vào được); **JPY-03-Reality đã
+vào group AUTO** (6 đường, Worker version `ab00531f`, conf trong backup đã tải
+lại, HY2-BACKUP cũng có JPY-03-HY2); VNM-01 chạy `cfvpnctl hy2 disable` để khớp
+D1 nên `check-fleet-drift` giờ sạch 10/10.
+
+**Anh còn làm tay:** xoay token bot **@xiaoqiehn_bot** (小企鹅🐧, id
+`7848387381`, chạy từ `checkpn.service` = `/opt/checkPN/bot.py`) ở BotFather —
+token của nó nằm trong journal VNM-01 ~967k dòng vì httpx log mặc định mức INFO.
+Sửa tận gốc ở repo đó: `logging.getLogger("httpx").setLevel(logging.WARNING)`. Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
+group AUTO (danh sách cố định trong Worker, hiện JPY-02/SIN-01/JPY-01-HY2/
+HKG-01-HY2/OR-001).
+
+## Bổ sung 14 — review toàn bộ code và sửa hết, 12/09/2026
+
+Tiểu Bạch (13 agent con) quét toàn bộ `/opt/cf-vpn` và `/opt/xiaoqie_bot`, cả
+code cũ lẫn code viết trong ngày, tìm cả bug lập trình lẫn chỗ trùng lặp/lệch
+giữa cũ và mới: **5 mục Cao, 17 Trung, 14 Thấp + 15 mục trùng lặp**. Đã sửa
+hết, chia ba commit (Go / Worker / scripts) và một commit ở repo xiaoqie_bot.
+
+**Năm mục Cao:**
+
+| # | Lỗi | Sửa |
+|---|---|---|
+| 1 | `*url.Error` in cả URL nên **token bot lọt vào journal** mỗi lần lỗi mạng tới Telegram | lọc token khỏi mọi lỗi/log, có test dựng lỗi kết nối thật |
+| 2 | Journal VNM-01 đã chứa ~967k dòng có token `7848387381:…` của một bot Python dùng httpx (không phải cf-vpn/xiaoqie) | **việc của anh**: xoay token ở BotFather rồi `journalctl --vacuum-time=1s` |
+| 3 | `fleet-probe` không báo khi **chính nó** không tải được subscription → panel chết mà Telegram im | báo qua đúng cơ chế đếm lần lỗi (khoá `__fetch__`), báo một lần và một lần khi hồi phục |
+| 4 | `rotate-domain` ghi đè cert HY2 (đường dẫn cố định) trước khi commit, lỗi giữa chừng thì lần restart sau hysteria phục vụ cert của host chưa bao giờ sống | giữ cặp cert/key cũ và phục hồi trên mọi đường thất bại |
+| 5 | `cfvpnctl install` lỗi thì gợi ý `rotate-domain --cleanup <uuid>` **cho cả tunnel đang tái dùng** → làm theo là xoá tunnel của node đang chạy | tunnel tái dùng in dòng "không được xoá", không bao giờ in cờ đó |
+
+**Mức trung đáng kể:** `xhttp enable/disable` ghi env trước khi restart (giờ
+write → restart → restore → env như `rotate-reality`); agent nhận `sync` rỗng
+là xoá sạch user (giờ từ chối trừ khi có `confirm_empty`, Worker gửi cờ này
+khi D1 thật sự rỗng); Worker nuốt lỗi webhook không log, không cắt tin dài,
+`MAX_ENTITY_ID_LEN` tính theo wrapper ngắn hơn thực tế nên `/rotate` im lặng;
+id node chưa whitelist nên một dấu phẩy phá config Shadowrocket của mọi user;
+suy zone bằng cắt hai nhãn sai với host ba nhãn; tgbot cắt tin theo byte làm
+hỏng UTF-8 tiếng Việt; watcher không escape HTML nên mất cả báo cáo; `state.Load`
+âm thầm bỏ dòng sai dạng (đã kiểm: cả 10 node không có dòng nào sai); cert và
+key là hai rename riêng nên có thể lệch cặp; grep trong pipeline `set -euo
+pipefail` làm chết script installer trước khi tới nhánh kiểm tra.
+
+**Trùng lặp / lệch cũ–mới đã hợp nhất:** cờ XHTTP là hai nguồn sự thật — Worker
+giờ ghi lại `xhttp_enabled/xhttp_direct_*` vào D1 (phân biệt "agent không báo"
+với "agent báo tắt") và `check-fleet-drift` so luôn các cờ transport, nên không
+cần `d1-set-node.sh` sửa tay nữa; `FORCE_REINSTALL` giữ lại lựa chọn vận hành
+(HY2_ENABLED, XHTTP_*, CLOUDFLARED_PROTOCOL, REALITY_DEST/SNI); bốn parser env
+về cùng ngữ nghĩa (bỏ strip dấu nháy ở fleet-probe); `cfvpn_env_read` thay cho
+`source cfvpn.env` trong installer CN; `cfvpn_ensure_ufw_ssh_allowed` mở đúng
+cổng 17722 thay vì profile OpenSSH (= 22); bỏ code chết trong `xiaoqie_bot`.
+
+**Một chỗ em siết hơn đề xuất của review:** hàm sửa tường lửa OCI giờ chỉ tắt
+`netfilter-persistent` **khi ufw đã active** — dừng unit đó flush chain của nó,
+làm trên máy chưa bật ufw sẽ để node không còn tường lửa nào, tệ hơn mặc định
+của image. Có test cho cả hai nhánh.
+
+**Đã triển khai và kiểm chứng:** binary Go mới trên **cả 10 node** (JPY-03 bản
+arm64), agent active và `cfvpnctl status` chạy được ở từng node (chứng minh
+parser env siết chặt không làm chết máy nào); Worker version `f1bce86a`; bot
+`cfvpn-tgbot` bản mới trên JPY-03 trả lời đúng; `fleet-probe` code mới chạy từ
+cả hai điểm đo: **21/21 OK ở mỗi bên**; D1 giờ khớp node về cờ XHTTP và
+subscription vẫn đủ 4 đường XHTTP. Test: Go toàn bộ pass (+12 test mới), Worker
+193, shell 198 (trước 102), pytest 16, xiaoqie 41.
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |

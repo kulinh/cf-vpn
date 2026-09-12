@@ -1111,6 +1111,10 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		return fmt.Errorf("derive tunnel name: NODE_ID %q is not a valid DNS label", in.NodeID)
 	}
 	var tunnelID string
+	// A reused tunnel belongs to a node that is already running. Failing after
+	// this point must never print the `rotate-domain --cleanup <uuid>` hint:
+	// following it deletes the live tunnel and its credentials.
+	reusedTunnel := false
 	if reuse := strings.TrimSpace(in.AdminTunnelUUID); reuse != "" {
 		// Reuse path: the tunnel secret is handed out once, at creation, so the
 		// credentials file on disk is the only copy. Without it the tunnel
@@ -1125,6 +1129,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		}
 		fmt.Fprintf(stdout, "reusing admin tunnel %s...\n", reuse)
 		tunnelID = reuse
+		reusedTunnel = true
 	} else {
 		fmt.Fprintln(stdout, "creating admin tunnel...")
 		var (
@@ -1145,10 +1150,21 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		}
 	}
 
+	hint := func() {
+		if reusedTunnel {
+			// Deliberately never prints the cleanup flag: this tunnel belongs
+			// to a node that is already running and must not be deleted.
+			fmt.Fprintf(stdout, "operation failed; admin tunnel %s was REUSED by this node — do NOT delete that tunnel, there is nothing to clean up\n", tunnelID)
+			fmt.Fprintf(stdout, "resume command: cfvpnctl install\n")
+			return
+		}
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
+	}
+
 	fmt.Fprintln(stdout, "detecting public ip...")
 	ip, err := deps.IP.Detect(ctx)
 	if err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
+		hint()
 		return fmt.Errorf("detect public ip: %w", err)
 	}
 	ip = strings.TrimSpace(ip)
@@ -1185,7 +1201,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		var err error
 		zoneID, err = deps.CF.GetZoneID(ctx, zone)
 		if err != nil {
-			printRotateHint(stdout, "cfvpnctl install", tunnelID)
+			hint()
 			return fmt.Errorf("get zone id for %s: %w", zone, err)
 		}
 	}
@@ -1200,7 +1216,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	}
 	adminZoneID, err := deps.CF.GetZoneID(ctx, adminHostZone)
 	if err != nil {
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
+		hint()
 		return fmt.Errorf("get zone id for %s: %w", adminHostZone, err)
 	}
 	if err := deps.CF.UpsertCNAME(ctx, adminZoneID, adminHost, tunnelID+".cfargotunnel.com"); err != nil {

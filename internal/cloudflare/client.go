@@ -66,7 +66,9 @@ func (c Client) do(ctx context.Context, method, path string, body []byte) (apiRe
 	}
 	var out apiResp
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return apiResp{}, err
+		// A gateway/WAF page is HTML: say which status it came with instead
+		// of the bare "invalid character '<'".
+		return apiResp{}, fmt.Errorf("cf api: HTTP %d: unreadable response: %w", resp.StatusCode, err)
 	}
 	if !out.Success {
 		if len(out.Errors) > 0 {
@@ -312,6 +314,7 @@ func (c Client) D1Query(ctx context.Context, databaseID, sql string, params []an
 	}
 	var stmts []struct {
 		Success bool            `json:"success"`
+		Error   string          `json:"error"`
 		Results json.RawMessage `json:"results"`
 	}
 	if err := json.Unmarshal(resp.Result, &stmts); err != nil {
@@ -321,7 +324,9 @@ func (c Client) D1Query(ctx context.Context, databaseID, sql string, params []an
 		return nil, fmt.Errorf("cf api: d1 query returned no statement result")
 	}
 	if !stmts[0].Success {
-		return nil, fmt.Errorf("cf api: d1 statement did not succeed")
+		// D1 reports a bad statement (unknown column, constraint) inside a
+		// success:true envelope; the reason is in the statement's own error.
+		return nil, fmt.Errorf("cf api: d1 statement failed: %s", stmts[0].Error)
 	}
 	if len(stmts[0].Results) == 0 {
 		return json.RawMessage("[]"), nil

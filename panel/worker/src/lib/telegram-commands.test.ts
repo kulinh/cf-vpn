@@ -3,19 +3,26 @@ import { parseCommand, parseCallback } from "./telegram-commands";
 
 describe("parseCommand", () => {
   it("parses a bare command", () => {
-    expect(parseCommand("/nodes")).toEqual({ cmd: "nodes", arg: "" });
+    expect(parseCommand("/nodes")).toEqual({ cmd: "nodes", arg: "", target: "" });
   });
   it("parses a command with an argument", () => {
-    expect(parseCommand("/adduser alice")).toEqual({ cmd: "adduser", arg: "alice" });
+    expect(parseCommand("/adduser alice")).toEqual({ cmd: "adduser", arg: "alice", target: "" });
   });
   it("strips an @botname suffix", () => {
-    expect(parseCommand("/help@cfvpn_bot")).toEqual({ cmd: "help", arg: "" });
+    expect(parseCommand("/help@cfvpn_bot")).toEqual({ cmd: "help", arg: "", target: "cfvpn_bot" });
+    expect(parseCommand("/help")).toEqual({ cmd: "help", arg: "", target: "" });
+  });
+  it("keeps every @ after the first in the target", () => {
+    // Dropping "@b" left target "a", which could match a real bot and make the
+    // command answered by the wrong bot instead of ignored.
+    expect(parseCommand("/nodes@a@b")).toEqual({ cmd: "nodes", arg: "", target: "a@b" });
+    expect(parseCommand("/nodes@a@b arg")).toEqual({ cmd: "nodes", arg: "arg", target: "a@b" });
   });
   it("returns null for non-command text", () => {
     expect(parseCommand("hello there")).toBeNull();
   });
   it("trims surrounding whitespace in the argument", () => {
-    expect(parseCommand("/sub   bob  ")).toEqual({ cmd: "sub", arg: "bob" });
+    expect(parseCommand("/sub   bob  ")).toEqual({ cmd: "sub", arg: "bob", target: "" });
   });
 });
 
@@ -97,6 +104,61 @@ function message(text: string, fromId: number) {
   };
 }
 
+describe("sharing the group with @rwl_vpn_bot", () => {
+  const botEnv = { TELEGRAM_BOT_TOKEN: "T", TELEGRAM_BOT_USERNAME: "xiaoqie001_bot" } as Env;
+  const sent = () => (sendMessage as any).mock.calls.length;
+
+  it("stays silent on the other bot's commands (/mode, /china, /derp)", async () => {
+    const before = sent();
+    for (const t of ["/mode uae", "/china on", "/derp", "/mode"]) {
+      await dispatch(botEnv, fakeCtx(), message(t, 9), "https://panel.example");
+    }
+    expect(sent()).toBe(before);
+  });
+
+  it("ignores a known command explicitly addressed to another bot", async () => {
+    const before = sent();
+    await dispatch(botEnv, fakeCtx(), message("/nodes@rwl_vpn_bot", 9), "https://panel.example");
+    expect(sent()).toBe(before);
+  });
+
+  it("still answers unknown commands that name this bot, and its own commands", async () => {
+    const before = sent();
+    await dispatch(botEnv, fakeCtx(), message("/foo@xiaoqie001_bot", 9), "https://panel.example");
+    expect(sent()).toBe(before + 1);
+    expect((sendMessage as any).mock.calls.at(-1)[2]).toContain("Lệnh không rõ");
+    await dispatch(botEnv, fakeCtx(), message("/help@XiaoQie001_bot", 9), "https://panel.example");
+    expect((sendMessage as any).mock.calls.at(-1)[2]).toContain("cfvpn bot");
+    await dispatch(botEnv, fakeCtx(), message("/help", 9), "https://panel.example");
+    expect((sendMessage as any).mock.calls.at(-1)[2]).toContain("cfvpn bot");
+  });
+
+  it("never answers plain text", async () => {
+    const before = sent();
+    await dispatch(botEnv, fakeCtx(), message("ok anh đã mở port rồi", 9), "https://panel.example");
+    expect(sent()).toBe(before);
+  });
+
+  it("without a configured username, unknown commands are always silent — but logged", async () => {
+    const before = sent();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    await dispatch({ TELEGRAM_BOT_TOKEN: "T" } as Env, fakeCtx(), message("/foo@xiaoqie001_bot", 9), "https://panel.example");
+    expect(sent()).toBe(before);
+    // Silence with no log made an unset env var look exactly like a dead bot.
+    expect(errorSpy).toHaveBeenCalledWith(
+      "TELEGRAM_BOT_USERNAME is unset; ignoring command addressed to",
+      "@xiaoqie001_bot"
+    );
+    errorSpy.mockRestore();
+  });
+
+  it("ignores a multi-@ target that matches no bot", async () => {
+    const before = sent();
+    await dispatch(botEnv, fakeCtx(), message("/nodes@xiaoqie001_bot@rwl_vpn_bot", 9), "https://panel.example");
+    expect(sent()).toBe(before);
+  });
+});
+
 describe("dispatch confirm gating", () => {
   it("/deluser only prompts, does not delete", async () => {
     const env = { TELEGRAM_BOT_TOKEN: "T" } as Env;
@@ -139,10 +201,13 @@ describe("callback_data id validation (M-W5)", () => {
     // A colon would make parseCallback address a different node than the label.
     expect(isCallbackId("n:1")).toBe(false);
     expect(isCallbackId("")).toBe(false);
-    // The bound is 64 bytes minus the longest wrapper ("u:del:" + ":yes").
-    expect(isCallbackId("x".repeat(54))).toBe(true);
-    expect(`u:del:${"x".repeat(54)}:yes`.length).toBe(64);
-    expect(isCallbackId("x".repeat(55))).toBe(false);
+    // The bound is 64 bytes minus the LONGEST wrapper the bot builds, which is
+    // "n:rotate:" + id + ":yes" (13 bytes) — not the 10-byte "u:del:" one. With
+    // the old 54 the /rotate button 400ed and the command did nothing.
+    expect(isCallbackId("x".repeat(51))).toBe(true);
+    expect(`n:rotate:${"x".repeat(51)}:yes`.length).toBe(64);
+    expect(isCallbackId("x".repeat(52))).toBe(false);
+    expect(`n:rotate:${"x".repeat(52)}:yes`.length).toBeGreaterThan(64);
     expect(isCallbackId("a b")).toBe(false);
   });
 

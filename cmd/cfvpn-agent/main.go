@@ -103,6 +103,11 @@ type syncUser struct {
 
 type syncRequest struct {
 	Users []syncUser `json:"users"`
+	// ConfirmEmpty lets the panel apply a genuinely empty user list. Without
+	// it, an empty list on a node that still has users is refused: a D1 read
+	// that came back empty (transient error, wrong node id) would otherwise
+	// remove every credential from the node and cut all clients off.
+	ConfirmEmpty bool `json:"confirm_empty"`
 }
 
 type addUserRequest struct {
@@ -226,7 +231,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		PublicIP:        env["PUBLIC_IP"],
 		Mode:            env["MODE"],
 		Hy2Host:         hy2Field(env, env["HY2_HOST"]),
-		Hy2Port:         parseInt(hy2Field(env, env["HY2_PORT"])),
+		Hy2Port:         parsePortOrWarn("HY2_PORT", hy2Field(env, env["HY2_PORT"])),
 		Hy2ObfsPW:       hy2Field(env, env["HY2_OBFS_PW"]),
 		TunnelUUID:      firstNonEmpty(env["ADMIN_TUNNEL_UUID"], env["TUNNEL_UUID"]),
 		LastRotateAt:    parseInt64(env["LAST_ROTATE_AT"]),
@@ -448,6 +453,13 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer unlock()
+	existing, lerr := hysteria.ListUsers(hysteriaConfigPath)
+	if lerr == nil {
+		if reason := emptySyncRefusal(req, len(existing)); reason != "" {
+			writeError(w, http.StatusBadRequest, "empty_user_list", reason)
+			return
+		}
+	}
 	env, result, err := applyUsers(r.Context(), req.Users)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "sync_failed", err.Error())
@@ -635,7 +647,7 @@ func applyUsers(ctx context.Context, reqUsers []syncUser) (map[string]string, co
 	if err != nil {
 		return nil, commands.RotateDirectResult{}, fmt.Errorf("load env: %w", err)
 	}
-	result := commands.RotateDirectResult{VpnHost: env["DOMAIN"], PublicIP: env["PUBLIC_IP"], Hy2Host: hy2Field(env, env["HY2_HOST"]), Hy2Port: parseInt(hy2Field(env, env["HY2_PORT"])), Hy2ObfsPW: hy2Field(env, env["HY2_OBFS_PW"])}
+	result := commands.RotateDirectResult{VpnHost: env["DOMAIN"], PublicIP: env["PUBLIC_IP"], Hy2Host: hy2Field(env, env["HY2_HOST"]), Hy2Port: parsePortOrWarn("HY2_PORT", hy2Field(env, env["HY2_PORT"])), Hy2ObfsPW: hy2Field(env, env["HY2_OBFS_PW"])}
 	rendered, err := renderXrayForMode(env, users)
 	if err != nil {
 		return nil, commands.RotateDirectResult{}, err
@@ -848,6 +860,32 @@ func zoneForHost(host string) string {
 		return strings.Join(parts[len(parts)-2:], ".")
 	}
 	return ""
+}
+
+// parsePortOrWarn reads a port out of cfvpn.env. A present-but-unparseable
+// value used to become 0 silently and the panel then published hy2_port=0.
+// emptySyncRefusal returns the reason to refuse this sync, or "" to proceed.
+// A panel read of D1 that comes back empty (transient error, wrong node id)
+// would otherwise strip every credential from a working node, which looks to
+// the operator like the node "lost" its users.
+func emptySyncRefusal(req syncRequest, existingUsers int) string {
+	if len(req.Users) > 0 || req.ConfirmEmpty || existingUsers == 0 {
+		return ""
+	}
+	return fmt.Sprintf("refusing to remove all %d user(s) on this node; resend with confirm_empty=true if that is intended", existingUsers)
+}
+
+func parsePortOrWarn(key, s string) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil || n <= 0 || n > 65535 {
+		log.Printf("warning: %s=%q is not a valid port; reporting 0", key, s)
+		return 0
+	}
+	return n
 }
 
 func parseInt(s string) int {

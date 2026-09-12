@@ -37,7 +37,15 @@ while read -r node target _; do
   case "$node" in ''|'#'*) continue ;; esac
   mkdir -p "$DIR/nodes/$node"
   if [ "$target" = "$LOCAL_TARGET" ]; then
-    tar -C /etc -czf "$DIR/nodes/$node/etc-cfvpn.tgz" cfvpn
+    # Guarded exactly like the remote branch below: under `set -e` an unguarded
+    # tar failure here aborted the whole run, so one bad node also cost the
+    # remaining nodes, the D1 dump and the subscription export — the opposite of
+    # what the header promises.
+    if ! tar -C /etc -czf "$DIR/nodes/$node/etc-cfvpn.tgz" cfvpn; then
+      echo "FAIL $node: could not tar /etc/cfvpn on this box" >&2
+      fail=1
+      continue
+    fi
     { ufw status numbered; systemctl list-units 'cfvpn-*' --no-pager --all; } \
       > "$DIR/nodes/$node/system.txt" 2>&1 || true
   else

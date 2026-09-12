@@ -69,15 +69,10 @@ if ! [[ "$USER1_NAME" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
 fi
 
 # HY2_PORT is optional; cfvpnctl picks a random 20000-60000 port when it is
-# empty. Bound it here with the same rule the Go installer applies so a typo
-# fails before anything is mutated. An explicit port is what a node behind a
-# provider NAT needs: the port is advertised to clients verbatim, so the
-# external and internal numbers have to match.
-if [ -n "$HY2_PORT" ]; then
-  if ! [[ "$HY2_PORT" =~ ^[0-9]+$ ]] || [ "$HY2_PORT" -lt 1024 ] || [ "$HY2_PORT" -gt 65535 ]; then
-    die "HY2_PORT must be an integer in [1024,65535] (got: $HY2_PORT)"
-  fi
-fi
+# empty. An explicit port is what a node behind a provider NAT needs: the port is
+# advertised to clients verbatim, so the external and internal numbers have to
+# match. Bound-checked below via cfvpn_require_port, once the library is sourced
+# (scripts/install-node-CN.sh uses the same check).
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f "$PROJECT_ROOT/go.mod" ] || die "go.mod not found; run from inside the cf-vpn repository"
@@ -87,6 +82,8 @@ ENV_FILE_HELPER="$LIB_DIR/cfvpn-env-file.sh"
 
 # shellcheck source=lib/cfvpn-common.sh
 . "$LIB_DIR/cfvpn-common.sh"
+
+[ -z "$HY2_PORT" ] || cfvpn_require_port HY2_PORT "$HY2_PORT"
 
 # ----- 0b. refuse to clobber an already-provisioned node ----------------------
 # Runs before apt/go/cfvpnctl touch anything: a second run of this script
@@ -264,13 +261,13 @@ log "writing /etc/cfvpn/cfvpn.env"
 } | bash "$ENV_FILE_HELPER" write
 
 # ----- 6. firewall hygiene ----------------------------------------------------
-if command -v ufw >/dev/null 2>&1; then
-  UFW_STATUS="$(ufw status 2>/dev/null || true)"
-  if grep -q 'Status: active' <<<"$UFW_STATUS"; then
-    log "ufw is active — ensuring SSH is allowed"
-    ufw allow OpenSSH || ufw allow 22/tcp || warn "could not whitelist SSH; verify manually"
-  fi
-fi
+# Oracle Cloud images block everything but :22 inside the instance as well as
+# in the VCN security list; drop that in-image blanket rule (see
+# cfvpn_oci_firewall_fix in lib/cfvpn-common.sh). No-op on other providers.
+cfvpn_oci_firewall_fix
+# SSH_PORT, because the fleet baseline moves sshd to 17722: the OpenSSH profile
+# would open 22 and leave the port we are actually connected on closed.
+cfvpn_ensure_ufw_ssh_allowed "${SSH_PORT:-22}"
 
 # ----- 7. run installer -------------------------------------------------------
 list_admin_tunnels() {
@@ -369,16 +366,12 @@ cfvpnctl healthcheck run || warn "healthcheck reported failure (Cloudflare tunne
 # ----- 9. sync node + user to D1 & control panel -----------------------------
 log "syncing $DB_NODE_ID + user $USER1_NAME to D1"
 
-# Load the runtime values written by cfvpnctl install. Parsed the same way
-# internal/state/store.go parses them (split on the first '='), NOT sourced —
-# `. cfvpn.env` would execute any `$(...)` that ended up in a value.
-while IFS='=' read -r _k _v; do
-  case "$_k" in
-    DOMAIN|HY2_HOST|HY2_PORT|HY2_OBFS_PW|HY2_PASS_USER1|UUID_USER1| \
-    PUBLIC_IP|ADMIN_HOST|REALITY_PUBLIC_KEY|REALITY_SHORT_ID|REALITY_SNI|REALITY_DEST)
-      export "$_k=$_v" ;;
-  esac
-done < /etc/cfvpn/cfvpn.env
+# Load the runtime values written by cfvpnctl install. cfvpn_env_read parses the
+# file the same way internal/state/store.go does (split on the first '=') and
+# never sources it — `. cfvpn.env` would execute any `$(...)` in a value as root.
+cfvpn_env_read /etc/cfvpn/cfvpn.env \
+  DOMAIN HY2_HOST HY2_PORT HY2_OBFS_PW HY2_PASS_USER1 UUID_USER1 \
+  PUBLIC_IP ADMIN_HOST REALITY_PUBLIC_KEY REALITY_SHORT_ID REALITY_SNI REALITY_DEST
 
 for _k in DOMAIN HY2_HOST HY2_PORT HY2_OBFS_PW HY2_PASS_USER1 UUID_USER1 PUBLIC_IP ADMIN_HOST; do
   [ -n "${!_k:-}" ] || die "$_k not populated by cfvpnctl install — refusing to write a half-empty node row to D1"

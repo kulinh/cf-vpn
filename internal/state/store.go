@@ -25,14 +25,20 @@ func Load(path string) (map[string]string, error) {
 
 	out := map[string]string{}
 	s := bufio.NewScanner(f)
+	lineNo := 0
 	for s.Scan() {
+		lineNo++
 		line := strings.TrimSpace(s.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		parts := strings.SplitN(line, "=", 2)
-		if len(parts) != 2 {
-			continue
+		// A line that is neither blank, comment nor KEY=value used to be
+		// dropped silently ("export KEY=v", "KEY = v"), so a hand edit made a
+		// variable vanish without a trace. Every writer produces the strict
+		// form, so anything else is a mistake worth stopping on.
+		if len(parts) != 2 || !envKeyRE.MatchString(parts[0]) {
+			return nil, fmt.Errorf("%s:%d: not a KEY=value line: %q", path, lineNo, line)
 		}
 		out[parts[0]] = parts[1]
 	}

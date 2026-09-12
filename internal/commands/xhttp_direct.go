@@ -72,17 +72,13 @@ func RunXHTTPDirectSet(ctx context.Context, host, path string, runner systemd.Ru
 	if err != nil {
 		return fmt.Errorf("render xray cloudflare config: %w", err)
 	}
+	// write → restart → restore → env (see RunXHTTPSet): env must not advertise
+	// an inbound the running xray does not have.
+	if err := applyXrayConfig(ctx, []byte(rendered), resolveRunner(runner), stderr); err != nil {
+		return err
+	}
 	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
 		return fmt.Errorf("save env: %w", err)
-	}
-	changed, err := writeXrayConfigIfChanged(ctx, xrayConfigPath, []byte(rendered), 0o600)
-	if err != nil {
-		return fmt.Errorf("write xray config: %w", err)
-	}
-	if changed {
-		if err := systemd.Restart(ctx, resolveRunner(runner), "cfvpn-xray.service"); err != nil {
-			return fmt.Errorf("restart cfvpn-xray.service: %w", err)
-		}
 	}
 	if err := RegenerateSubscriptionsTo(env[state.KeyDomain], stderr); err != nil {
 		return fmt.Errorf("regenerate subscriptions: %w", err)

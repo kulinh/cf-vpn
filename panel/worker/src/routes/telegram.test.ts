@@ -78,3 +78,26 @@ describe("handleTelegramWebhook", () => {
     expect(dispatchMock.mock.calls[0][3]).toBe("https://cp.rwl265.com");
   });
 });
+
+describe("dispatch failures are logged", () => {
+  const groupUpdate = { update_id: 2, message: { message_id: 1, chat: { id: -100, type: "group" }, text: "/help" } };
+
+  it("still answers 200 but logs the cause instead of swallowing it", async () => {
+    dispatchMock.mockClear();
+    dispatchMock.mockRejectedValueOnce(new Error("D1_ERROR: no such column"));
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await handleTelegramWebhook(env, req(groupUpdate, "S"), fakeCtx());
+
+    // 200 keeps Telegram from retrying the same update forever...
+    expect(res.status).toBe(200);
+    // ...but an empty catch made every dispatch bug look like the bot ignoring
+    // commands, with nothing in `wrangler tail`.
+    expect(errorSpy).toHaveBeenCalledWith(
+      "telegram dispatch failed",
+      expect.stringContaining("D1_ERROR: no such column")
+    );
+    errorSpy.mockRestore();
+    dispatchMock.mockResolvedValue(undefined);
+  });
+});

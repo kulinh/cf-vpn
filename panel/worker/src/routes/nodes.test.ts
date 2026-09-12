@@ -23,16 +23,49 @@ vi.mock("../lib/cf-api", async (orig) => {
 import { AgentHttpError, callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials } from "../lib/cf-api";
-import { deleteNode, getNode, nodeHealthcheck, nodeRotate, nodeSyncCore, patchNode, sweepNodesHealth } from "./nodes";
+import { createNode, deleteNode, getNode, nodeHealthcheck, nodeRotate, nodeStatus, nodeSyncCore, patchNode, sweepNodesHealth } from "./nodes";
 import type { Env, NodeRow } from "../types";
 
 type ZoneRow = { name: string; cf_zone_id: string; enabled?: number };
+
+type RunWrite = { sql: string; args: unknown[] };
+
+// Column order of the persistNodeRuntime UPDATE in routes/nodes.ts — the test
+// reads its bound args by name instead of by index.
+const PERSIST_COLUMNS = [
+  "vpn_host",
+  "zone",
+  "public_ip",
+  "mode",
+  "hy2_host",
+  "hy2_port",
+  "hy2_obfs_pw",
+  "last_seen_at",
+  "latency_ms",
+  "reality_pubkey",
+  "reality_sid",
+  "reality_sni",
+  "reality_dest",
+  "xhttp_path",
+  "xhttp_enabled",
+  "xhttp_direct_host",
+  "xhttp_direct_path",
+  "tunnel_uuid",
+  "id"
+] as const;
+
+function persistedRuntime(writes: RunWrite[]): Record<string, unknown> {
+  const w = writes.find((x) => /UPDATE nodes SET status='active'/.test(x.sql));
+  if (!w) throw new Error("no runtime UPDATE was issued");
+  return Object.fromEntries(PERSIST_COLUMNS.map((c, i) => [c, w.args[i]]));
+}
 
 function makeEnv(seed: {
   node: NodeRow;
   zones: ZoneRow[];
   failRunSql?: RegExp;
   batches?: unknown[][];
+  writes?: RunWrite[];
 }): Env {
   const node = { ...seed.node };
   const zones = seed.zones.slice();
@@ -60,6 +93,9 @@ function makeEnv(seed: {
           const names = state.args as string[];
           return { results: zones.filter((z) => names.includes(z.name)) } as never;
         }
+        if (/FROM zones WHERE enabled = 1$/.test(sql)) {
+          return { results: zones.filter((z) => z.enabled !== 0) } as never;
+        }
         if (/FROM zones WHERE enabled = 1 AND name != \?/.test(sql)) {
           const excluded = state.args[0] as string;
           return { results: zones.filter((z) => z.enabled !== 0 && z.name !== excluded) } as never;
@@ -67,6 +103,7 @@ function makeEnv(seed: {
         return { results: [] } as never;
       },
       async run() {
+        seed.writes?.push({ sql, args: state.args.slice() });
         if (seed.failRunSql?.test(sql)) {
           throw new Error("D1_ERROR: database is locked");
         }
@@ -149,6 +186,9 @@ describe("nodeRotate", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -214,6 +254,9 @@ describe("nodeHealthcheck", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -281,6 +324,9 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -340,6 +386,9 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -381,6 +430,9 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -425,6 +477,9 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: "persisted-tunnel-xyz"
       },
@@ -466,6 +521,9 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -504,6 +562,9 @@ describe("deleteNode", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -555,6 +616,9 @@ describe("nodeSyncCore", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -872,6 +936,9 @@ describe("nodeRotate persistence split (M-W6)", () => {
     reality_sni: null,
     reality_dest: null,
     xhttp_path: null,
+    xhttp_enabled: 0,
+    xhttp_direct_host: null,
+    xhttp_direct_path: null,
     agent_secret: null,
     tunnel_uuid: null
   };
@@ -1003,6 +1070,9 @@ describe("patchNode status whitelist", () => {
     reality_sni: null,
     reality_dest: null,
     xhttp_path: null,
+    xhttp_enabled: 0,
+    xhttp_direct_host: null,
+    xhttp_direct_path: null,
     agent_secret: null,
     tunnel_uuid: null
   };
@@ -1055,6 +1125,9 @@ describe("deleteNode row removal", () => {
         reality_sni: null,
         reality_dest: null,
         xhttp_path: null,
+        xhttp_enabled: 0,
+        xhttp_direct_host: null,
+        xhttp_direct_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -1067,5 +1140,295 @@ describe("deleteNode row removal", () => {
     expect(res.status).toBe(200);
     expect(batches).toHaveLength(1);
     expect(batches[0]).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Code-review fixes (2026-09): node id whitelist, real-zone resolution, XHTTP
+// persistence, the agent's confirm_empty guard and the PATCH `host` alias.
+// ---------------------------------------------------------------------------
+
+const reviewRow: NodeRow = {
+  id: "JPY-03",
+  label: "JPY 03",
+  admin_host: "jpy-03.rwl247.dev",
+  vpn_host: "edge.rwl247.dev",
+  zone: "rwl247.dev",
+  status: "active",
+  last_seen_at: null,
+  latency_ms: null,
+  created_at: 1,
+  public_ip: null,
+  mode: "direct",
+  hy2_host: null,
+  hy2_port: null,
+  hy2_obfs_pw: null,
+  reality_pubkey: null,
+  reality_sid: null,
+  reality_sni: null,
+  reality_dest: null,
+  xhttp_path: null,
+  xhttp_enabled: 0,
+  xhttp_direct_host: null,
+  xhttp_direct_path: null,
+  agent_secret: null,
+  tunnel_uuid: null
+};
+
+describe("createNode node id whitelist", () => {
+  beforeEach(() => {
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  const freshEnv = () =>
+    makeEnv({
+      node: { ...reviewRow, id: "SOMETHING-ELSE" },
+      zones: [{ name: "rwl247.dev", cf_zone_id: "zone-rwl", enabled: 1 }]
+    });
+
+  const post = (env: Env, body: unknown) =>
+    createNode(
+      env,
+      new Request("https://panel.test/api/nodes", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body)
+      }),
+      "operator@example.com"
+    );
+
+  it("rejects ids that would corrupt the Shadowrocket AUTO/PROXY lines", async () => {
+    // A comma or newline here lands verbatim in every user's .conf.
+    for (const id of ["JPY-03,VNM-01", "JPY\n03", "JPY 03", "jpy_03", "x".repeat(52)]) {
+      const res = await post(freshEnv(), { id, label: "X" });
+      expect(res.status).toBe(400);
+      expect((await res.json() as { error: string }).error).toBe("invalid_node_id");
+    }
+  });
+
+  it("accepts the uppercase ids D1 actually holds", async () => {
+    for (const id of ["JPY-03", "OR-001", "VNM-01", "x".repeat(51)]) {
+      const res = await post(freshEnv(), { id, label: id });
+      expect(res.status).toBe(201);
+    }
+  });
+});
+
+describe("zone resolution for a 3-label host", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  it("writes the real zone, not a fixed label count", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      ok: true,
+      vpn_host: "foo.bar.rwl247.dev",
+      public_ip: "203.0.113.9",
+      hy2_host: "",
+      users: 1,
+      mode: "direct"
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({
+      node: { ...reviewRow, zone: "bar.rwl247.dev" },
+      // Both the apex and the delegated 3-label zone are in the zones table, so
+      // only a longest-suffix match picks the one that owns the host.
+      zones: [
+        { name: "rwl247.dev", cf_zone_id: "zone-apex", enabled: 1 },
+        { name: "bar.rwl247.dev", cf_zone_id: "zone-sub", enabled: 1 }
+      ],
+      writes
+    });
+
+    const res = await nodeSyncCore(env, "JPY-03", [{ name: "alice", vless_uuid: "u", hy2_pw: "p" }], "tg:1");
+
+    expect(res.status).toBe(200);
+    const persisted = persistedRuntime(writes);
+    expect(persisted.vpn_host).toBe("foo.bar.rwl247.dev");
+    // A fixed split(".").slice(-2) stored "rwl247.dev" here — the wrong zone id
+    // for every later rotate / DNS cleanup and for the zone_in_use check.
+    expect(persisted.zone).toBe("bar.rwl247.dev");
+  });
+
+  it("keeps the stored zone when the host belongs to no known zone", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      ok: true,
+      vpn_host: "edge.unknown-zone.test",
+      public_ip: "203.0.113.9",
+      hy2_host: "",
+      users: 1,
+      mode: "direct"
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({
+      node: { ...reviewRow, zone: "rwl247.dev" },
+      zones: [{ name: "rwl247.dev", cf_zone_id: "zone-rwl", enabled: 1 }],
+      writes
+    });
+
+    await nodeSyncCore(env, "JPY-03", [{ name: "alice", vless_uuid: "u", hy2_pw: "p" }], "tg:1");
+
+    expect(persistedRuntime(writes).zone).toBe("rwl247.dev");
+  });
+});
+
+describe("nodeSyncCore confirm_empty guard", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  const agentOk = () =>
+    vi.mocked(callAgent).mockResolvedValue({
+      ok: true,
+      vpn_host: "edge.rwl247.dev",
+      public_ip: "203.0.113.9",
+      hy2_host: "",
+      users: 0,
+      mode: "direct"
+    } as never);
+
+  const syncBody = () => JSON.parse((vi.mocked(callAgent).mock.calls[0]?.[3] as RequestInit).body as string);
+
+  it("sends confirm_empty only when the user list is genuinely empty", async () => {
+    agentOk();
+    const env = makeEnv({ node: reviewRow, zones: [{ name: "rwl247.dev", cf_zone_id: "z", enabled: 1 }] });
+
+    await nodeSyncCore(env, "JPY-03", [], "tg:1");
+
+    expect(syncBody()).toEqual({ users: [], confirm_empty: true });
+  });
+
+  it("omits confirm_empty when there are users to push", async () => {
+    agentOk();
+    const env = makeEnv({ node: reviewRow, zones: [{ name: "rwl247.dev", cf_zone_id: "z", enabled: 1 }] });
+
+    await nodeSyncCore(env, "JPY-03", [{ name: "alice", vless_uuid: "u", hy2_pw: "p" }], "tg:1");
+
+    const body = syncBody();
+    expect(body.users).toHaveLength(1);
+    expect(body.confirm_empty).toBeUndefined();
+  });
+});
+
+describe("XHTTP runtime persistence", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  const cfRow: NodeRow = {
+    ...reviewRow,
+    mode: "cloudflare",
+    xhttp_path: "/old-path",
+    xhttp_enabled: 1,
+    xhttp_direct_host: "direct.rwl247.dev",
+    xhttp_direct_path: "/old-direct"
+  };
+
+  it("clears xhttp_enabled when the agent reports XHTTP off", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      xray: "active",
+      cloudflared: "active",
+      hysteria: "inactive",
+      vpn_host: "edge.rwl247.dev",
+      mode: "cloudflare",
+      tunnel_uuid: "",
+      last_rotate_at: 0,
+      xhttp_path: "/new-path",
+      xhttp_enabled: false,
+      // Go omitempty drops these when unset, so the row must be cleared by the
+      // enabled flag, not by an explicit "".
+      xhttp_direct_host: "",
+      xhttp_direct_path: ""
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: cfRow, zones: [], writes });
+
+    const res = await nodeStatus(env, "JPY-03", "operator@example.com");
+
+    expect(res.status).toBe(200);
+    const persisted = persistedRuntime(writes);
+    expect(persisted.xhttp_path).toBe("/new-path");
+    // Stale 1 here is the D1 drift the review flagged.
+    expect(persisted.xhttp_enabled).toBe(0);
+    expect(persisted.xhttp_direct_host).toBeNull();
+    expect(persisted.xhttp_direct_path).toBeNull();
+  });
+
+  it("persists the direct-route pair the agent reports", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      xray: "active",
+      cloudflared: "active",
+      hysteria: "inactive",
+      vpn_host: "edge.rwl247.dev",
+      mode: "cloudflare",
+      tunnel_uuid: "",
+      last_rotate_at: 0,
+      xhttp_path: "/p",
+      xhttp_enabled: true,
+      xhttp_direct_host: "new-direct.rwl247.dev",
+      xhttp_direct_path: "/new-direct"
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: { ...cfRow, xhttp_enabled: 0 }, zones: [], writes });
+
+    await nodeStatus(env, "JPY-03", "operator@example.com");
+
+    const persisted = persistedRuntime(writes);
+    expect(persisted.xhttp_enabled).toBe(1);
+    expect(persisted.xhttp_direct_host).toBe("new-direct.rwl247.dev");
+    expect(persisted.xhttp_direct_path).toBe("/new-direct");
+  });
+});
+
+describe("patchNode host alias", () => {
+  beforeEach(() => {
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  const patchedVpnHost = (writes: RunWrite[]): unknown => {
+    const w = writes.find((x) => /UPDATE nodes SET label=\?, admin_host=\?, vpn_host=\?/.test(x.sql));
+    if (!w) throw new Error("no node UPDATE was issued");
+    return w.args[2];
+  };
+
+  const patch = (env: Env, body: unknown) =>
+    patchNode(env, "JPY-03", new Request("https://panel.test/api/nodes/JPY-03", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body)
+    }), "operator@example.com");
+
+  it("honours the documented `host` alias instead of dropping it", async () => {
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: reviewRow, zones: [], writes });
+
+    const res = await patch(env, { host: "new.rwl247.dev" });
+
+    expect(res.status).toBe(200);
+    expect(patchedVpnHost(writes)).toBe("new.rwl247.dev");
+  });
+
+  it("lets `host` win over vpn_host, as createNode does", async () => {
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: reviewRow, zones: [], writes });
+
+    await patch(env, { host: "alias.rwl247.dev", vpn_host: "canonical.rwl247.dev" });
+
+    expect(patchedVpnHost(writes)).toBe("alias.rwl247.dev");
+  });
+
+  it("400s on an empty `host` rather than writing the old value back", async () => {
+    const env = makeEnv({ node: reviewRow, zones: [] });
+    const res = await patch(env, { host: "   " });
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_node");
   });
 });

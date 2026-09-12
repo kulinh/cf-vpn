@@ -82,6 +82,8 @@ type fakeRotateDirectCF struct {
 	upsertA   []struct{ zoneID, name, ip string }
 	deleteA   []struct{ zoneID, name string }
 	deleteErr map[string]error
+	// upsertErr, when set, fails every A-record write: the rollback path.
+	upsertErr error
 	events    *[]string
 }
 
@@ -90,7 +92,7 @@ func (f *fakeRotateDirectCF) UpsertARecord(_ context.Context, zoneID, name, ip s
 	if f.events != nil {
 		*f.events = append(*f.events, "upsert:"+zoneID+"/"+name)
 	}
-	return nil
+	return f.upsertErr
 }
 
 func (f *fakeRotateDirectCF) DeleteARecordByName(_ context.Context, zoneID, name string) error {

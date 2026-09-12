@@ -16,6 +16,10 @@ import type { ModuleRules } from "./cnrules";
 const AUTO_MEMBERS: ReadonlyArray<readonly [string, (u: string, n: string) => string]> = [
   ["JPY-02", realityName],
   ["SIN-01", realityName],
+  // JPY-03 (Oracle Osaka, added 2026-09-12): a Japan route on a different
+  // provider than JPY-01/JPY-02, so a GreenCloud problem cannot take every
+  // Japanese member of the group with it.
+  ["JPY-03", realityName],
   ["JPY-01", hy2Name],
   ["HKG-01", hy2Name],
   ["OR-001", httpUpgradeName]

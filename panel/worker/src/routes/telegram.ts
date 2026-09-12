@@ -67,8 +67,11 @@ export async function handleTelegramWebhook(
   const baseUrl = env.PANEL_PUBLIC_ORIGIN || new URL(request.url).origin;
   try {
     await dispatch(env, ctx, update, baseUrl);
-  } catch {
-    // Swallow — never return non-200 to Telegram.
+  } catch (e) {
+    // Never return non-200 to Telegram (it would retry the same update), but a
+    // silent swallow made every dispatch bug look like the bot simply ignoring
+    // commands — log so wrangler tail shows the cause.
+    console.error("telegram dispatch failed", String(e));
   }
   return ok();
 }

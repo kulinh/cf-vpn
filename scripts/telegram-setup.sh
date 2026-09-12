@@ -11,18 +11,37 @@ die() { printf 'telegram-setup: ERROR: %s\n' "$*" >&2; exit 1; }
 : "${TELEGRAM_WEBHOOK_SECRET:?set TELEGRAM_WEBHOOK_SECRET}"
 : "${PANEL_HOST:?set PANEL_HOST (e.g. panel.rwl247.dev)}"
 
+# Telegram bot tokens are "<bot_id>:<35 chars of [A-Za-z0-9_-]>". Validate before
+# the value is used anywhere: the url line below lives in a curl config file, and
+# a token carrying a '"' would either break out of the quoted value or (in the
+# unquoted heredoc this used to be) let a `$(...)` in it run as this user.
+if ! [[ "$TELEGRAM_BOT_TOKEN" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]]; then
+  die "TELEGRAM_BOT_TOKEN must match ^[0-9]+:[A-Za-z0-9_-]+\$ (Telegram's own shape)"
+fi
+
 # tg_call <method> <extra curl args...>
 # The bot token travels via curl --config on stdin so it never appears in argv
 # / ps output. Anything SECRET must go the same way: put it in TG_CONFIG_EXTRA
 # (config-file syntax, i.e. long options without the leading --), never in the
 # argv passed to this function — `--data-urlencode "secret_token=…"` as an
 # argument is visible to every local user for the lifetime of the call.
+#
+# The heredoc delimiter is QUOTED, so the shell expands nothing: the config file
+# is composed with printf into a 0600 temp file and curl reads it from there.
 tg_call() {
   local method="$1"; shift
-  curl -sS --max-time 30 "$@" --config - <<EOF
-url = "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}"
-${TG_CONFIG_EXTRA:-}
-EOF
+  local cfg rc=0
+  cfg="$(mktemp)"
+  chmod 600 "$cfg"
+  printf 'url = "https://api.telegram.org/bot%s/%s"\n' "$TELEGRAM_BOT_TOKEN" "$method" >"$cfg"
+  # A false AND-list would be this function's status under `set -e`; an empty
+  # TG_CONFIG_EXTRA is normal, so write it as its own guarded statement.
+  if [ -n "${TG_CONFIG_EXTRA:-}" ]; then
+    printf '%s\n' "$TG_CONFIG_EXTRA" >>"$cfg"
+  fi
+  curl -sS --max-time 30 "$@" --config "$cfg" || rc=$?
+  rm -f "$cfg"
+  return "$rc"
 }
 
 echo "Setting webhook -> https://${PANEL_HOST}/telegram/webhook"

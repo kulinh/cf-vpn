@@ -64,27 +64,53 @@ func RunXHTTPSet(ctx context.Context, enable bool, runner systemd.Runner, stdout
 	if err != nil {
 		return fmt.Errorf("render cloudflared config: %w", err)
 	}
-	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
-		return fmt.Errorf("save env: %w", err)
-	}
 	r := resolveRunner(runner)
+	// Order matters: write → restart → (restore on failure) → env → subscriptions.
+	// Saving env first meant a failed restart left XHTTP_ENABLED=1 with no
+	// XHTTP inbound, and the next gen-sub handed clients a dead route.
+	prevXray := readFileOrNil(xrayConfigPath)
+	prevCfd := readFileOrNil(cloudflaredConfig)
+	restoreConfigs := func() {
+		if prevXray != nil {
+			if rerr := writeAtomicFile(xrayConfigPath, prevXray, 0o600); rerr != nil {
+				warnf(stderr, "warning: restore previous xray config failed: %v", rerr)
+			}
+		}
+		if prevCfd != nil {
+			if rerr := writeAtomicFile(cloudflaredConfig, prevCfd, 0o600); rerr != nil {
+				warnf(stderr, "warning: restore previous cloudflared config failed: %v", rerr)
+			}
+		}
+	}
 	xrayChanged, err := writeXrayConfigIfChanged(ctx, xrayConfigPath, []byte(xrayRendered), 0o600)
 	if err != nil {
 		return fmt.Errorf("write xray config: %w", err)
 	}
 	cfChanged, err := writeIfChanged(cloudflaredConfig, []byte(cfRendered), 0o600)
 	if err != nil {
+		restoreConfigs()
 		return fmt.Errorf("write cloudflared config: %w", err)
 	}
 	if xrayChanged {
 		if err := systemd.Restart(ctx, r, "cfvpn-xray.service"); err != nil {
-			return fmt.Errorf("restart cfvpn-xray.service: %w", err)
+			restoreConfigs()
+			if rerr := systemd.Restart(ctx, r, "cfvpn-xray.service"); rerr != nil {
+				warnf(stderr, "warning: restart cfvpn-xray.service on the restored config failed: %v", rerr)
+			}
+			return fmt.Errorf("restart cfvpn-xray.service (previous config restored): %w", err)
 		}
 	}
 	if cfChanged {
 		if err := systemd.Restart(ctx, r, "cfvpn-cloudflared.service"); err != nil {
-			return fmt.Errorf("restart cfvpn-cloudflared.service: %w", err)
+			restoreConfigs()
+			if rerr := systemd.Restart(ctx, r, "cfvpn-cloudflared.service"); rerr != nil {
+				warnf(stderr, "warning: restart cfvpn-cloudflared.service on the restored config failed: %v", rerr)
+			}
+			return fmt.Errorf("restart cfvpn-cloudflared.service (previous config restored): %w", err)
 		}
+	}
+	if err := state.SaveAtomic(envFilePath, env, 0o600); err != nil {
+		return fmt.Errorf("save env: %w", err)
 	}
 	if err := RegenerateSubscriptionsTo(domain, stderr); err != nil {
 		return fmt.Errorf("regenerate subscriptions: %w", err)

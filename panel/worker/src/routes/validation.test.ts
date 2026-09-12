@@ -136,13 +136,14 @@ describe("route payload validation", () => {
 
 describe("user id length cap", () => {
   it("truncates to MAX_ENTITY_ID_LEN without leaving a trailing separator", () => {
-    expect(MAX_ENTITY_ID_LEN).toBe(54);
+    expect(MAX_ENTITY_ID_LEN).toBe(51);
     const long = userIDFromName("x".repeat(80));
     expect(long).toHaveLength(MAX_ENTITY_ID_LEN);
-    // "u:del:" + id + ":yes" must still fit Telegram's 64-byte callback_data.
-    expect(`u:del:${long}:yes`.length).toBeLessThanOrEqual(64);
+    // The longest wrapper, "n:rotate:" + id + ":yes", must still fit Telegram's
+    // 64-byte callback_data — "u:del:" is 3 bytes shorter and never the bound.
+    expect(`n:rotate:${long}:yes`.length).toBeLessThanOrEqual(64);
     // A cut landing on a separator must not leave the id ending in "-".
-    expect(userIDFromName(`${"a".repeat(53)} b c`)).not.toMatch(/-$/);
+    expect(userIDFromName(`${"a".repeat(50)} b c`)).not.toMatch(/-$/);
   });
 
   it("400s when a name sanitises to nothing", async () => {

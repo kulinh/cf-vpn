@@ -43,8 +43,13 @@
 #   CF_API_TOKEN=... CF_ACCOUNT_ID=... NODE_ID=chn-02 \
 #     TARGET_HOST=root@121.41.196.104 [SSH_KEY=/tmp/rwl247] \
 #     [NODE_LABEL="CN-02 (Aliyun SZ)"] \
-#     [USER1_NAME=kulinh] [MODE=direct] [DOMAIN=] \
+#     [USER1_NAME=kulinh] [MODE=direct] [DOMAIN=] [HY2_PORT=32443] \
 #     bash scripts/install-node-CN.sh
+#
+# HY2_PORT: pick the Hysteria2 UDP port up front (1024-65535) instead of letting
+#   cfvpnctl choose a random one, so the provider's security group can be opened
+#   for it before the install. Clients are handed this exact number.
+# SSH_PORT: the target's sshd port (default 22) — used for the ufw allow rule.
 #
 # NODE_ID  : DNS label (case-insensitive); stored UPPERCASE in D1.
 # NODE_LABEL: human-readable name for the panel (defaults to uppercase NODE_ID).
@@ -116,6 +121,7 @@ fi
 : "${USER1_NAME:=kulinh}"
 : "${MODE:=auto}"
 : "${DOMAIN:=}"
+: "${HY2_PORT:=}"
 
 # Normalize: lowercase for DNS/cfvpnctl, UPPERCASE for D1 storage
 NODE_ID="$(echo "$NODE_ID" | tr '[:upper:]' '[:lower:]')"
@@ -132,6 +138,12 @@ if ! [[ "$USER1_NAME" =~ ^[A-Za-z0-9_-]{1,32}$ ]]; then
   die "USER1_NAME must match ^[A-Za-z0-9_-]{1,32}\$ (got: $USER1_NAME)"
 fi
 
+# HY2_PORT is optional; cfvpnctl picks a random 20000-60000 port when it is
+# empty. Naming the port up front is what a China VPS needs: the provider's
+# security group has to be opened for it, and the number is advertised to clients
+# verbatim, so the external and internal port have to match. Validated via the
+# shared cfvpn_require_port (below, after cfvpn-common.sh is sourced).
+
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [ -f "$PROJECT_ROOT/go.mod" ] || die "go.mod not found; run from inside the cf-vpn repository"
 LIB_DIR="$PROJECT_ROOT/scripts/lib"
@@ -141,6 +153,8 @@ REMOTE_ENV_HELPER="$REMOTE_PROJ/scripts/lib/cfvpn-env-file.sh"
 
 # shellcheck source=lib/cfvpn-common.sh
 . "$LIB_DIR/cfvpn-common.sh"
+
+[ -z "$HY2_PORT" ] || cfvpn_require_port HY2_PORT "$HY2_PORT"
 
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 
@@ -174,6 +188,7 @@ LEGO_VERSION="${LEGO_VERSION:-latest}"
 INSTALL_PHASE_STARTED=0
 INSTALL_PHASE_DONE=0
 STAGE_DIR=""
+REMOTE_STAGE=""
 TUNNELS_BEFORE=""
 TUNNELS_SNAPSHOT_OK=0
 
@@ -181,6 +196,19 @@ cleanup_local_stage() {
   [ -n "$STAGE_DIR" ] && [ -d "$STAGE_DIR" ] || return 0
   log "removing local stage dir: $STAGE_DIR"
   rm -rf "$STAGE_DIR"
+}
+
+# The target's stage dir holds the staged binaries (~300MB) under /tmp. The happy
+# path removes it at step 14; an abort anywhere between the mktemp and that point
+# used to leave it behind on every failed attempt, so a few retries filled /tmp
+# on a small China VPS and the next install failed for an unrelated reason.
+cleanup_remote_stage() {
+  [ -n "$REMOTE_STAGE" ] || return 0
+  case "$REMOTE_STAGE" in /tmp/cfvpn-stage.*) ;; *) return 0 ;; esac  # never rm -rf anything else
+  log "removing stage dir on $TARGET_HOST: $REMOTE_STAGE"
+  ssh_run rm -rf "$REMOTE_STAGE" >/dev/null 2>&1 \
+    || warn "could not remove $REMOTE_STAGE on $TARGET_HOST — delete it by hand"
+  REMOTE_STAGE=""
 }
 
 list_admin_tunnels_local() {
@@ -205,6 +233,9 @@ exit_handler() {
   [ "$_EXIT_HANDLED" -eq 1 ] && exit $rc
   _EXIT_HANDLED=1
   cleanup_local_stage
+  # `if`, not `&&`: under `set -e` a false AND-list here would abort the handler
+  # before the orphan-tunnel diff below ever runs.
+  if [ "$rc" -ne 0 ]; then cleanup_remote_stage; fi
   if [ "$rc" -ne 0 ] && [ "$INSTALL_PHASE_STARTED" -eq 1 ] && [ "$INSTALL_PHASE_DONE" -eq 0 ]; then
     warn "cfvpnctl install was interrupted (exit $rc) — checking for orphan admin tunnels"
     local after new tid tname
@@ -657,21 +688,17 @@ log "writing /etc/cfvpn/cfvpn.env on $TARGET_HOST"
   # `|| true`: this group is the left side of a pipe and `set -o pipefail` is
   # on, so a false AND-list here would abort the whole script.
   { [ -n "$DOMAIN" ] && printf 'DOMAIN=%s\n' "$DOMAIN"; } || true
+  { [ -n "$HY2_PORT" ] && printf 'HY2_PORT=%s\n' "$HY2_PORT"; } || true
 } | ssh_run env "FORCE_REINSTALL=$FORCE_REINSTALL" bash "$REMOTE_ENV_HELPER" write
 
 # ----- 10. firewall hygiene on target ----------------------------------------
-ssh_run bash <<'REMOTE'
-# Capture first: `ufw status | grep -q` closes the pipe on the first match, and
-# under `set -o pipefail` the SIGPIPE from ufw becomes the status of the test —
-# skipping the SSH allow rule on exactly the hosts that have ufw enabled.
-if command -v ufw >/dev/null 2>&1; then
-  ufw_status="$(ufw status 2>/dev/null || true)"
-  if grep -q 'Status: active' <<<"$ufw_status"; then
-    echo "[install-node-CN] ufw active — ensuring SSH stays open"
-    ufw allow OpenSSH || ufw allow 22/tcp \
-      || echo "[install-node-CN] WARN: could not whitelist SSH; verify manually"
-  fi
-fi
+# The same helper the plain installer uses (the repo is already on the target
+# from step 7), so both paths whitelist the real SSH port rather than assuming 22.
+ssh_run env "CFVPN_LIB=$REMOTE_PROJ/scripts/lib/cfvpn-common.sh" \
+            "SSH_PORT=${SSH_PORT:-22}" bash -s <<'REMOTE'
+set -euo pipefail
+. "$CFVPN_LIB"
+cfvpn_ensure_ufw_ssh_allowed "${SSH_PORT:-22}"
 REMOTE
 
 # ----- 11. run cfvpnctl install on target ------------------------------------
@@ -728,10 +755,17 @@ log "syncing $DB_NODE_ID + user $USER1_NAME to D1"
 # the local quotes were eaten and the remote ran `bash -c .` followed by a
 # dozen printfs against unset variables — every value came back EMPTY with
 # rc=0, and every CN node provisioned fine and then never reached D1.
-REMOTE_ENV=$(ssh_run bash -s <<'REMOTE'
+REMOTE_ENV=$(ssh_run env "CFVPN_LIB=$REMOTE_PROJ/scripts/lib/cfvpn-common.sh" bash -s <<'REMOTE'
 set -euo pipefail
 [ -r /etc/cfvpn/cfvpn.env ] || { echo "cfvpn.env unreadable on target" >&2; exit 1; }
-. /etc/cfvpn/cfvpn.env
+# cfvpn_env_read, not `. /etc/cfvpn/cfvpn.env`: sourcing hands every value to the
+# remote root shell, so a `$(...)` that ever landed in one (HY2_OBFS_PW and the
+# passwords are generated, but DOMAIN and friends are operator input) would
+# execute here. It also splits on the first '=' exactly like internal/state/store.go.
+. "$CFVPN_LIB"
+cfvpn_env_read /etc/cfvpn/cfvpn.env \
+  DOMAIN HY2_HOST HY2_PORT HY2_OBFS_PW HY2_PASS_USER1 UUID_USER1 \
+  PUBLIC_IP ADMIN_HOST REALITY_PUBLIC_KEY REALITY_SHORT_ID REALITY_SNI REALITY_DEST
 printf "DOMAIN=%s\n"              "${DOMAIN:-}"
 printf "HY2_HOST=%s\n"            "${HY2_HOST:-}"
 printf "HY2_PORT=%s\n"            "${HY2_PORT:-}"
@@ -783,8 +817,9 @@ log "calling agent sync via $ADMIN_HOST"
 agent_sync
 
 # ----- 14. cleanup remote stage dir -------------------------------------------
-log "removing remote stage dir on $TARGET_HOST"
-ssh_run rm -rf "$REMOTE_STAGE"
+# Same helper the EXIT trap uses on failure, so there is exactly one place that
+# knows how to remove it (and it clears REMOTE_STAGE, so the trap is a no-op).
+cleanup_remote_stage
 # Local STAGE_DIR removed by single EXIT trap (exit_handler → cleanup_local_stage)
 
 log "node ready: $DB_NODE_ID ($NODE_LABEL)"

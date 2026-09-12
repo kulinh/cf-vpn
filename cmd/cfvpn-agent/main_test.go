@@ -86,3 +86,31 @@ func TestZoneForHost(t *testing.T) {
 		}
 	}
 }
+
+func TestEmptySyncRefusal(t *testing.T) {
+	withUsers := syncRequest{Users: []syncUser{{Name: "kulinh", VlessUUID: "u", Hy2PW: "p"}}}
+	// A list with users, or an explicit confirmation, or a node that has no
+	// users anyway: nothing to protect.
+	if r := emptySyncRefusal(withUsers, 2); r != "" {
+		t.Errorf("a non-empty list must pass: %q", r)
+	}
+	if r := emptySyncRefusal(syncRequest{ConfirmEmpty: true}, 2); r != "" {
+		t.Errorf("confirm_empty must pass: %q", r)
+	}
+	if r := emptySyncRefusal(syncRequest{}, 0); r != "" {
+		t.Errorf("an already empty node must pass: %q", r)
+	}
+	// The dangerous case: empty list, no confirmation, node still has users.
+	r := emptySyncRefusal(syncRequest{}, 3)
+	if r == "" || !strings.Contains(r, "3 user(s)") || !strings.Contains(r, "confirm_empty=true") {
+		t.Fatalf("expected a refusal naming the count and the flag, got %q", r)
+	}
+}
+
+func TestParsePortOrWarn(t *testing.T) {
+	for in, want := range map[string]int{"": 0, "45321": 45321, " 443 ": 443, "abc": 0, "0": 0, "70000": 0, "-1": 0} {
+		if got := parsePortOrWarn("HY2_PORT", in); got != want {
+			t.Errorf("parsePortOrWarn(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
