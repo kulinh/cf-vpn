@@ -2,14 +2,16 @@
 // of cf-vpn controls to one group chat.
 //
 // Why long polling on VNM-01 rather than a command in the panel Worker: the
-// only thing it drives is `cfvpnctl derp`, which needs the Tailscale OAuth
-// client in /etc/cfvpn/tailscale-oauth.env. Keeping the bot on the box keeps
-// that secret on the box. It also uses a different bot (@rwl_vpn_bot) from the
-// Worker's webhook bot, so the two never compete for the same update stream —
-// Telegram allows either getUpdates or a webhook per bot, not both.
+// things it drives (`cfvpnctl derp`, `cfvpnctl rules-mode`) need secrets that
+// live on the box (the Tailscale OAuth client, the account CF token). It also
+// uses a different bot (@rwl_vpn_bot) from the Worker's webhook bot, so the
+// two never compete for the same update stream — Telegram allows either
+// getUpdates or a webhook per bot, not both.
 //
 // Both bots live in the same group, so this one answers a strict whitelist and
 // stays silent on everything else (including the Worker bot's commands).
+// Everything it posts is short Telegram HTML (see format.go) and is deleted
+// again after TTL (see ttl.go).
 package tgbot
 
 import (
@@ -26,7 +28,7 @@ import (
 )
 
 // Runner is what the bot is allowed to do. Every function writes its output
-// to w; it is sent back to the chat verbatim.
+// to w; the bot parses that output into the message it posts.
 type Runner struct {
 	ChinaMode func(ctx context.Context, on bool, w io.Writer) error
 	Show      func(ctx context.Context, w io.Writer) error
@@ -51,22 +53,18 @@ type Bot struct {
 	// for the DERP map to settle and then runs netcheck).
 	CommandTimeout time.Duration
 
+	// TTL is how long a message (the bot's replies and the commands they
+	// answer) stays in the group before the bot deletes it (default 24 h).
+	// TTLDir is the deletion queue directory; empty disables the feature.
+	TTL          time.Duration
+	TTLDir       string
+	ReapInterval time.Duration
+
 	username string
 	mu       sync.Mutex // one command at a time; two concurrent ACL writes would collide
 }
 
-const (
-	maxTelegramText = 4000 // Telegram's limit is 4096; leave room for the prefix
-	usage           = "cf-vpn control bot\n\n" +
-		"/mode status — travel mode: which list the RWL8899 config inlines + DERP state\n" +
-		"/mode china — config inlines the CN list AND china-mode on (our relays only)\n" +
-		"/mode uae — config inlines the UAE list (OTT calls), china-mode off\n" +
-		"/mode home — config inlines the CN list, china-mode off (normal)\n" +
-		"/china on | off | status — DERP china-mode alone\n" +
-		"/derp — same as /china status\n\n" +
-		"After /mode, pull the RWL8899 config in Shadowrocket once (the link stays the same).\n" +
-		"Note: with china-mode on, SIN-01 can only relay through JPY-01."
-)
+const maxTelegramText = 4000 // Telegram's limit is 4096; leave room for the prefix
 
 func (b *Bot) base() string {
 	if b.BaseURL == "" {
@@ -132,22 +130,50 @@ func (b *Bot) call(ctx context.Context, method string, form url.Values, out any)
 	return nil
 }
 
-// Send posts a message to the configured chat. replyTo may be 0.
+// Send posts an HTML message to the configured chat and queues it for
+// deletion after TTL. replyTo may be 0. Text over Telegram's limit, or HTML
+// Telegram refuses to parse, is sent again as plain text so a reply is never
+// lost to formatting.
 func (b *Bot) Send(ctx context.Context, text string, replyTo int64) error {
+	id, err := b.sendMessage(ctx, text, replyTo, true)
+	if err != nil && strings.Contains(strings.ToLower(err.Error()), "can't parse entities") {
+		id, err = b.sendMessage(ctx, plainText(text), replyTo, false)
+	}
+	if err != nil {
+		return err
+	}
+	b.track(b.ChatID, id)
+	return nil
+}
+
+func (b *Bot) sendMessage(ctx context.Context, text string, replyTo int64, asHTML bool) (int64, error) {
 	if len(text) > maxTelegramText {
-		text = text[:maxTelegramText] + "\n… (truncated)"
+		text = plainText(text)
+		asHTML = false
+		if len(text) > maxTelegramText {
+			text = text[:maxTelegramText] + "\n… (cắt bớt)"
+		}
 	}
 	form := url.Values{
 		"chat_id":                  {fmt.Sprint(b.ChatID)},
 		"text":                     {text},
 		"disable_web_page_preview": {"true"},
 	}
+	if asHTML {
+		form.Set("parse_mode", "HTML")
+	}
 	if replyTo != 0 {
 		form.Set("reply_to_message_id", fmt.Sprint(replyTo))
 		// A reply to a deleted message would otherwise fail the whole send.
 		form.Set("allow_sending_without_reply", "true")
 	}
-	return b.call(ctx, "sendMessage", form, nil)
+	var msg struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if err := b.call(ctx, "sendMessage", form, &msg); err != nil {
+		return 0, err
+	}
+	return msg.MessageID, nil
 }
 
 type tgChat struct {
@@ -191,9 +217,9 @@ func (b *Bot) Username(ctx context.Context) (string, error) {
 // Worker bot's menu in the same group is untouched.
 func (b *Bot) SetCommands(ctx context.Context) error {
 	cmds, _ := json.Marshal([]map[string]string{
-		{"command": "mode", "description": "Travel mode: status | china | uae | home"},
+		{"command": "mode", "description": "Chế độ đi lại: status | china | uae | home"},
 		{"command": "china", "description": "DERP china-mode: status | on | off"},
-		{"command": "derp", "description": "Show DERP regions and china-mode"},
+		{"command": "derp", "description": "Trạng thái DERP và china-mode"},
 	})
 	scope, _ := json.Marshal(map[string]any{"type": "chat", "chat_id": b.ChatID})
 	return b.call(ctx, "setMyCommands", url.Values{"commands": {string(cmds)}, "scope": {string(scope)}}, nil)
@@ -213,7 +239,7 @@ func parseCommand(text string) (cmd string, args []string, addressed string) {
 	return strings.ToLower(cmd), fields[1:], addressed
 }
 
-// Dispatch runs one command and returns the text to send back. An empty reply
+// Dispatch runs one command and returns the HTML to send back. An empty reply
 // means "not for us, stay silent".
 func (b *Bot) Dispatch(ctx context.Context, text string) string {
 	cmd, args, addressed := parseCommand(text)
@@ -228,20 +254,17 @@ func (b *Bot) Dispatch(ctx context.Context, text string) string {
 	if len(args) > 0 {
 		sub = strings.ToLower(args[0])
 	}
-	switch cmd {
-	case "mode":
-		if len(args) > 1 {
+	if len(args) > 1 {
+		if cmd == "mode" || cmd == "china" || cmd == "derp" {
 			return usage
 		}
+		return ""
+	}
+	switch cmd {
+	case "mode":
 		switch sub {
 		case "", "status", "show":
-			return b.run(ctx, "mode show", func(ctx context.Context, w io.Writer) error {
-				if err := b.Runner.RulesModeShow(ctx, w); err != nil {
-					return err
-				}
-				fmt.Fprintln(w)
-				return b.Runner.Show(ctx, w)
-			})
+			return b.status(ctx, true)
 		case "china", "uae", "home":
 			// One trip = one command: the config's inlined list and the DERP
 			// policy always move together.
@@ -252,13 +275,16 @@ func (b *Bot) Dispatch(ctx context.Context, text string) string {
 			case "uae":
 				rules = "uae"
 			}
-			return b.run(ctx, "mode "+sub, func(ctx context.Context, w io.Writer) error {
-				if err := b.Runner.RulesMode(ctx, rules, w); err != nil {
-					return err
-				}
-				fmt.Fprintln(w)
-				return b.Runner.ChinaMode(ctx, chinaOn, w)
-			})
+			outs, took, err := b.exec(ctx,
+				func(ctx context.Context, w io.Writer) error { return b.Runner.RulesMode(ctx, rules, w) },
+				func(ctx context.Context, w io.Writer) error { return b.Runner.ChinaMode(ctx, chinaOn, w) },
+			)
+			if err != nil {
+				b.logf("mode %s failed after %s: %v", sub, took, err)
+				return fmtFailure(modeTitle(sub), took, err, outs...)
+			}
+			b.logf("mode %s ok in %s", sub, took)
+			return fmtMode(sub, took, outs[0], outs[1])
 		default:
 			return usage
 		}
@@ -266,17 +292,20 @@ func (b *Bot) Dispatch(ctx context.Context, text string) string {
 		if sub != "" && sub != "show" && sub != "status" {
 			return usage
 		}
-		return b.run(ctx, "derp show", func(ctx context.Context, w io.Writer) error { return b.Runner.Show(ctx, w) })
+		return b.status(ctx, false)
 	case "china":
 		switch sub {
 		case "", "status", "show":
-			return b.run(ctx, "derp show", func(ctx context.Context, w io.Writer) error { return b.Runner.Show(ctx, w) })
+			return b.status(ctx, false)
 		case "on", "off":
 			on := sub == "on"
-			if len(args) > 1 {
-				return usage
+			outs, took, err := b.exec(ctx, func(ctx context.Context, w io.Writer) error { return b.Runner.ChinaMode(ctx, on, w) })
+			if err != nil {
+				b.logf("china-mode %s failed after %s: %v", sub, took, err)
+				return fmtFailure("China-mode "+sub, took, err, outs...)
 			}
-			return b.run(ctx, "china-mode "+sub, func(ctx context.Context, w io.Writer) error { return b.Runner.ChinaMode(ctx, on, w) })
+			b.logf("china-mode %s ok in %s", sub, took)
+			return fmtChina(sub, took, outs[0])
 		default:
 			return usage
 		}
@@ -284,28 +313,44 @@ func (b *Bot) Dispatch(ctx context.Context, text string) string {
 	return "" // any other slash command belongs to the other bot
 }
 
-func (b *Bot) run(ctx context.Context, label string, fn func(context.Context, io.Writer) error) string {
+// status answers /mode status (rules + DERP) and /derp, /china status (DERP).
+func (b *Bot) status(ctx context.Context, withRules bool) string {
+	var fns []func(context.Context, io.Writer) error
+	if withRules {
+		fns = append(fns, func(ctx context.Context, w io.Writer) error { return b.Runner.RulesModeShow(ctx, w) })
+	}
+	fns = append(fns, func(ctx context.Context, w io.Writer) error { return b.Runner.Show(ctx, w) })
+	outs, took, err := b.exec(ctx, fns...)
+	if err != nil {
+		b.logf("status failed after %s: %v", took, err)
+		return fmtFailure("Xem trạng thái", took, err, outs...)
+	}
+	b.logf("status ok in %s", took)
+	if withRules {
+		return fmtStatus(outs[0], outs[1])
+	}
+	return fmtStatus("", outs[0])
+}
+
+// exec runs the steps in order under the command lock, stopping at the first
+// error, and returns each step's output (the failed step's partial output
+// included) plus the elapsed time.
+func (b *Bot) exec(ctx context.Context, steps ...func(context.Context, io.Writer) error) ([]string, time.Duration, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	ctx, cancel := context.WithTimeout(ctx, b.commandTimeout())
 	defer cancel()
-	var out bytes.Buffer
 	start := time.Now()
-	err := fn(ctx, &out)
-	took := time.Since(start).Round(time.Second)
-	body := strings.TrimRight(out.String(), "\n")
-	if err != nil {
-		b.logf("%s failed after %s: %v", label, took, err)
-		if body != "" {
-			return fmt.Sprintf("✖ %s failed: %v\n\n%s", label, err, body)
+	var outs []string
+	for _, step := range steps {
+		var buf bytes.Buffer
+		err := step(ctx, &buf)
+		outs = append(outs, buf.String())
+		if err != nil {
+			return outs, time.Since(start), err
 		}
-		return fmt.Sprintf("✖ %s failed: %v", label, err)
 	}
-	b.logf("%s ok in %s", label, took)
-	if body == "" {
-		body = "(no output)"
-	}
-	return fmt.Sprintf("✅ %s (%s)\n\n%s", label, took, body)
+	return outs, time.Since(start), nil
 }
 
 // handle processes one update: authorization, dispatch, reply.
@@ -331,29 +376,27 @@ func (b *Bot) handle(ctx context.Context, u tgUpdate) {
 		who = fmt.Sprintf("%d/@%s", m.From.ID, m.From.Username)
 	}
 	b.logf("command %q from %s", m.Text, who)
-	// Long commands: tell the chat something is happening first.
-	if strings.HasPrefix(reply, "✅ china-mode") || strings.HasPrefix(reply, "✖ china-mode") {
-		_ = b.Send(ctx, reply, m.MessageID)
-		return
-	}
+	// The command itself goes with the reply after TTL (the bot is a group
+	// admin), so the group stays clean.
+	b.track(m.Chat.ID, m.MessageID)
 	if err := b.Send(ctx, reply, m.MessageID); err != nil {
 		b.logf("send reply: %v", err)
 	}
 }
 
-// Ack posts the "working on it" line for commands that take a while. Called by
-// Run before dispatch so the group is not left guessing.
+// ack posts the "working on it" line for commands that take a while. Called
+// by Run before dispatch so the group is not left guessing.
 func (b *Bot) ack(ctx context.Context, m *tgMessage) {
 	cmd, args, _ := parseCommand(m.Text)
-	if len(args) == 0 {
+	if len(args) != 1 {
 		return
 	}
 	sub := strings.ToLower(args[0])
 	switch {
 	case cmd == "china" && (sub == "on" || sub == "off"):
-		_ = b.Send(ctx, "⏳ running china-mode "+sub+" (flips the policy, waits for the DERP map, then runs netcheck)…", m.MessageID)
+		_ = b.Send(ctx, fmtAck("china", sub), m.MessageID)
 	case cmd == "mode" && (sub == "china" || sub == "uae" || sub == "home"):
-		_ = b.Send(ctx, "⏳ running mode "+sub+" (writes rules_mode to D1, then flips china-mode, waits for the DERP map, runs netcheck)…", m.MessageID)
+		_ = b.Send(ctx, fmtAck("mode", sub), m.MessageID)
 	}
 }
 
@@ -371,7 +414,7 @@ func (b *Bot) skipBacklog(ctx context.Context) (int64, error) {
 	return ups[len(ups)-1].UpdateID + 1, nil
 }
 
-// Run long-polls until ctx is cancelled.
+// Run long-polls until ctx is cancelled, deleting expired messages on the side.
 func (b *Bot) Run(ctx context.Context) error {
 	if b.Token == "" || b.ChatID == 0 {
 		return fmt.Errorf("tgbot: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
@@ -388,6 +431,10 @@ func (b *Bot) Run(ctx context.Context) error {
 		return err
 	}
 	b.logf("tgbot @%s polling chat %d (skipping backlog up to %d)", name, b.ChatID, offset)
+	if b.TTLDir != "" {
+		b.logf("ttl: messages expire after %s, queue in %s", b.ttl(), b.TTLDir)
+		go b.reapLoop(ctx)
+	}
 
 	for {
 		if ctx.Err() != nil {

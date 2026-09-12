@@ -128,6 +128,15 @@ cfvpnctl derp region remove --id 901
 /china off        # back home
 ```
 
+Replies are short Telegram HTML (what changed, relay latencies, what to do
+next) rather than raw `cfvpnctl` output. Every reply and the command it
+answers is **deleted after 24 h** (the bot is a group admin): each sent
+message is queued as one JSON file in `/var/lib/cfvpn/tg-ttl/`, a reaper in
+the bot deletes due ones every minute, and `scripts/fleet-probe.py` queues its
+alerts in the same directory. `TELEGRAM_TTL_DIR=` (empty) disables it,
+`TELEGRAM_MESSAGE_TTL_HOURS` changes the TTL; `cfvpn-tgbot --reap` runs one
+pass by hand.
+
 It runs the same `cfvpnctl derp` code in-process, so snapshots, validation and
 the netcheck afterwards are identical; the reply carries that output. The
 Tailscale OAuth client never leaves this box, which is why the bot lives here

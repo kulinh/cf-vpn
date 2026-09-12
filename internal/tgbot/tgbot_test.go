@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,13 +18,16 @@ import (
 )
 
 // fakeTelegram implements just enough of the Bot API: getMe, getUpdates
-// (queued), sendMessage (recorded), setMyCommands.
+// (queued), sendMessage (recorded), deleteMessage (recorded), setMyCommands.
 type fakeTelegram struct {
-	mu       sync.Mutex
-	updates  []tgUpdate
-	sent     []url.Values
-	offsets  []string
-	commands int
+	mu        sync.Mutex
+	updates   []tgUpdate
+	sent      []url.Values
+	deleted   []string // "<chat>/<msg>"
+	offsets   []string
+	commands  int
+	nextID    int64
+	deleteErr string // when set, deleteMessage fails with this description
 }
 
 func (f *fakeTelegram) server(t *testing.T, token string) *httptest.Server {
@@ -44,7 +49,15 @@ func (f *fakeTelegram) server(t *testing.T, token string) *httptest.Server {
 			write("true")
 		case "sendMessage":
 			f.sent = append(f.sent, r.Form)
-			write(`{"message_id":99}`)
+			f.nextID++
+			write(fmt.Sprintf(`{"message_id":%d}`, 100+f.nextID))
+		case "deleteMessage":
+			if f.deleteErr != "" {
+				_, _ = fmt.Fprintf(w, `{"ok":false,"description":%q}`, f.deleteErr)
+				return
+			}
+			f.deleted = append(f.deleted, r.Form.Get("chat_id")+"/"+r.Form.Get("message_id"))
+			write("true")
 		case "getUpdates":
 			off := r.Form.Get("offset")
 			f.offsets = append(f.offsets, off)
@@ -97,34 +110,40 @@ type recordingRunner struct {
 	err   error
 }
 
+// The fake runner prints what the real commands print, so the formatting
+// parsers are exercised end to end.
 func (r *recordingRunner) runner() Runner {
 	return Runner{
 		ChinaMode: func(_ context.Context, on bool, w io.Writer) error {
 			r.mu.Lock()
 			r.calls = append(r.calls, fmt.Sprintf("china-mode %v", on))
 			r.mu.Unlock()
-			fmt.Fprintf(w, "china-mode %v: policy updated\n--- tailscale netcheck ---\nNearest DERP: HKG-01\n", on)
+			if on {
+				fmt.Fprint(w, sampleChinaOn)
+			} else {
+				fmt.Fprint(w, sampleChinaNoop)
+			}
 			return r.err
 		},
 		Show: func(_ context.Context, w io.Writer) error {
 			r.mu.Lock()
 			r.calls = append(r.calls, "show")
 			r.mu.Unlock()
-			fmt.Fprint(w, "OmitDefaultRegions: false (china-mode off)\nregion 900 hkg (HKG-01)\n")
+			fmt.Fprint(w, sampleDerpShow)
 			return r.err
 		},
 		RulesMode: func(_ context.Context, mode string, w io.Writer) error {
 			r.mu.Lock()
 			r.calls = append(r.calls, "rules-mode "+mode)
 			r.mu.Unlock()
-			fmt.Fprintf(w, "rules_mode = %s\n", mode)
+			fmt.Fprintf(w, "rules_mode = %s — …\n", mode)
 			return r.err
 		},
 		RulesModeShow: func(_ context.Context, w io.Writer) error {
 			r.mu.Lock()
 			r.calls = append(r.calls, "rules-show")
 			r.mu.Unlock()
-			fmt.Fprint(w, "rules_mode = cn (default, never set)\n")
+			fmt.Fprint(w, sampleRulesDefault)
 			return r.err
 		},
 	}
@@ -162,22 +181,23 @@ func TestDispatchWhitelist(t *testing.T) {
 	b := newTestBot(t, f, rr)
 	ctx := context.Background()
 
-	if got := b.Dispatch(ctx, "/china on"); !strings.Contains(got, "✅ china-mode on") || !strings.Contains(got, "Nearest DERP") {
+	if got := b.Dispatch(ctx, "/china on"); !strings.HasPrefix(got, "✅ <b>China-mode on</b>") || !strings.Contains(got, "📶 Relay: HKG-01 52 ms · JPY-01 126 ms") {
 		t.Fatalf("china on → %q", got)
 	}
-	if got := b.Dispatch(ctx, "/china off"); !strings.Contains(got, "✅ china-mode off") {
+	if got := b.Dispatch(ctx, "/china off"); !strings.HasPrefix(got, "✅ <b>China-mode off</b>") || !strings.Contains(got, "đã off sẵn") {
 		t.Fatalf("china off → %q", got)
 	}
 	for _, in := range []string{"/china", "/china status", "/derp", "/derp show"} {
-		if got := b.Dispatch(ctx, in); !strings.Contains(got, "✅ derp show") || !strings.Contains(got, "china-mode off") {
+		got := b.Dispatch(ctx, in)
+		if !strings.HasPrefix(got, "ℹ️ <b>Chế độ hiện tại</b>\n🌐 China-mode: off") || strings.Contains(got, "Config") {
 			t.Fatalf("%s → %q", in, got)
 		}
 	}
-	if got := b.Dispatch(ctx, "/china maybe"); !strings.Contains(got, "/china on") {
+	if got := b.Dispatch(ctx, "/china maybe"); got != usage {
 		t.Fatalf("bad subcommand must print usage, got %q", got)
 	}
 	// Commands that belong to the Worker bot in the same group: stay silent.
-	for _, in := range []string{"/status", "/nodes", "/help", "/sub", "/upgrade", "plain text", "/china@other_bot on"} {
+	for _, in := range []string{"/status", "/nodes", "/help", "/sub", "/upgrade", "plain text", "/china@other_bot on", "/adduser x y"} {
 		if got := b.Dispatch(ctx, in); got != "" {
 			t.Fatalf("%q must be ignored, got %q", in, got)
 		}
@@ -197,17 +217,17 @@ func TestDispatchMode(t *testing.T) {
 
 	for _, in := range []string{"/mode", "/mode status", "/mode@rwl_vpn_bot show"} {
 		got := b.Dispatch(ctx, in)
-		if !strings.Contains(got, "✅ mode show") || !strings.Contains(got, "rules_mode = cn") || !strings.Contains(got, "OmitDefaultRegions") {
+		if !strings.HasPrefix(got, "ℹ️ <b>Chế độ hiện tại</b>\n📄 Config RWL8899: list CN (vượt GFW) · mặc định\n🌐 China-mode: off") {
 			t.Fatalf("%s → %q", in, got)
 		}
 	}
-	if got := b.Dispatch(ctx, "/mode uae"); !strings.Contains(got, "✅ mode uae") || !strings.Contains(got, "rules_mode = uae") || !strings.Contains(got, "china-mode false") {
+	if got := b.Dispatch(ctx, "/mode uae"); !strings.HasPrefix(got, "✅ <b>Chế độ UAE</b>") || !strings.Contains(got, "📄 Config RWL8899 → list UAE") || !strings.Contains(got, "China-mode → off") || !strings.Contains(got, "bỏ module zalo_zalopay") {
 		t.Fatalf("mode uae → %q", got)
 	}
-	if got := b.Dispatch(ctx, "/mode china"); !strings.Contains(got, "✅ mode china") || !strings.Contains(got, "china-mode true") {
+	if got := b.Dispatch(ctx, "/mode china"); !strings.HasPrefix(got, "✅ <b>Chế độ China</b>") || !strings.Contains(got, "list CN") || !strings.Contains(got, "China-mode → on · policy đã đổi") {
 		t.Fatalf("mode china → %q", got)
 	}
-	if got := b.Dispatch(ctx, "/mode home"); !strings.Contains(got, "✅ mode home") || !strings.Contains(got, "rules_mode = cn") || !strings.Contains(got, "china-mode false") {
+	if got := b.Dispatch(ctx, "/mode home"); !strings.HasPrefix(got, "✅ <b>Về mặc định (China)</b>") || !strings.Contains(got, "list CN") || !strings.Contains(got, "China-mode → off") {
 		t.Fatalf("mode home → %q", got)
 	}
 	for _, in := range []string{"/mode mars", "/mode uae now"} {
@@ -233,22 +253,13 @@ func TestDispatchModeStopsWhenRulesWriteFails(t *testing.T) {
 	rr := &recordingRunner{err: fmt.Errorf("d1 down")}
 	b := newTestBot(t, f, rr)
 	got := b.Dispatch(context.Background(), "/mode uae")
-	if !strings.HasPrefix(got, "✖ mode uae failed: d1 down") {
+	if !strings.HasPrefix(got, "✖ <b>Chế độ UAE thất bại</b>") || !strings.Contains(got, "<code>d1 down</code>") || !strings.Contains(got, "<pre>rules_mode = uae") {
 		t.Fatalf("reply = %q", got)
 	}
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
 	if strings.Join(rr.calls, "|") != "rules-mode uae" {
 		t.Fatalf("china-mode must not be flipped when the D1 write failed, calls=%v", rr.calls)
-	}
-}
-
-func TestDispatchReportsFailure(t *testing.T) {
-	f, rr := &fakeTelegram{}, &recordingRunner{err: fmt.Errorf("boom")}
-	b := newTestBot(t, f, rr)
-	got := b.Dispatch(context.Background(), "/china on")
-	if !strings.HasPrefix(got, "✖ china-mode on failed: boom") || !strings.Contains(got, "policy updated") {
-		t.Fatalf("failure reply = %q", got)
 	}
 }
 
@@ -309,7 +320,7 @@ func TestRunSkipsBacklogThenHandlesOneCommand(t *testing.T) {
 		t.Fatalf("only the fresh command may run, got %v", calls)
 	}
 	texts := f.texts()
-	if len(texts) != 1 || !strings.Contains(texts[0], "✅ derp show") {
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "ℹ️ <b>Chế độ hiện tại</b>") {
 		t.Fatalf("replies = %v", texts)
 	}
 	f.mu.Lock()
@@ -320,6 +331,9 @@ func TestRunSkipsBacklogThenHandlesOneCommand(t *testing.T) {
 	if f.offsets[1] != "41" {
 		t.Fatalf("polling must resume past the backlog, offsets=%v", f.offsets)
 	}
+	if f.sent[0].Get("parse_mode") != "HTML" {
+		t.Fatalf("replies must be sent as HTML, form=%v", f.sent[0])
+	}
 }
 
 func TestAckOnlyForLongCommands(t *testing.T) {
@@ -327,19 +341,16 @@ func TestAckOnlyForLongCommands(t *testing.T) {
 	b := newTestBot(t, f, rr)
 	ctx := context.Background()
 	b.ack(ctx, &tgMessage{MessageID: 1, Chat: tgChat{ID: -100123}, Text: "/derp"})
+	b.ack(ctx, &tgMessage{MessageID: 3, Chat: tgChat{ID: -100123}, Text: "/mode status"})
 	if len(f.texts()) != 0 {
-		t.Fatalf("show must not be announced: %v", f.texts())
+		t.Fatalf("status commands must not be announced: %v", f.texts())
 	}
 	b.ack(ctx, &tgMessage{MessageID: 2, Chat: tgChat{ID: -100123}, Text: "/china on"})
-	if texts := f.texts(); len(texts) != 1 || !strings.Contains(texts[0], "⏳ running china-mode on") {
+	if texts := f.texts(); len(texts) != 1 || !strings.Contains(texts[0], "⏳ Đang chuyển china-mode on") {
 		t.Fatalf("ack = %v", texts)
 	}
-	b.ack(ctx, &tgMessage{MessageID: 3, Chat: tgChat{ID: -100123}, Text: "/mode status"})
-	if texts := f.texts(); len(texts) != 1 {
-		t.Fatalf("mode status must not be announced: %v", texts)
-	}
 	b.ack(ctx, &tgMessage{MessageID: 4, Chat: tgChat{ID: -100123}, Text: "/mode uae"})
-	if texts := f.texts(); len(texts) != 2 || !strings.Contains(texts[1], "⏳ running mode uae") {
+	if texts := f.texts(); len(texts) != 2 || !strings.Contains(texts[1], "⏳ Đang chuyển sang <b>Chế độ UAE</b>") {
 		t.Fatalf("ack = %v", texts)
 	}
 }
@@ -348,14 +359,17 @@ func TestSendTruncatesAndSetsCommands(t *testing.T) {
 	f, rr := &fakeTelegram{}, &recordingRunner{}
 	b := newTestBot(t, f, rr)
 	ctx := context.Background()
-	if err := b.Send(ctx, strings.Repeat("x", maxTelegramText+500), 12); err != nil {
+	if err := b.Send(ctx, "<b>"+strings.Repeat("x", maxTelegramText+500)+"</b>", 12); err != nil {
 		t.Fatal(err)
 	}
 	f.mu.Lock()
 	sent := f.sent[0]
 	f.mu.Unlock()
-	if len(sent.Get("text")) > maxTelegramText+20 || !strings.HasSuffix(sent.Get("text"), "(truncated)") {
-		t.Fatalf("text not truncated (%d chars)", len(sent.Get("text")))
+	if len(sent.Get("text")) > maxTelegramText+20 || !strings.HasSuffix(sent.Get("text"), "(cắt bớt)") || strings.Contains(sent.Get("text"), "<b>") {
+		t.Fatalf("text not truncated to plain text (%d chars)", len(sent.Get("text")))
+	}
+	if sent.Get("parse_mode") != "" {
+		t.Fatalf("a truncated message must go out as plain text, form=%v", sent)
 	}
 	if sent.Get("reply_to_message_id") != "12" || sent.Get("chat_id") != "-100123" {
 		t.Fatalf("send form = %v", sent)
@@ -375,5 +389,116 @@ func TestRunRequiresConfig(t *testing.T) {
 	half := Runner{ChinaMode: func(context.Context, bool, io.Writer) error { return nil }, Show: func(context.Context, io.Writer) error { return nil }}
 	if err := (&Bot{Token: "t", ChatID: 1, Runner: half}).Run(context.Background()); err == nil || !strings.Contains(err.Error(), "runner") {
 		t.Fatalf("runner without the rules-mode functions must fail, got %v", err)
+	}
+}
+
+// ---- TTL --------------------------------------------------------------------
+
+func readQueue(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, _ := os.ReadDir(dir)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+func TestTTLQueuesRepliesAndCommandsThenReaps(t *testing.T) {
+	f, rr := &fakeTelegram{}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	b.TTLDir = t.TempDir()
+	b.TTL = time.Hour
+	ctx := context.Background()
+
+	// A handled command queues both the reply (id 101) and the command (id 7).
+	b.handle(ctx, tgUpdate{UpdateID: 1, Message: &tgMessage{MessageID: 7, Chat: tgChat{ID: -100123}, Text: "/derp"}})
+	names := readQueue(t, b.TTLDir)
+	if len(names) != 2 || names[0] != "-100123_101.json" || names[1] != "-100123_7.json" {
+		t.Fatalf("queue = %v", names)
+	}
+	raw, _ := os.ReadFile(filepath.Join(b.TTLDir, "-100123_101.json"))
+	var e ttlEntry
+	if err := json.Unmarshal(raw, &e); err != nil || e.ChatID != -100123 || e.MessageID != 101 {
+		t.Fatalf("entry = %s (%v)", raw, err)
+	}
+	if until := time.Until(time.Unix(e.DeleteAt, 0)); until < 55*time.Minute || until > 65*time.Minute {
+		t.Fatalf("delete_at must be ~1h out, got %s", until)
+	}
+
+	// Nothing is due yet.
+	if n, err := b.ReapOnce(ctx); err != nil || n != 0 {
+		t.Fatalf("early reap: n=%d err=%v", n, err)
+	}
+	// Backdate one entry (as fleet-probe.py would write it) and reap.
+	past := ttlEntry{ChatID: -100123, MessageID: 55, DeleteAt: time.Now().Add(-time.Minute).Unix()}
+	rawPast, _ := json.Marshal(past)
+	_ = os.WriteFile(filepath.Join(b.TTLDir, "-100123_55.json"), rawPast, 0o600)
+	if n, err := b.ReapOnce(ctx); err != nil || n != 1 {
+		t.Fatalf("reap: n=%d err=%v", n, err)
+	}
+	f.mu.Lock()
+	deleted := append([]string(nil), f.deleted...)
+	f.mu.Unlock()
+	if strings.Join(deleted, ",") != "-100123/55" {
+		t.Fatalf("deleted = %v", deleted)
+	}
+	if names := readQueue(t, b.TTLDir); len(names) != 2 {
+		t.Fatalf("the reaped file must be gone, queue = %v", names)
+	}
+}
+
+func TestTTLDropsPermanentFailuresKeepsTransient(t *testing.T) {
+	f, rr := &fakeTelegram{}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	b.TTLDir = t.TempDir()
+	ctx := context.Background()
+	write := func(id int64, at time.Time) {
+		raw, _ := json.Marshal(ttlEntry{ChatID: -100123, MessageID: id, DeleteAt: at.Unix()})
+		_ = os.WriteFile(filepath.Join(b.TTLDir, ttlFileName(-100123, id)), raw, 0o600)
+	}
+	write(1, time.Now().Add(-time.Minute))
+	f.deleteErr = "Bad Request: message to delete not found"
+	if _, err := b.ReapOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if names := readQueue(t, b.TTLDir); len(names) != 0 {
+		t.Fatalf("a permanently undeletable message must be dropped, queue = %v", names)
+	}
+
+	write(2, time.Now().Add(-time.Minute))
+	f.deleteErr = "Too Many Requests: retry after 3"
+	if _, err := b.ReapOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if names := readQueue(t, b.TTLDir); len(names) != 1 {
+		t.Fatalf("a transient failure must keep the file for retry, queue = %v", names)
+	}
+
+	write(3, time.Now().Add(-49*time.Hour))
+	if _, err := b.ReapOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if names := readQueue(t, b.TTLDir); len(names) != 1 || names[0] != "-100123_2.json" {
+		t.Fatalf("a message past Telegram's 48h window must be dropped, queue = %v", names)
+	}
+
+	_ = os.WriteFile(filepath.Join(b.TTLDir, "garbage.json"), []byte("{"), 0o600)
+	if _, err := b.ReapOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if names := readQueue(t, b.TTLDir); len(names) != 1 {
+		t.Fatalf("unreadable files must be dropped, queue = %v", names)
+	}
+}
+
+func TestTTLDisabledWithoutDir(t *testing.T) {
+	f, rr := &fakeTelegram{}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	if err := b.Send(context.Background(), "hi", 0); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := b.ReapOnce(context.Background()); n != 0 || err != nil {
+		t.Fatalf("reap without a dir must be a no-op, n=%d err=%v", n, err)
 	}
 }

@@ -213,6 +213,37 @@ def run_probes(routes: list, xray_bin: str, hy_bin: str) -> dict:
         shutil.rmtree(work, ignore_errors=True)
 
 
+# Auto-delete: the ops group keeps nothing older than TTL. cfvpn-tgbot (the
+# control bot on this box, same @rwl_vpn_bot token) deletes queued messages;
+# this script only queues its alerts in the same directory, one JSON file per
+# message ({"chat_id","message_id","delete_at"} in unix seconds) so no locking
+# is needed between the two writers.
+TTL = {"dir": "/var/lib/cfvpn/tg-ttl", "hours": 24.0}
+
+
+def configure_ttl(env: dict) -> None:
+    if "TELEGRAM_TTL_DIR" in env:
+        TTL["dir"] = env["TELEGRAM_TTL_DIR"].strip()  # empty = disabled
+    if env.get("TELEGRAM_MESSAGE_TTL_HOURS", "").strip():
+        TTL["hours"] = float(env["TELEGRAM_MESSAGE_TTL_HOURS"])
+
+
+def record_ttl(ttl_dir: str, chat_id: str, message_id: int, hours: float, now: float | None = None) -> str | None:
+    """Queue one message for deletion; returns the file written (None if disabled)."""
+    if not ttl_dir or not message_id:
+        return None
+    now = time.time() if now is None else now
+    os.makedirs(ttl_dir, mode=0o700, exist_ok=True)
+    path = os.path.join(ttl_dir, f"{chat_id}_{message_id}.json")
+    tmp = path + ".tmp"
+    entry = {"chat_id": int(chat_id), "message_id": int(message_id), "delete_at": int(now + hours * 3600)}
+    with open(tmp, "w") as f:
+        json.dump(entry, f)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return path
+
+
 def send_telegram(token: str, chat_id: str, text: str) -> bool:
     if not token:
         print("telegram: TELEGRAM_BOT_TOKEN empty; alert not sent:\n" + text, file=sys.stderr)
@@ -221,10 +252,20 @@ def send_telegram(token: str, chat_id: str, text: str) -> bool:
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status == 200
+            if resp.status != 200:
+                return False
+            try:
+                message_id = json.load(resp).get("result", {}).get("message_id")
+            except (ValueError, AttributeError):
+                message_id = None
     except urllib.error.URLError as e:
         print(f"telegram: send failed: {e}", file=sys.stderr)
         return False
+    try:
+        record_ttl(TTL["dir"], chat_id, message_id, TTL["hours"])
+    except OSError as e:  # a lost auto-delete must never turn into a lost alert
+        print(f"telegram: ttl queue: {e}", file=sys.stderr)
+    return True
 
 
 def main(argv=None) -> int:
@@ -234,6 +275,7 @@ def main(argv=None) -> int:
     ap.add_argument("--once", action="store_true", help="print the result table to stdout")
     args = ap.parse_args(argv)
     env = load_env(args.env)
+    configure_ttl(env)
     state_file = env.get("STATE_FILE", "/var/lib/cfvpn/fleet-probe.state")
     log_file = env.get("LOG_FILE", "/var/log/cfvpn-fleet-probe.log")
     threshold = int(env.get("FAIL_THRESHOLD", "2"))
