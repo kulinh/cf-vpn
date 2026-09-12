@@ -446,6 +446,61 @@ gửi lại dạng text thuần. Cảnh báo UDP bị chặn từ netcheck vẫn
 `internal/tgbot` dùng đúng output thật ghi từ VNM-01 ngày 12/09 để kiểm tra
 parser; Go toàn bộ pass, pytest 10 pass.
 
+## Bổ sung 13 — JPY-03: node ARM đầu tiên (Oracle Cloud Osaka), 12/09/2026
+
+**Máy:** Oracle Cloud region Osaka, shape Ampere A1 4 OCPU / 24 GB / 200 GB
+(tài khoản nâng PAYG để có capacity, vẫn 0 đồng trong hạn mức free), Ubuntu
+24.04 Minimal aarch64, IP `129.225.185.197`, Tailscale `100.96.82.34`,
+hostname `jpy-03`, múi giờ VN. Vì sao Ubuntu: installer chỉ chạy với apt.
+
+**Chuẩn bị repo cho ARM (PR #11):** chỉ đường tải dự phòng cloudflared/lego
+trong `internal/binary` gắn cứng amd64, giờ chọn theo CPU; mọi thứ khác vốn
+trung lập (Go build tại node, Xray/Hysteria qua script chính thức, cloudflared
+apt, lego `go install`). Hai bẫy bắt được khi chạy thật: (1) `go.mod` chỉ ghi
+`go 1.26` nên Go 1.22 của Ubuntu đòi tải toolchain tên "go1.26" không tồn tại
+→ ghim `toolchain go1.26.8`; (2) image OCI có iptables trong máy chỉ mở :22
+→ installer tự gỡ dòng REJECT (`cfvpn_oci_firewall_fix`, có test), và khi bật
+ufw theo chuẩn fleet phải `disable netfilter-persistent` vì bộ rule gốc của
+image nằm trước chain của ufw, khiến :22 public vẫn mở dù ufw không cho.
+
+**Cài:** `install-node.sh` mode direct, `HY2_PORT=32443` đặt trước để mở VCN
+một lần. Kết quả: xray Reality `:443` (dest `www.sony.jp`, đo TLS 1.3/h2/200
+từ chính máy; xoay bằng `rotate-reality --dest`, đồng bộ D1 bằng
+`d1-set-node.sh`), Hysteria2 `32443/udp`, cloudflared tunnel admin
+`jpy-03.rwl247.dev`, agent, bbr, healthcheck OK. D1: vpn_host
+`edge-64b43148.dongnat247.com`, drift 10/10. Probe **từ JPY-03**: 21/21 đường
+OK (JPY-01 43–89 ms, JPY-02 47, HKG 197–262, SIN 320, USA 298–454, VNM
+303–1670); **từ VNM-01**: JPY-03 Reality 268 ms, HY2 267 ms.
+
+**Bảo mật theo chuẩn fleet:** sshd `ListenAddress 100.96.82.34:22` +
+`0.0.0.0:17722` (giống JPY-01/SIN-01, ssh.service `After=tailscaled`, bỏ
+ssh.socket của Ubuntu); ufw default deny, mở 17722/tcp, 443/tcp+udp,
+32443/udp, 8443/tcp, 3478/udp, `in on tailscale0`; fail2ban jail sshd
+(ignoreip tailnet). Đã kiểm chứng từ VNM-01: public 17722 vào được, public 22
+đóng, Tailscale 22 vào được. Root SSH bằng `/root/rwl01.key`, user `ubuntu`
+giữ làm dự phòng. Tailscale: exit node đã duyệt, key expiry đã tắt.
+
+**Việc chuyển sang JPY-03 (máy datacenter 24/7 thay vì máy nhà):**
+
+| Việc | Trước | Sau |
+|---|---|---|
+| `cfvpn-tgbot` (`/mode`, `/china`) | VNM-01 | JPY-03 (binary arm64 build chéo, menu đăng ký lại, `/mode status` trả lời OK); VNM-01 tắt, giữ cron `cfvpn-tgbot --reap` 5 phút/lần để tự xoá cảnh báo của probe VNM-01; 10 tin chờ xoá đã chuyển theo |
+| `xiaoqie-watch` (canh site chặn) | VNM-01, 4 lượt/ngày | JPY-03, **09:00 và 21:00 giờ VN**, state và sổ tự xoá chuyển theo |
+| `fleet-probe` | chỉ VNM-01 | **cả hai**, tiêu đề cảnh báo ghi `@vnm-01` / `@jpy-03` (`PROBE_LABEL`): cả hai cùng lỗi = node chết, một bên lỗi = đường của bên đó |
+
+**DERP region 902:** derper 1.102.4 (build chéo arm64) chạy trên JPY-03 với
+cert Let's Encrypt cho `derp-de29e117.duylinh.net` (hết hạn 11/12/2026, cron gia hạn
+hàng tháng 04:31 ngày 1), STUN 3478, unit + ufw sẵn. **Chưa `region add`** vì
+Security List VCN chưa mở `8443/tcp` và `3478/udp` (đo từ VNM-01 không tới);
+mở xong là một lệnh `cfvpnctl derp region add --id 902 --code osa --name JPY-03
+--host derp-de29e117.duylinh.net`.
+
+**Anh còn làm tay:** mở `8443/tcp` + `3478/udp` trên VCN (cho DERP), bỏ rule
+`22/tcp` trên VCN (SSH public giờ đi 17722), đổi tên máy trong console OCI từ
+`osk-001` thành `JPY-03`. Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
+group AUTO (danh sách cố định trong Worker, hiện JPY-02/SIN-01/JPY-01-HY2/
+HKG-01-HY2/OR-001).
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |
