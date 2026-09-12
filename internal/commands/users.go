@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -237,8 +238,13 @@ func RunRemoveUser(ctx context.Context, in UserInputs, runner systemd.Runner, st
 		return fmt.Errorf("remove subscription: %w", err)
 	}
 
-	// Mirror the agent's applyUsers: remove from Hysteria2 config too.
+	// Mirror the agent's applyUsers: remove from Hysteria2 config too. A node
+	// that never had hysteria (or whose config was removed by hand) must still
+	// be able to drop a user instead of failing here.
 	hy2Users, err := hysteria.ListUsers(hysteriaConfigPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("load hysteria config: %w", err)
 	}

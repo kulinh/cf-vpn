@@ -15,6 +15,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 // fakeTelegram implements just enough of the Bot API: getMe, getUpdates
@@ -28,6 +29,9 @@ type fakeTelegram struct {
 	commands  int
 	nextID    int64
 	deleteErr string // when set, deleteMessage fails with this description
+	// retryAfterOnce > 0 makes the next sendMessage answer 429 with that
+	// retry_after, then behave normally (the rate-limit retry path).
+	retryAfterOnce int
 }
 
 func (f *fakeTelegram) server(t *testing.T, token string) *httptest.Server {
@@ -48,6 +52,12 @@ func (f *fakeTelegram) server(t *testing.T, token string) *httptest.Server {
 			f.commands++
 			write("true")
 		case "sendMessage":
+			if f.retryAfterOnce > 0 {
+				after := f.retryAfterOnce
+				f.retryAfterOnce = 0
+				_, _ = fmt.Fprintf(w, `{"ok":false,"error_code":429,"description":"Too Many Requests","parameters":{"retry_after":%d}}`, after)
+				return
+			}
 			f.sent = append(f.sent, r.Form)
 			f.nextID++
 			write(fmt.Sprintf(`{"message_id":%d}`, 100+f.nextID))
@@ -500,5 +510,102 @@ func TestTTLDisabledWithoutDir(t *testing.T) {
 	}
 	if n, err := b.ReapOnce(context.Background()); n != 0 || err != nil {
 		t.Fatalf("reap without a dir must be a no-op, n=%d err=%v", n, err)
+	}
+}
+
+// ---- review fixes ------------------------------------------------------------
+
+// *url.Error prints the request URL, and the URL contains the bot token: every
+// transport failure used to put the token in the journal.
+func TestErrorsNeverCarryTheBotToken(t *testing.T) {
+	const token = "8685351988:AAsecretsecretsecretsecret"
+	b := &Bot{Token: token, ChatID: -100123, BaseURL: "http://127.0.0.1:1"}
+	if _, err := b.Username(context.Background()); err == nil {
+		t.Fatal("expected a connection failure")
+	} else if strings.Contains(err.Error(), token) {
+		t.Fatalf("token leaked into the error: %v", err)
+	} else if !strings.Contains(err.Error(), "<token>") {
+		t.Fatalf("error should show the token was redacted: %v", err)
+	}
+}
+
+func TestTruncateRunesNeverSplitsAUTF8Sequence(t *testing.T) {
+	s := strings.Repeat("mở đường hầm ", 400) // multi-byte, no ASCII-only prefix
+	for _, max := range []int{10, 11, 12, 4000, len(s)} {
+		got := truncateRunes(s, max)
+		if !utf8.ValidString(got) {
+			t.Fatalf("truncateRunes(max=%d) produced invalid UTF-8", max)
+		}
+		if len(got) > max {
+			t.Fatalf("truncateRunes(max=%d) returned %d bytes", max, len(got))
+		}
+	}
+}
+
+func TestSendTruncatesVietnameseTextWithoutBreakingIt(t *testing.T) {
+	f, rr := &fakeTelegram{}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	long := "<b>" + strings.Repeat("đổi chế độ ", 1000) + "</b>"
+	if err := b.Send(context.Background(), long, 0); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	text := f.sent[0].Get("text")
+	f.mu.Unlock()
+	if !utf8.ValidString(text) {
+		t.Fatal("the truncated message must still be valid UTF-8")
+	}
+	if !strings.HasSuffix(text, "(cắt bớt)") {
+		t.Fatalf("expected the truncation marker, got the last 20 bytes %q", text[len(text)-20:])
+	}
+}
+
+func TestAckIgnoresCommandsAddressedToTheOtherBot(t *testing.T) {
+	f, rr := &fakeTelegram{}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	b.ack(context.Background(), &tgMessage{MessageID: 1, Chat: tgChat{ID: -100123}, Text: "/china@other_bot on"})
+	if texts := f.texts(); len(texts) != 0 {
+		t.Fatalf("no ack may be sent for another bot's command: %v", texts)
+	}
+	// Ours still gets one.
+	b.ack(context.Background(), &tgMessage{MessageID: 2, Chat: tgChat{ID: -100123}, Text: "/china@rwl_vpn_bot on"})
+	if texts := f.texts(); len(texts) != 1 {
+		t.Fatalf("our own command must be acked: %v", texts)
+	}
+}
+
+func TestCallRetriesOnceAfterRateLimit(t *testing.T) {
+	f, rr := &fakeTelegram{retryAfterOnce: 1}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	if err := b.Send(context.Background(), "xin chào", 0); err != nil {
+		t.Fatalf("a 429 with a short retry_after must be retried, got %v", err)
+	}
+	if texts := f.texts(); len(texts) != 1 {
+		t.Fatalf("expected exactly one delivered message, got %v", texts)
+	}
+}
+
+// The same spool layout is written by /opt/xiaoqie_bot's library, which uses
+// sent_at + kind. An entry without delete_at must never be read as "due in
+// 1970" and deleted on the spot.
+func TestReapIgnoresEntriesWithoutADeleteTime(t *testing.T) {
+	f, rr := &fakeTelegram{}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	b.TTLDir = t.TempDir()
+	if err := os.WriteFile(filepath.Join(b.TTLDir, "-100123_42.json"),
+		[]byte(`{"chat_id":-100123,"message_id":42,"sent_at":1789300800,"kind":"watch"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	n, err := b.ReapOnce(context.Background())
+	if err != nil || n != 0 {
+		t.Fatalf("ReapOnce = (%d, %v), want (0, nil)", n, err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.deleted) != 0 {
+		t.Fatalf("nothing may be deleted: %v", f.deleted)
+	}
+	if names := readQueue(t, b.TTLDir); len(names) != 0 {
+		t.Fatalf("the unusable entry should be dropped, queue = %v", names)
 	}
 }

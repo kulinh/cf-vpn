@@ -132,3 +132,35 @@ func TestSaveAtomicAcceptsRealWorldValues(t *testing.T) {
 		}
 	}
 }
+
+// Load used to skip any line that was not KEY=value, so a hand edit like
+// "export DOMAIN=x" made the variable vanish with no trace — and a vanished
+// AGENT_SHARED_SECRET or HY2_PORT is a silent outage. Stop instead.
+func TestLoadRejectsLinesThatAreNotAssignments(t *testing.T) {
+	dir := t.TempDir()
+	for _, content := range []string{
+		"DOMAIN=a.example\nexport HY2_PORT=32443\n",
+		"DOMAIN=a.example\nHY2_PORT = 32443\n",
+		"DOMAIN=a.example\njust-some-noise\n",
+	} {
+		path := filepath.Join(dir, "cfvpn.env")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("expected Load to refuse %q", content)
+		}
+	}
+	// Comments, blanks and values containing '=' stay fine.
+	path := filepath.Join(dir, "ok.env")
+	if err := os.WriteFile(path, []byte("# comment\n\nDOMAIN=a.example\nB64=aGVsbG8=\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if env["DOMAIN"] != "a.example" || env["B64"] != "aGVsbG8=" {
+		t.Fatalf("env = %v", env)
+	}
+}

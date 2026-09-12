@@ -165,3 +165,63 @@ func TestDeleteARecordByNameNoopWhenAbsent(t *testing.T) {
 		t.Fatalf("expected nil, got %v", err)
 	}
 }
+
+// D1Query is how the node writes fleet settings (cfvpnctl rules-mode, the
+// Telegram bot). Its failure modes were untested: D1 reports a bad statement
+// inside a success:true envelope, and a gateway page is not JSON at all.
+func TestD1Query(t *testing.T) {
+	const acct = "8706ce6c15ce482de516ffc045414678"
+	const db = "0649f07f-e2c0-47f3-b84a-273f7f67332e"
+	newClient := func(body string, status int) (*Client, *string) {
+		var gotBody string
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			gotBody = string(raw)
+			if want := "/client/v4/accounts/" + acct + "/d1/database/" + db + "/query"; r.URL.Path != want {
+				t.Errorf("path = %s, want %s", r.URL.Path, want)
+			}
+			w.WriteHeader(status)
+			_, _ = w.Write([]byte(body))
+		}))
+		t.Cleanup(ts.Close)
+		return &Client{BaseURL: ts.URL + "/client/v4", Token: "t", AccountID: acct, HTTP: ts.Client()}, &gotBody
+	}
+
+	c, body := newClient(`{"success":true,"result":[{"success":true,"results":[{"value":"uae"}]}]}`, 200)
+	rows, err := c.D1Query(context.Background(), db, "SELECT value FROM settings WHERE key = ?", []any{"rules_mode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(rows) != `[{"value":"uae"}]` {
+		t.Fatalf("rows = %s", rows)
+	}
+	if !strings.Contains(*body, `"params":["rules_mode"]`) {
+		t.Fatalf("parameters must be bound, not interpolated: %s", *body)
+	}
+
+	// A rejected statement: the reason lives in the statement, not the envelope.
+	c, _ = newClient(`{"success":true,"result":[{"success":false,"error":"no such column: rules_mode"}]}`, 200)
+	_, err = c.D1Query(context.Background(), db, "SELECT rules_mode FROM settings", nil)
+	if err == nil || !strings.Contains(err.Error(), "no such column") {
+		t.Fatalf("expected the statement error to surface, got %v", err)
+	}
+
+	// A write returns no rows.
+	c, _ = newClient(`{"success":true,"result":[{"success":true}]}`, 200)
+	rows, err = c.D1Query(context.Background(), db, "INSERT INTO settings VALUES (?,?,?)", []any{"k", "v", 1})
+	if err != nil || string(rows) != "[]" {
+		t.Fatalf("write: rows=%s err=%v", rows, err)
+	}
+
+	// A Cloudflare gateway page is not JSON; the status has to be in the error.
+	c, _ = newClient(`<html>502 Bad Gateway</html>`, 502)
+	if _, err := c.D1Query(context.Background(), db, "SELECT 1", nil); err == nil || !strings.Contains(err.Error(), "HTTP 502") {
+		t.Fatalf("expected the HTTP status in the error, got %v", err)
+	}
+
+	// A database id that is not a UUID never reaches the network.
+	c, _ = newClient(`{"success":true,"result":[]}`, 200)
+	if _, err := c.D1Query(context.Background(), "../../accounts", "SELECT 1", nil); err == nil || !strings.Contains(err.Error(), "d1 database id") {
+		t.Fatalf("expected the id to be rejected, got %v", err)
+	}
+}

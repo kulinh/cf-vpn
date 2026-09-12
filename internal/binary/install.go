@@ -85,8 +85,11 @@ asset="$2"
 cd "$workdir"
 curl -fsSL --retry 3 --max-time 120 -o "$asset" \
   "https://github.com/cloudflare/cloudflared/releases/latest/download/$asset"
+# The trailing "|| true" matters: under set -euo pipefail a non-matching grep,
+# or the SIGPIPE from head closing the pipe early, aborts the script right here
+# and makes the "refusing to install unverified binary" check below unreachable.
 check_url=$(curl -fsSL https://api.github.com/repos/cloudflare/cloudflared/releases/latest \
-  | grep '"browser_download_url"' | grep "$asset.sha256\"" | head -n1 | cut -d '"' -f4)
+  | grep '"browser_download_url"' | grep "$asset.sha256\"" | head -n1 | cut -d '"' -f4 || true)
 if [ -z "$check_url" ]; then
   echo "cloudflared checksum URL not found; refusing to install unverified binary" >&2
   exit 1
@@ -160,8 +163,10 @@ workdir="$1"
 suffix="$2"
 cd "$workdir"
 release_json=$(curl -fsSL https://api.github.com/repos/go-acme/lego/releases/latest)
-asset_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "$suffix\"" | head -n1 | cut -d '"' -f4)
-checksum_url=$(echo "$release_json" | grep '"browser_download_url"' | grep 'checksums.txt"' | head -n1 | cut -d '"' -f4)
+# Trailing "|| true" for the same reason as in EnsureCloudflared: a missing
+# asset must reach the explicit check below, not kill the script mid-pipeline.
+asset_url=$(echo "$release_json" | grep '"browser_download_url"' | grep "$suffix\"" | head -n1 | cut -d '"' -f4 || true)
+checksum_url=$(echo "$release_json" | grep '"browser_download_url"' | grep 'checksums.txt"' | head -n1 | cut -d '"' -f4 || true)
 if [ -z "$asset_url" ]; then
   echo "lego $suffix asset not found" >&2
   exit 1

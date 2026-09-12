@@ -2,6 +2,7 @@ package cert
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"os"
 	"os/exec"
@@ -115,13 +116,41 @@ func (m *LegoManager) copyResult(host, certPath, keyPath string) error {
 	}
 	certSrc := filepath.Join(path, "certificates", host+".crt")
 	keySrc := filepath.Join(path, "certificates", host+".key")
+	// The two files are separate atomic renames, so a crash (or a failure on
+	// the second copy) can leave a cert from one issuance beside a key from
+	// another — hysteria then refuses to start until the next renewal. Keep the
+	// previous pair and put it back unless the published pair verifies.
+	prevCert, prevKey := readFileOrNil(certPath), readFileOrNil(keyPath)
+	restore := func() {
+		if prevCert != nil {
+			_ = fsutil.WriteFile(certPath, prevCert, 0o600)
+		}
+		if prevKey != nil {
+			_ = fsutil.WriteFile(keyPath, prevKey, 0o600)
+		}
+	}
 	if err := copyCertFile(certSrc, certPath); err != nil {
+		restore()
 		return fmt.Errorf("copy cert: %w", err)
 	}
 	if err := copyCertFile(keySrc, keyPath); err != nil {
+		restore()
 		return fmt.Errorf("copy key: %w", err)
 	}
+	if _, err := tls.LoadX509KeyPair(certPath, keyPath); err != nil {
+		restore()
+		return fmt.Errorf("published cert/key for %s do not form a valid pair: %w", host, err)
+	}
 	return nil
+}
+
+// readFileOrNil returns the file's bytes, or nil when it cannot be read.
+func readFileOrNil(path string) []byte {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	return raw
 }
 
 // copyCertFile publishes a freshly issued certificate or key.

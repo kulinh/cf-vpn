@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Runner is what the bot is allowed to do. Every function writes its output
@@ -60,8 +61,9 @@ type Bot struct {
 	TTLDir       string
 	ReapInterval time.Duration
 
-	username string
-	mu       sync.Mutex // one command at a time; two concurrent ACL writes would collide
+	username   string
+	mu         sync.Mutex // one command at a time; two concurrent ACL writes would collide
+	clientOnce sync.Once
 }
 
 const maxTelegramText = 4000 // Telegram's limit is 4096; leave room for the prefix
@@ -74,11 +76,25 @@ func (b *Bot) base() string {
 }
 
 func (b *Bot) client() *http.Client {
-	if b.HTTP == nil {
-		// Must outlast the long poll.
-		b.HTTP = &http.Client{Timeout: 90 * time.Second}
-	}
+	// The reaper goroutine and the poll loop share the client; initialise it
+	// exactly once instead of racing on the nil check.
+	b.clientOnce.Do(func() {
+		if b.HTTP == nil {
+			// Must outlast the long poll.
+			b.HTTP = &http.Client{Timeout: 90 * time.Second}
+		}
+	})
 	return b.HTTP
+}
+
+// scrub removes the bot token from any text that is about to be logged or
+// returned as an error: *url.Error prints the full request URL, and the URL
+// carries the token.
+func (b *Bot) scrub(s string) string {
+	if b.Token == "" {
+		return s
+	}
+	return strings.ReplaceAll(s, b.Token, "<token>")
 }
 
 func (b *Bot) logf(format string, args ...any) {
@@ -102,14 +118,35 @@ func (b *Bot) commandTimeout() time.Duration {
 }
 
 func (b *Bot) call(ctx context.Context, method string, form url.Values, out any) error {
+	// One retry on 429 when Telegram says how long to wait and the wait is
+	// short; anything else surfaces to the caller.
+	for attempt := 0; ; attempt++ {
+		retryAfter, err := b.callOnce(ctx, method, form, out)
+		if err == nil || attempt > 0 || retryAfter <= 0 || retryAfter > 10 {
+			return err
+		}
+		b.logf("telegram %s: rate limited, retrying after %ds", method, retryAfter)
+		select {
+		case <-time.After(time.Duration(retryAfter) * time.Second):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// callOnce performs one Bot API request. The second return is Telegram's
+// retry_after (seconds) when the request was rate limited, else 0.
+func (b *Bot) callOnce(ctx context.Context, method string, form url.Values, out any) (int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.base()+"/bot"+b.Token+"/"+method, strings.NewReader(form.Encode()))
 	if err != nil {
-		return err
+		return 0, fmt.Errorf("telegram %s: %s", method, b.scrub(err.Error()))
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	resp, err := b.client().Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram %s: %w", method, err)
+		// Not wrapped with %w on purpose: the transport error text carries
+		// the request URL and with it the token.
+		return 0, fmt.Errorf("telegram %s: %s", method, b.scrub(err.Error()))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -117,17 +154,20 @@ func (b *Bot) call(ctx context.Context, method string, form url.Values, out any)
 		OK          bool            `json:"ok"`
 		Description string          `json:"description"`
 		Result      json.RawMessage `json:"result"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return fmt.Errorf("telegram %s: HTTP %d: unreadable response", method, resp.StatusCode)
+		return 0, fmt.Errorf("telegram %s: HTTP %d: unreadable response", method, resp.StatusCode)
 	}
 	if !envelope.OK {
-		return fmt.Errorf("telegram %s: %s", method, envelope.Description)
+		return envelope.Parameters.RetryAfter, fmt.Errorf("telegram %s: %s", method, b.scrub(envelope.Description))
 	}
 	if out != nil && len(envelope.Result) > 0 {
-		return json.Unmarshal(envelope.Result, out)
+		return 0, json.Unmarshal(envelope.Result, out)
 	}
-	return nil
+	return 0, nil
 }
 
 // Send posts an HTML message to the configured chat and queues it for
@@ -146,12 +186,27 @@ func (b *Bot) Send(ctx context.Context, text string, replyTo int64) error {
 	return nil
 }
 
+// truncateRunes cuts s to at most maxBytes bytes without splitting a UTF-8
+// sequence: Vietnamese text cut mid-rune is invalid UTF-8, which Telegram
+// rejects with an error that is not the "can't parse entities" the HTML
+// fallback looks for — the message would simply be lost.
+func truncateRunes(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
 func (b *Bot) sendMessage(ctx context.Context, text string, replyTo int64, asHTML bool) (int64, error) {
 	if len(text) > maxTelegramText {
 		text = plainText(text)
 		asHTML = false
 		if len(text) > maxTelegramText {
-			text = text[:maxTelegramText] + "\n… (cắt bớt)"
+			text = truncateRunes(text, maxTelegramText) + "\n… (cắt bớt)"
 		}
 	}
 	form := url.Values{
@@ -387,8 +442,13 @@ func (b *Bot) handle(ctx context.Context, u tgUpdate) {
 // ack posts the "working on it" line for commands that take a while. Called
 // by Run before dispatch so the group is not left guessing.
 func (b *Bot) ack(ctx context.Context, m *tgMessage) {
-	cmd, args, _ := parseCommand(m.Text)
+	cmd, args, addressed := parseCommand(m.Text)
 	if len(args) != 1 {
+		return
+	}
+	// Same rule as Dispatch: a command addressed to the other bot in the
+	// group must not even get a "working on it".
+	if addressed != "" && b.username != "" && !strings.EqualFold(addressed, b.username) {
 		return
 	}
 	sub := strings.ToLower(args[0])
