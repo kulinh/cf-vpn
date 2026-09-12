@@ -296,10 +296,20 @@ pass, shellcheck sạch. Test thật từ Trung Quốc vẫn là bước kiểm 
 
 ## Việc anh còn phải làm tay
 
-1. **Import `final/RWL8899.conf`** trên Shadowrocket, xác nhận AUTO (5),
-   HY2-BACKUP (6) và node lẻ `JPY-01-XHTTP-Direct`.
-3. **Gỡ forward 5373→443** trên NAT TierHive (do anh tạo tay, không còn gì trả lời sau nó).
-4. **Cloudflare API token** trong `.claude/settings.local.json`: xoay hoặc dọn rule.
-5. **Trước khi bay Trung Quốc:** `cfvpnctl derp china-mode on` trên VNM-01;
-   về nhà: `cfvpnctl derp china-mode off`. Nhớ SIN-01 chỉ relay được qua JPY-01.
-6. **Merge PR #9.**
+1. **Import `final/RWL8899.conf`** trên Shadowrocket, xác nhận AUTO (5 đường),
+   HY2-BACKUP (6 đường) và node lẻ `JPY-01-XHTTP-Direct`.
+2. **Trước khi bay Trung Quốc:** gõ `/china on` trong group Telegram (hoặc
+   `cfvpnctl derp china-mode on` trên VNM-01); khi về gõ `/china off`. Nhớ
+   SIN-01 chỉ relay được qua JPY-01.
+3. **Merge PR #9.**
+
+Đã xong trong phiên, không cần làm gì thêm: Telegram alert cho fleet-probe
+(@rwl_vpn_bot trong group "RWL Hub"), bot điều khiển `/china`, gỡ forward
+5373→443 trên TierHive, dọn secret khỏi `.claude/settings.local.json` và xoá
+13 file env backup tồn đọng. CF token giữ nguyên theo quyết định của anh.
+
+## Cập nhật sau cùng (probe 19/19, 00:5xZ)
+
+Sau khi thêm `NODE_ID` cho HKG-01/SIN-01/JPY-02 và xoá hết env backup: 19/19
+đường trả 204, drift 9/9 khớp, toàn fleet đủ 5 khoá env bắt buộc, không còn
+file `cfvpn.env.bak*` nào, `cfvpn-tgbot` và cron probe đang chạy.
