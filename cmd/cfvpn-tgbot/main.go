@@ -1,4 +1,4 @@
-// cfvpn-tgbot exposes `cfvpnctl derp` to one Telegram group through
+// cfvpn-tgbot exposes `cfvpnctl derp` and `cfvpnctl rules-mode` to one Telegram group through
 // @rwl_vpn_bot, by long polling. It runs only on VNM-01 (unit
 // cfvpn-tgbot.service), because the commands it drives need the Tailscale
 // OAuth client in /etc/cfvpn/tailscale-oauth.env.
@@ -75,6 +75,14 @@ func main() {
 			},
 			Show: func(ctx context.Context, w io.Writer) error {
 				return commands.RunDerpShow(ctx, commands.DerpDeps{}, w)
+			},
+			// /mode: the travel mode of the Shadowrocket .conf, written to D1
+			// with the CF credentials in /etc/cfvpn/cfvpn.env.
+			RulesMode: func(ctx context.Context, mode string, w io.Writer) error {
+				return commands.RunRulesModeSet(ctx, mode, commands.RulesModeDeps{}, w)
+			},
+			RulesModeShow: func(ctx context.Context, w io.Writer) error {
+				return commands.RunRulesModeShow(ctx, commands.RulesModeDeps{}, w)
 			},
 		},
 	}

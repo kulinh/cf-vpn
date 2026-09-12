@@ -106,6 +106,8 @@ TS_OAUTH_CLIENT_SECRET=...
 cfvpnctl derp show                 # current flag + regions
 cfvpnctl derp china-mode on        # before flying to China: devices use ONLY our relays
 cfvpnctl derp china-mode off       # back home: public relays + our relays (normal)
+cfvpnctl rules-mode show           # which blocked-site list the Shadowrocket .conf inlines
+cfvpnctl rules-mode set uae        # cn (default) | uae | none — written to D1 settings.rules_mode
 cfvpnctl derp region add --id 901 --code jpy --name JPY-01 --host derp-xxxx.duylinh.net   # ports default 8443/3478
 cfvpnctl derp region remove --id 901
 ```
@@ -117,8 +119,12 @@ cfvpnctl derp region remove --id 901
 `TELEGRAM_CHAT_ID`:
 
 ```
+/mode status      # travel mode: which list the RWL8899 config inlines + DERP state
+/mode china       # config inlines the CN list AND china-mode on
+/mode uae         # config inlines the UAE list (OTT calls), china-mode off
+/mode home        # back to the default: CN list, china-mode off
 /china status     # or /derp — show the regions and whether china-mode is on
-/china on         # before flying to China
+/china on         # DERP china-mode alone, before flying to China
 /china off        # back home
 ```
 

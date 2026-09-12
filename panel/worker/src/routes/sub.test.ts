@@ -10,6 +10,8 @@ type AllResult = unknown[];
 type StubSpec = {
   userByToken?: Record<string, FirstResult>;
   nodesByUser?: Record<string, AllResult>;
+  settings?: Record<string, string>;
+  settingsThrow?: boolean;
 };
 
 function makeDB(spec: StubSpec): D1Database {
@@ -24,6 +26,11 @@ function makeDB(spec: StubSpec): D1Database {
         if (/FROM users WHERE sub_token=\?/.test(sql)) {
           const token = state.args[0] as string;
           return (spec.userByToken?.[token] ?? null) as never;
+        }
+        if (/FROM settings WHERE key=\?/.test(sql)) {
+          if (spec.settingsThrow) throw new Error("no such table: settings");
+          const v = spec.settings?.[state.args[0] as string];
+          return (v == null ? null : { value: v }) as never;
         }
         return null as never;
       },
@@ -483,6 +490,42 @@ describe("?format=shadowrocket&rules=", () => {
       expect(calls).toEqual(["https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_UAE.module"]);
       expect(body).toContain("# sr_proxy_list_UAE from ");
       expect(body).toContain("\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("follows the stored rules_mode setting when the link carries no ?rules=", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      calls.push(input);
+      return new Response("[Rule]\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
+    });
+    try {
+      const uaeDB = makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "uae" } });
+      const body = await (await publicSubscription(makeEnv(uaeDB), token, "shadowrocket", null, null)).text();
+      expect(calls.at(-1)).toContain("sr_proxy_list_UAE.module");
+      expect(body).toContain("# sr_proxy_list_UAE from ");
+
+      // An explicit ?rules= on the link still wins over the stored mode.
+      await publicSubscription(makeEnv(uaeDB), token, "shadowrocket", null, "cn");
+      expect(calls.at(-1)).toContain("sr_proxy_list_CN.module");
+
+      // rules_mode=none: bare tail, nothing fetched.
+      const n = calls.length;
+      const noneDB = makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "none" } });
+      const bare = await (await publicSubscription(makeEnv(noneDB), token, "shadowrocket", null, null)).text();
+      expect(bare).toContain("load the sr_proxy_list_CN (or _UAE) module");
+      expect(calls.length).toBe(n);
+
+      // Garbage or a missing settings table fall back to CN.
+      for (const db2 of [
+        makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "mars" } }),
+        makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settingsThrow: true })
+      ]) {
+        await publicSubscription(makeEnv(db2), token, "shadowrocket", null, null);
+        expect(calls.at(-1)).toContain("sr_proxy_list_CN.module");
+      }
     } finally {
       vi.unstubAllGlobals();
     }

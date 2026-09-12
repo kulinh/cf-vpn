@@ -4,6 +4,7 @@ import { buildSubscriptionURIs, encodeSubscriptionBody, type SubscriptionRow } f
 import { buildClashConfig } from "../lib/clash";
 import { buildShadowrocketConfig } from "../lib/shadowrocket";
 import { fetchModuleRules, isRuleSetKey, moduleURL } from "../lib/cnrules";
+import { RULES_MODE_KEY, getSetting } from "../lib/settings";
 import { error } from "../lib/http";
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
@@ -75,8 +76,16 @@ export async function publicSubscription(
     // Blacklist mode pulls the blocked-site module at the edge (GitHub is
     // reachable from Cloudflare, not from China) and inlines it. Full tunnel
     // has no use for it.
-    const wantsRules = final !== "proxy" && rules !== "none";
-    const source = moduleURL(rules && isRuleSetKey(rules) ? rules : "cn", env.RULES_BASE_URL || undefined);
+    // No ?rules= on the link: use the fleet-wide travel mode the operator set
+    // (Telegram /mode or `cfvpnctl rules-mode`), so an installed config link
+    // follows the trip without being edited. An explicit ?rules= always wins.
+    let effective: string | null = rules ? rules : null;
+    if (effective == null && final !== "proxy") {
+      const stored = await getSetting(env, RULES_MODE_KEY);
+      effective = stored && (stored === "none" || isRuleSetKey(stored)) ? stored : "cn";
+    }
+    const wantsRules = final !== "proxy" && effective !== "none";
+    const source = moduleURL(effective && isRuleSetKey(effective) ? effective : "cn", env.RULES_BASE_URL || undefined);
     const moduleRules = wantsRules ? await fetchModuleRules(source) : undefined;
     const conf = buildShadowrocketConfig(user.id, rows, {
       final: final === "proxy" ? "proxy" : "direct",

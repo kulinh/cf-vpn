@@ -25,11 +25,15 @@ import (
 	"time"
 )
 
-// Runner is what the bot is allowed to do. Both functions write their output
+// Runner is what the bot is allowed to do. Every function writes its output
 // to w; it is sent back to the chat verbatim.
 type Runner struct {
 	ChinaMode func(ctx context.Context, on bool, w io.Writer) error
 	Show      func(ctx context.Context, w io.Writer) error
+	// RulesMode sets the fleet-wide travel mode of the Shadowrocket .conf
+	// (cfvpnctl rules-mode set cn|uae|none); RulesModeShow prints it.
+	RulesMode     func(ctx context.Context, mode string, w io.Writer) error
+	RulesModeShow func(ctx context.Context, w io.Writer) error
 }
 
 // Bot polls one chat for commands.
@@ -54,10 +58,13 @@ type Bot struct {
 const (
 	maxTelegramText = 4000 // Telegram's limit is 4096; leave room for the prefix
 	usage           = "cf-vpn control bot\n\n" +
-		"/china status — show the DERP regions and whether china-mode is on\n" +
-		"/china on — use ONLY our own relays (before flying to China)\n" +
-		"/china off — public relays plus ours (normal, back home)\n" +
+		"/mode status — travel mode: which list the RWL8899 config inlines + DERP state\n" +
+		"/mode china — config inlines the CN list AND china-mode on (our relays only)\n" +
+		"/mode uae — config inlines the UAE list (OTT calls), china-mode off\n" +
+		"/mode home — config inlines the CN list, china-mode off (normal)\n" +
+		"/china on | off | status — DERP china-mode alone\n" +
 		"/derp — same as /china status\n\n" +
+		"After /mode, pull the RWL8899 config in Shadowrocket once (the link stays the same).\n" +
 		"Note: with china-mode on, SIN-01 can only relay through JPY-01."
 )
 
@@ -184,6 +191,7 @@ func (b *Bot) Username(ctx context.Context) (string, error) {
 // Worker bot's menu in the same group is untouched.
 func (b *Bot) SetCommands(ctx context.Context) error {
 	cmds, _ := json.Marshal([]map[string]string{
+		{"command": "mode", "description": "Travel mode: status | china | uae | home"},
 		{"command": "china", "description": "DERP china-mode: status | on | off"},
 		{"command": "derp", "description": "Show DERP regions and china-mode"},
 	})
@@ -221,6 +229,39 @@ func (b *Bot) Dispatch(ctx context.Context, text string) string {
 		sub = strings.ToLower(args[0])
 	}
 	switch cmd {
+	case "mode":
+		if len(args) > 1 {
+			return usage
+		}
+		switch sub {
+		case "", "status", "show":
+			return b.run(ctx, "mode show", func(ctx context.Context, w io.Writer) error {
+				if err := b.Runner.RulesModeShow(ctx, w); err != nil {
+					return err
+				}
+				fmt.Fprintln(w)
+				return b.Runner.Show(ctx, w)
+			})
+		case "china", "uae", "home":
+			// One trip = one command: the config's inlined list and the DERP
+			// policy always move together.
+			rules, chinaOn := "cn", false
+			switch sub {
+			case "china":
+				chinaOn = true
+			case "uae":
+				rules = "uae"
+			}
+			return b.run(ctx, "mode "+sub, func(ctx context.Context, w io.Writer) error {
+				if err := b.Runner.RulesMode(ctx, rules, w); err != nil {
+					return err
+				}
+				fmt.Fprintln(w)
+				return b.Runner.ChinaMode(ctx, chinaOn, w)
+			})
+		default:
+			return usage
+		}
 	case "derp":
 		if sub != "" && sub != "show" && sub != "status" {
 			return usage
@@ -304,12 +345,15 @@ func (b *Bot) handle(ctx context.Context, u tgUpdate) {
 // Run before dispatch so the group is not left guessing.
 func (b *Bot) ack(ctx context.Context, m *tgMessage) {
 	cmd, args, _ := parseCommand(m.Text)
-	if cmd != "china" || len(args) == 0 {
+	if len(args) == 0 {
 		return
 	}
-	switch strings.ToLower(args[0]) {
-	case "on", "off":
-		_ = b.Send(ctx, "⏳ running china-mode "+strings.ToLower(args[0])+" (flips the policy, waits for the DERP map, then runs netcheck)…", m.MessageID)
+	sub := strings.ToLower(args[0])
+	switch {
+	case cmd == "china" && (sub == "on" || sub == "off"):
+		_ = b.Send(ctx, "⏳ running china-mode "+sub+" (flips the policy, waits for the DERP map, then runs netcheck)…", m.MessageID)
+	case cmd == "mode" && (sub == "china" || sub == "uae" || sub == "home"):
+		_ = b.Send(ctx, "⏳ running mode "+sub+" (writes rules_mode to D1, then flips china-mode, waits for the DERP map, runs netcheck)…", m.MessageID)
 	}
 }
 
@@ -332,7 +376,7 @@ func (b *Bot) Run(ctx context.Context) error {
 	if b.Token == "" || b.ChatID == 0 {
 		return fmt.Errorf("tgbot: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
 	}
-	if b.Runner.ChinaMode == nil || b.Runner.Show == nil {
+	if b.Runner.ChinaMode == nil || b.Runner.Show == nil || b.Runner.RulesMode == nil || b.Runner.RulesModeShow == nil {
 		return fmt.Errorf("tgbot: runner is incomplete")
 	}
 	name, err := b.Username(ctx)
