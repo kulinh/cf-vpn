@@ -1,5 +1,8 @@
-# /etc/cron.d/cfvpn-fleet-probe — probe every route from VNM-01 every 10 minutes.
+# /etc/cron.d/cfvpn-fleet-probe — probe every route, every 3 hours.
 # Install: install -m 644 scripts/fleet-probe.cron /etc/cron.d/cfvpn-fleet-probe
+# Two vantage points share this file: VNM-01 (home ISP view) runs at 00:00,
+# 03:00, … and JPY-03 (datacenter view) at 01:30, 04:30, …, so the fleet is
+# checked every 90 minutes overall. Edit the schedule line for the second box.
 SHELL=/bin/bash
 PATH=/usr/local/bin:/usr/bin:/bin
-*/10 * * * * root /usr/bin/python3 /opt/cf-vpn/scripts/fleet-probe.py --env /etc/cfvpn/fleet-probe.env >/dev/null 2>>/var/log/cfvpn-fleet-probe.err
+0 */3 * * * root /usr/bin/python3 /opt/cf-vpn/scripts/fleet-probe.py --env /etc/cfvpn/fleet-probe.env >/dev/null 2>>/var/log/cfvpn-fleet-probe.err
