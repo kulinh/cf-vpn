@@ -11,7 +11,9 @@
 # reports a *timeout* and the node looks perfectly healthy from the outside.
 #
 # Provides:
-#   drift_compare <d1_file> <node_file>   — prints one line per mismatch
+#   drift_compare <d1_file> <node_file>             — credential mismatches
+#   drift_transport_compare <d1_file> <node_file>   — transport-flag mismatches
+#   drift_rank_rc <current> <new>                   — fold exit statuses (1 > 2 > 0)
 #
 # Both files are TSV with the same shape, one row per (node, user):
 #   <node_id>\t<user>\t<vless_uuid>\t<hy2_pw>
@@ -49,4 +51,77 @@ drift_compare() {
     }
   ' "$d1_file" "$node_file" | sort
   return "${PIPESTATUS[0]}"
+}
+
+# drift_transport_compare <d1_file> <node_file>
+#
+# Credentials are not the only thing that drifts: which TRANSPORTS a node
+# actually runs is stored twice as well. The node decides from its cfvpn.env
+# (HY2_ENABLED / XHTTP_ENABLED / XHTTP_DIRECT_HOST), while the panel decides
+# what to put in a subscription from D1 (nodes.hy2_host NULL-or-set /
+# xhttp_enabled / xhttp_direct_host). `cfvpnctl hy2 disable` run over SSH
+# changes only the first, so the panel keeps handing out a hysteria2:// link to
+# a node with no hysteria listening — and a dead HY2 endpoint looks exactly like
+# a timeout to the client, same as a wrong password.
+#
+# Both files are TSV, one row per node, holding the RAW values so the
+# default-on/default-off rules live in one place:
+#   d1:   <node_id>\t<hy2_host>\t<xhttp_enabled>\t<xhttp_direct_host>   (NULL -> "")
+#   node: <node_id>\t<HY2_ENABLED>\t<XHTTP_ENABLED>\t<XHTTP_DIRECT_HOST> (absent -> "")
+#
+# Prints "<node>\t-\t<field>\td1=<x>\tnode=<y>" per mismatch (the "-" holds the
+# user column of drift_compare's format, since these flags are per node) and
+# returns 1 when anything drifted, 2 when a file cannot be read.
+drift_transport_compare() {
+  local d1_file="$1" node_file="$2"
+  [ -r "$d1_file" ]   || { echo "drift_transport_compare: cannot read $d1_file" >&2; return 2; }
+  [ -r "$node_file" ] || { echo "drift_transport_compare: cannot read $node_file" >&2; return 2; }
+
+  awk -F'\t' '
+    function norm(v) {
+      gsub(/^[ \t]+|[ \t]+$/, "", v)
+      return tolower(v)
+    }
+    # Mirrors commands.Hy2Enabled: a MISSING HY2_ENABLED means ON, so every node
+    # that predates the key keeps its hysteria.
+    function hy2_node(v) { v = norm(v); return (v == "0" || v == "false" || v == "no" || v == "off") ? "off" : "on" }
+    # D1 records "no hysteria" as hy2_host NULL (scripts/d1-set-node.sh hy2-off).
+    function hy2_d1(v)   { return (norm(v) == "") ? "off" : "on" }
+    # Mirrors commands.XHTTPEnabled: a missing XHTTP_ENABLED means OFF.
+    function xh_node(v)  { v = norm(v); return (v == "1" || v == "true" || v == "yes" || v == "on") ? "on" : "off" }
+    function xh_d1(v)    { return (norm(v) == "1") ? "on" : "off" }
+    function host(v)     { gsub(/^[ \t]+|[ \t]+$/, "", v); return (v == "") ? "-" : v }
+    function report(node, field, d1v, nodev) {
+      if (d1v != nodev) { print node "\t-\t" field "\td1=" d1v "\tnode=" nodev; bad = 1 }
+    }
+    NR == FNR { d1[$1] = $2 "\t" $3 "\t" $4; next }
+    {
+      node = $1
+      seen[node] = 1
+      if (!(node in d1)) { print node "\t-\tnode_row\td1=<absent>\tnode=present"; bad = 1; next }
+      split(d1[node], want, "\t")
+      report(node, "hy2_enabled",       hy2_d1(want[1]), hy2_node($2))
+      report(node, "xhttp_enabled",     xh_d1(want[2]),  xh_node($3))
+      report(node, "xhttp_direct_host", host(want[3]),   host($4))
+    }
+    END {
+      for (node in d1) if (!(node in seen)) { print node "\t-\tnode_row\td1=present\tnode=<absent>"; bad = 1 }
+      exit bad ? 1 : 0
+    }
+  ' "$d1_file" "$node_file" | sort
+  return "${PIPESTATUS[0]}"
+}
+
+# drift_rank_rc CURRENT NEW — fold one exit status into the running one and print
+# the result. The status is a RANKING, not a maximum: drift (1) outranks "could
+# not check" (2), which outranks in-sync (0). Plain arithmetic would let a single
+# unreachable host downgrade confirmed drift to "transient problem, retry later",
+# which is exactly how a real mismatch survives a week of green-looking runs.
+drift_rank_rc() {
+  local cur="$1" new="$2"
+  case "$new" in
+    1) printf '1\n' ;;
+    2) if [ "$cur" -eq 1 ]; then printf '1\n'; else printf '2\n'; fi ;;
+    *) printf '%s\n' "$cur" ;;
+  esac
 }

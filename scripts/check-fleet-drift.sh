@@ -4,7 +4,12 @@
 #
 #   bash scripts/check-fleet-drift.sh [--hosts FILE] [--quiet]
 #
-# Exit status: 0 in sync, 1 drift found, 2 could not complete the check.
+# Exit status: 0 in sync, 1 drift found, 2 could not complete the check. 1 wins
+# over 2 when both happen — confirmed drift is not a transient problem.
+#
+# Two comparisons run: the per-user credentials (vless uuid, hy2 password) and
+# the per-node transport flags (HY2_ENABLED / XHTTP_ENABLED / XHTTP_DIRECT_HOST
+# on the node vs nodes.hy2_host / xhttp_enabled / xhttp_direct_host in D1).
 #
 # Why this exists: the panel builds every subscription link from D1
 # `user_nodes`, while the node serves whatever is in its xray/hysteria config.
@@ -67,9 +72,34 @@ fi
 printf '%s' "$RESP" | jq -r '.result[0].results[] | [.node_id, .user_id, (.vless_uuid // "-"), (.hy2_pw // "-")] | @tsv' > "$WORK/d1.tsv"
 say "D1: $(wc -l < "$WORK/d1.tsv") user/node binding(s)"
 
+# Which transports the panel believes each node runs. Kept as the RAW values
+# (NULL -> empty) so drift_transport_compare owns the default-on/default-off
+# rules and matches commands.Hy2Enabled / commands.XHTTPEnabled exactly.
+NRESP="$(d1_query "$(jq -n '{sql:"SELECT id,hy2_host,xhttp_enabled,xhttp_direct_host FROM nodes ORDER BY id", params:[]}')")"
+if [ "$(printf '%s' "$NRESP" | jq -r '.success // false')" != "true" ]; then
+  echo "D1 nodes query failed: $(printf '%s' "$NRESP" | jq -r '.errors[0].message // "unknown"')" >&2
+  exit 2
+fi
+printf '%s' "$NRESP" | jq -r '.result[0].results[] | [.id, (.hy2_host // ""), (.xhttp_enabled // ""), (.xhttp_direct_host // "")] | @tsv' > "$WORK/d1.nodes.tsv"
+
 # ----- 2. what each node actually serves --------------------------------------
 # Emitted by the node itself so one ssh round-trip covers both configs.
 REMOTE='
+# One FLAGS line first: which transports this node is configured for. Read with
+# split-on-first-= (like internal/state/store.go), never by sourcing cfvpn.env —
+# that would execute any $(...) in a value as root on every node we check.
+hy2_enabled=""; xhttp_enabled=""; xhttp_direct_host=""
+if [ -r /etc/cfvpn/cfvpn.env ]; then
+  while IFS="=" read -r k v; do
+    case "$k" in
+      HY2_ENABLED)       hy2_enabled="$v" ;;
+      XHTTP_ENABLED)     xhttp_enabled="$v" ;;
+      XHTTP_DIRECT_HOST) xhttp_direct_host="$v" ;;
+    esac
+  done < /etc/cfvpn/cfvpn.env
+fi
+printf "FLAGS\t%s\t%s\t%s\n" "$hy2_enabled" "$xhttp_enabled" "$xhttp_direct_host"
+
 xray=/etc/cfvpn/xray/config.json
 hy=/etc/cfvpn/hysteria/config.yaml
 jq -r ".inbounds[0].settings.clients[]? | [(.email|sub(\"@vpn$\";\"\")), .id] | @tsv" "$xray" 2>/dev/null | sort > /tmp/.d_x
@@ -81,6 +111,7 @@ rm -f /tmp/.d_x /tmp/.d_h
 
 SKIPPED=""; UNREACHABLE=""
 : > "$WORK/node.tsv"
+: > "$WORK/node.flags.tsv"
 while read -r node target; do
   case "$node" in ''|\#*) continue ;; esac
   [ -n "$target" ] || continue
@@ -90,7 +121,9 @@ while read -r node target; do
     continue
   fi
   [ -n "$out" ] || { UNREACHABLE="$UNREACHABLE $node"; continue; }
-  printf '%s\n' "$out" | awk -v n="$node" -F'\t' 'NF>=2 {print n "\t" $1 "\t" $2 "\t" ($3==""?"-":$3)}' >> "$WORK/node.tsv"
+  # The FLAGS line is the transport row; everything else is a (user, uuid, pw) row.
+  printf '%s\n' "$out" | awk -v n="$node" -F'\t' '$1=="FLAGS" {print n "\t" $2 "\t" $3 "\t" $4}' >> "$WORK/node.flags.tsv"
+  printf '%s\n' "$out" | awk -v n="$node" -F'\t' '$1!="FLAGS" && NF>=2 {print n "\t" $1 "\t" $2 "\t" ($3==""?"-":$3)}' >> "$WORK/node.tsv"
 done < "$HOSTS_FILE"
 
 # Nodes D1 knows about that the hosts file does not cover.
@@ -108,9 +141,26 @@ if [ -s "$WORK/node.tsv" ]; then
 else
   : > "$WORK/d1.checked.tsv"
 fi
+# The transport rows are compared over the same set of nodes, for the same
+# reason: an unreachable host must not look like "every flag wrong".
+if [ -s "$WORK/node.flags.tsv" ]; then
+  cut -f1 "$WORK/node.flags.tsv" | sort -u > "$WORK/checked.flags"
+  awk -F'\t' 'NR==FNR {ok[$1]=1; next} ($1 in ok)' "$WORK/checked.flags" "$WORK/d1.nodes.tsv" > "$WORK/d1.nodes.checked.tsv"
+else
+  : > "$WORK/d1.nodes.checked.tsv"
+fi
 
 # ----- 3. compare -------------------------------------------------------------
-DRIFT="$(drift_compare "$WORK/d1.checked.tsv" "$WORK/node.tsv")"; RC=$?
+DRIFT="$(drift_compare "$WORK/d1.checked.tsv" "$WORK/node.tsv")"; CRC=$?
+TDRIFT="$(drift_transport_compare "$WORK/d1.nodes.checked.tsv" "$WORK/node.flags.tsv")"; TRC=$?
+
+# Exit status is a RANKING, not a maximum (see drift_rank_rc): real drift (1)
+# outranks "could not check" (2). A run that found drift AND could not reach one
+# host must still exit 1 — otherwise the caller reads a confirmed mismatch as a
+# transient SSH problem and retries instead of fixing it.
+RC=0
+RC="$(drift_rank_rc "$RC" "$CRC")"
+RC="$(drift_rank_rc "$RC" "$TRC")"
 
 if [ -n "$DRIFT" ]; then
   echo "DRIFT — these nodes serve credentials the panel does not hand out:"
@@ -119,7 +169,14 @@ if [ -n "$DRIFT" ]; then
   echo "Fix: re-sync the node with the values from D1 (D1 is what clients already have),"
   echo "then update UUID_USER1 / HY2_PASS_USER1 in /etc/cfvpn/cfvpn.env to match."
 fi
-[ -n "$UNREACHABLE" ] && { echo "UNREACHABLE (not checked):$UNREACHABLE"; RC=2; }
-[ -n "$SKIPPED" ]     && { echo "NOT IN HOSTS FILE (not checked):$SKIPPED"; RC=2; }
-[ -z "$DRIFT" ] && [ -z "$UNREACHABLE" ] && [ -z "$SKIPPED" ] && say "in sync: $(wc -l < "$WORK/node.tsv") binding(s) across $(wc -l < "$WORK/checked") node(s)"
+if [ -n "$TDRIFT" ]; then
+  echo "DRIFT — these nodes run different transports than the panel advertises:"
+  printf '%s\n' "$TDRIFT" | sed 's/^/  /'
+  echo
+  echo "Fix: make D1 match the node with scripts/d1-set-node.sh <NODE> hy2-on|hy2-off|"
+  echo "xhttp-on|xhttp-off|xhttp-direct (or flip the node with cfvpnctl hy2/xhttp)."
+fi
+if [ -n "$UNREACHABLE" ]; then echo "UNREACHABLE (not checked):$UNREACHABLE"; RC="$(drift_rank_rc "$RC" 2)"; fi
+if [ -n "$SKIPPED" ];     then echo "NOT IN HOSTS FILE (not checked):$SKIPPED"; RC="$(drift_rank_rc "$RC" 2)"; fi
+[ -z "$DRIFT" ] && [ -z "$TDRIFT" ] && [ -z "$UNREACHABLE" ] && [ -z "$SKIPPED" ] && say "in sync: $(wc -l < "$WORK/node.tsv") binding(s) across $(wc -l < "$WORK/checked") node(s)"
 exit "$RC"

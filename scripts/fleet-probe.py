@@ -6,7 +6,10 @@ route) plus one hysteria client per Hysteria2 route, fetches
 http://cp.cloudflare.com/generate_204 through each, appends one line per
 route to the log, keeps a consecutive-failure count per route, and posts to
 Telegram when a route has failed FAIL_THRESHOLD times in a row (and once when
-it recovers). Nothing on the nodes is touched.
+it recovers). The subscription itself is tracked the same way: a fetch error,
+an empty body or duplicate route names alert once after FAIL_THRESHOLD runs
+and once on recovery (exit 2, no route is probed). Nothing on the nodes is
+touched.
 
     fleet-probe.py [--env /etc/cfvpn/fleet-probe.env] [--sub-file PATH] [--once]
 
@@ -43,6 +46,7 @@ TARGET = "http://cp.cloudflare.com/generate_204"
 BASE_PORT = 21000
 CURL_TIMEOUT = "10"
 TRIES = 2
+RETRY_AFTER_MAX = 10.0  # seconds; longest we honour Telegram's 429 retry_after
 
 
 @dataclass
@@ -80,6 +84,20 @@ def parse_subscription(text: str) -> list:
             routes.append(Route(name, "hy2", u.hostname, u.port or 443, up.unquote(u.username or ""),
                                 up.unquote(u.password or ""), q))
     return routes
+
+
+def duplicate_names(routes: list) -> list:
+    """Route names that occur more than once, sorted.
+
+    Names become xray outbound tags and the per-route port map key; two routes
+    sharing one would overwrite each other and xray rejects the duplicate tag,
+    failing every VLESS route at once — so a duplicate is a subscription bug to
+    report, not something to probe around.
+    """
+    seen = {}
+    for r in routes:
+        seen[r.name] = seen.get(r.name, 0) + 1
+    return sorted(n for n, c in seen.items() if c > 1)
 
 
 def xray_outbound(r: Route) -> dict:
@@ -144,6 +162,42 @@ def next_state(prev: dict, results: dict, threshold: int):
     return state, alerts
 
 
+# The subscription itself is tracked under this reserved key with the same
+# consecutive-failure logic as a route: a dead panel (fetch error, empty or
+# malformed body) must alert once after FAIL_THRESHOLD runs and once on
+# recovery — before this, those paths only printed to stderr and returned 2,
+# so a dead panel looked exactly like silence.
+FETCH_KEY = "__fetch__"
+
+
+def fold_fetch(prev: dict, ok: bool, threshold: int, reason: str = ""):
+    """Fold one fetch outcome into prev[FETCH_KEY]; return (entry, alerts)."""
+    sub = {FETCH_KEY: prev.get(FETCH_KEY, {"fails": 0, "alerted": False})}
+    state, raw = next_state(sub, {FETCH_KEY: 0 if ok else None}, threshold)
+    alerts = []
+    for a in raw:
+        if a.startswith("DOWN"):
+            alerts.append(f"DOWN subscription: {reason} ({state[FETCH_KEY]['fails']} consecutive failures)")
+        else:
+            alerts.append("UP subscription: routes fetched again")
+    return state[FETCH_KEY], alerts
+
+
+def load_state(state_file: str) -> dict:
+    if os.path.exists(state_file):
+        try:
+            return json.load(open(state_file))
+        except Exception:
+            pass
+    return {}
+
+
+def save_state(state_file: str, state: dict) -> None:
+    tmp = state_file + ".tmp"
+    json.dump(state, open(tmp, "w"))
+    os.replace(tmp, state_file)
+
+
 # ---------------------------------------------------------------- runtime
 
 def load_env(path):
@@ -154,7 +208,10 @@ def load_env(path):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            env.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            # Verbatim after the first '=', like internal/state/store.go and
+            # janitor.py: the writers refuse quotes, so a reader that stripped
+            # them would be the only one disagreeing about the value.
+            env.setdefault(k.strip(), v.strip())
     return env
 
 
@@ -256,17 +313,32 @@ def send_telegram(token: str, chat_id: str, text: str) -> bool:
         return False
     data = up.urlencode({"chat_id": chat_id, "text": text}).encode()
     req = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data)
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            if resp.status != 200:
+    # One retry on 429: Telegram says how long to wait in parameters.retry_after
+    # (seconds). Capped so a cron run never hangs on an absurd value.
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status != 200:
+                    return False
+                try:
+                    message_id = json.load(resp).get("result", {}).get("message_id")
+                except (ValueError, AttributeError):
+                    message_id = None
+            break
+        except urllib.error.HTTPError as e:
+            retry_after = None
+            if e.code == 429 and attempt == 0:
+                try:
+                    retry_after = float(json.load(e).get("parameters", {}).get("retry_after"))
+                except (ValueError, TypeError, AttributeError):
+                    retry_after = None
+            if retry_after is None:
+                print(f"telegram: send failed: {e}", file=sys.stderr)
                 return False
-            try:
-                message_id = json.load(resp).get("result", {}).get("message_id")
-            except (ValueError, AttributeError):
-                message_id = None
-    except urllib.error.URLError as e:
-        print(f"telegram: send failed: {e}", file=sys.stderr)
-        return False
+            time.sleep(min(retry_after, RETRY_AFTER_MAX))
+        except urllib.error.URLError as e:
+            print(f"telegram: send failed: {e}", file=sys.stderr)
+            return False
     try:
         record_ttl(TTL["dir"], chat_id, message_id, TTL["hours"])
     except OSError as e:  # a lost auto-delete must never turn into a lost alert
@@ -288,6 +360,24 @@ def main(argv=None) -> int:
     xray_bin = env.get("XRAY_BIN", "/usr/local/bin/xray")
     hy_bin = env.get("HYSTERIA_BIN", "/usr/local/bin/hysteria")
 
+    token, chat_id = env.get("TELEGRAM_BOT_TOKEN", ""), env.get("TELEGRAM_CHAT_ID", "-1003806233980")
+    # Two probes run (home box + a datacenter node); the label tells which
+    # vantage point saw the failure: both = the node is down, one = its path.
+    header = f"cfvpn fleet-probe @{probe_label(env)}\n"
+
+    os.makedirs(os.path.dirname(state_file), exist_ok=True)
+    lock = open(state_file + ".lock", "w")
+    fcntl.flock(lock, fcntl.LOCK_EX)  # overlapping cron runs would race on ports and state
+    prev = load_state(state_file)
+
+    def fetch_failed(reason: str) -> int:
+        print(reason, file=sys.stderr)
+        prev[FETCH_KEY], alerts = fold_fetch(prev, False, threshold, reason)
+        save_state(state_file, prev)
+        if alerts:
+            send_telegram(token, chat_id, header + "\n".join(alerts))
+        return 2
+
     if args.sub_file:
         text = open(args.sub_file).read()
     else:
@@ -297,17 +387,15 @@ def main(argv=None) -> int:
             return 2
         try:
             text = fetch_subscription(url)
-        except Exception as e:  # network failure fetching the sub is itself an alert-worthy event
-            print(f"fetch subscription failed: {e}", file=sys.stderr)
-            return 2
+        except Exception as e:  # a dead panel is itself an alert-worthy event
+            return fetch_failed(f"fetch subscription failed: {e}")
     routes = parse_subscription(text)
     if not routes:
-        print("no routes in subscription", file=sys.stderr)
-        return 2
-
-    os.makedirs(os.path.dirname(state_file), exist_ok=True)
-    lock = open(state_file + ".lock", "w")
-    fcntl.flock(lock, fcntl.LOCK_EX)  # overlapping cron runs would race on ports and state
+        return fetch_failed("no routes in subscription")
+    dups = duplicate_names(routes)
+    if dups:
+        return fetch_failed("duplicate route names in subscription: " + ", ".join(dups))
+    fetch_entry, fetch_alerts = fold_fetch(prev, True, threshold)
 
     results = run_probes(routes, xray_bin, hy_bin)
     ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -315,22 +403,13 @@ def main(argv=None) -> int:
         for name, ms in results.items():
             lf.write(f"{ts} {name} {'OK' if ms is not None else 'FAIL'} {ms if ms is not None else '-'}\n")
 
-    prev = {}
-    if os.path.exists(state_file):
-        try:
-            prev = json.load(open(state_file))
-        except Exception:
-            prev = {}
     state, alerts = next_state(prev, results, threshold)
-    tmp = state_file + ".tmp"
-    json.dump(state, open(tmp, "w"))
-    os.replace(tmp, state_file)
+    state[FETCH_KEY] = fetch_entry  # next_state keeps only probed routes
+    save_state(state_file, state)
 
+    alerts = fetch_alerts + alerts
     if alerts:
-        # Two probes run (home box + a datacenter node); the label tells which
-        # vantage point saw the failure: both = the node is down, one = its path.
-        send_telegram(env.get("TELEGRAM_BOT_TOKEN", ""), env.get("TELEGRAM_CHAT_ID", "-1003806233980"),
-                      f"cfvpn fleet-probe @{probe_label(env)}\n" + "\n".join(alerts))
+        send_telegram(token, chat_id, header + "\n".join(alerts))
 
     if args.once:
         for name, ms in results.items():

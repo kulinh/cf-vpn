@@ -13,7 +13,8 @@
 #       NOT on stdin are preserved (cfvpnctl install reads this file back and
 #       expects operator-supplied keys to survive). With FORCE_REINSTALL=1 the
 #       old file is backed up to <file>.bak-<unixtime> (0600); only the keys
-#       that must not be regenerated (ADMIN_TUNNEL_UUID, CF_*) are carried over.
+#       that must not be regenerated are carried over (ADMIN_TUNNEL_UUID, CF_*
+#       and the operator's transport choices — see CARRY_ON_FORCE_RE below).
 #
 #   bash scripts/lib/cfvpn-env-file.sh mark-installed
 #       Called by the installers ONLY after `cfvpnctl install` succeeded. This
@@ -40,8 +41,17 @@ GO_KEYS_RE='^(REALITY_PRIVATE_KEY|ADMIN_TUNNEL_UUID)='
 
 # Keys that must survive even a forced re-provision: ADMIN_TUNNEL_UUID because
 # dropping it makes cfvpnctl create a second admin tunnel and orphan the first,
-# and the CF credentials because they are the operator's, not the node's.
-CARRY_ON_FORCE_RE='^(ADMIN_TUNNEL_UUID|CF_API_TOKEN|CF_ACCOUNT_ID)='
+# the CF credentials because they are the operator's and not the node's, and the
+# transport/operator choices below because they are DECISIONS, not generated
+# secrets — the installer cannot re-derive them and the Go defaults are not
+# neutral. HY2_ENABLED and XHTTP_ENABLED are the dangerous ones: a missing
+# HY2_ENABLED means "on" (internal/state/keys.go), so a node that was
+# deliberately running without hysteria came back with it enabled after a forced
+# re-install. The rest (REALITY_DEST/REALITY_SNI per-node camouflage,
+# XHTTP_DIRECT_*, CLOUDFLARED_PROTOCOL=http2 on nodes with a bad UDP path to the
+# edge, XRAY_DNS_SERVERS for the China nodes) would silently revert to the
+# fleet default instead.
+CARRY_ON_FORCE_RE='^(ADMIN_TUNNEL_UUID|CF_API_TOKEN|CF_ACCOUNT_ID|HY2_ENABLED|XHTTP_ENABLED|XHTTP_DIRECT_HOST|XHTTP_DIRECT_PATH|CLOUDFLARED_PROTOCOL|REALITY_DEST|REALITY_SNI|XRAY_DNS_SERVERS)='
 
 # Everything a re-install would regenerate, i.e. what the operator loses.
 LOSS_KEYS='REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID UUID_USER1 HY2_PASS_USER1 HY2_OBFS_PW AGENT_SHARED_SECRET'

@@ -14,6 +14,9 @@
 #   cfvpn_verify_sha256 FILE EXPECTED LABEL       — compare, die on mismatch
 #   cfvpn_curl_dl       URL OUT                   — hardened download
 #   cfvpn_download_verified URL OUT CKSUM_URL [NAME]
+#   cfvpn_env_read      [FILE] KEY...             — export KEYs from an env file
+#   cfvpn_ensure_ufw_ssh_allowed [PORT]           — keep SSH open when ufw is on
+#   cfvpn_is_oci        [TAG_FILE] [VENDOR_FILE]  — is this an Oracle Cloud VM?
 
 [ -n "${_CFVPN_COMMON_SH:-}" ] && return 0
 _CFVPN_COMMON_SH=1
@@ -70,6 +73,80 @@ cfvpn_env_value_ok() {
 cfvpn_require_env_value() {
   local name="$1" value="$2"
   cfvpn_env_value_ok "$value" || die "$name contains characters that cannot be written to /etc/cfvpn/cfvpn.env unquoted (whitespace, \$, backtick, quote, backslash, ';' or '#'). Fix the value and re-run."
+}
+
+# ---------------------------------------------------------------------------
+# cfvpn_env_read [FILE] KEY...
+#
+# Exports only the named KEYs from an env file. FILE is recognised by the '/'
+# in it; without one the fleet default /etc/cfvpn/cfvpn.env is used.
+#
+# The file is deliberately NOT sourced. `. /etc/cfvpn/cfvpn.env` hands every
+# value to the shell, so a `$(...)` that ever reached a value — from a provider
+# API, a hand edit, or an operator paste — executes as root the moment the
+# installer reads its own state back. Splitting on the FIRST '=' and keeping the
+# remainder verbatim is also exactly how internal/state/store.go reads the same
+# file, so the shell and Go sides never disagree about a value.
+# ---------------------------------------------------------------------------
+cfvpn_env_read() {
+  local file="/etc/cfvpn/cfvpn.env"
+  case "${1:-}" in */*) file="$1"; shift ;; esac
+  [ "$#" -gt 0 ] || { warn "cfvpn_env_read: no keys requested"; return 0; }
+  [ -r "$file" ] || { warn "cfvpn_env_read: cannot read $file"; return 1; }
+  local k v want
+  # `|| [ -n "$k" ]`: a file whose last line has no trailing newline would
+  # otherwise lose that line, and a hand-edited cfvpn.env often does.
+  while IFS='=' read -r k v || [ -n "$k" ]; do
+    [ -n "$k" ] || continue
+    for want in "$@"; do
+      # Only an exact match is exported, so the name being assigned here is one
+      # of the caller's literals and never something the file chose.
+      [ "$k" = "$want" ] && { export "$k=$v"; break; }
+    done
+  done < "$file"
+  return 0
+}
+
+# cfvpn_port_ok VALUE — a listenable, non-privileged TCP/UDP port.
+# The lower bound is 1024 because every cfvpn listener runs unprivileged, and the
+# same rule is applied by the Go installer; both installers check HY2_PORT with
+# this so a typo fails before anything is mutated (the port is advertised to
+# clients verbatim, so a wrong one is not silently recoverable).
+cfvpn_port_ok() {
+  local v="$1"
+  case "$v" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$v" -ge 1024 ] && [ "$v" -le 65535 ]
+}
+
+cfvpn_require_port() {
+  local name="$1" value="$2"
+  cfvpn_port_ok "$value" || die "$name must be an integer in [1024,65535] (got: $value)"
+}
+
+# ---------------------------------------------------------------------------
+# cfvpn_ensure_ufw_ssh_allowed [PORT]
+#
+# Keeps SSH reachable before anything else touches the firewall. PORT defaults
+# to 22; the fleet baseline moves sshd to 17722, so the installers pass
+# "${SSH_PORT:-22}" — whitelisting the wrong port is how a remote install ends
+# with a box nobody can log into. No-op when ufw is absent or inactive.
+# ---------------------------------------------------------------------------
+cfvpn_ensure_ufw_ssh_allowed() {
+  local port="${1:-22}" status
+  command -v ufw >/dev/null 2>&1 || return 0
+  # Capture first: `ufw status | grep -q` closes the pipe on the first match, and
+  # under `set -o pipefail` the SIGPIPE from ufw becomes the status of the test —
+  # skipping the allow rule on exactly the hosts that have ufw enabled.
+  status="$(ufw status 2>/dev/null || true)"
+  case "$status" in *'Status: active'*) ;; *) return 0 ;; esac
+  log "ufw is active — ensuring SSH ($port/tcp) stays allowed"
+  # The OpenSSH profile is only correct while sshd is on 22; on any other port
+  # it would open 22 and leave the real one closed.
+  if [ "$port" = "22" ] && ufw allow OpenSSH; then
+    return 0
+  fi
+  ufw allow "$port/tcp" || warn "could not whitelist SSH on $port/tcp; verify manually before disconnecting"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -206,25 +283,116 @@ cfvpn_strip_oci_reject() {
   printf '%s\n' "$n"
 }
 
-# cfvpn_oci_firewall_fix — apply cfvpn_strip_oci_reject to the live rulesets and
-# reload them. Skipped when CFVPN_KEEP_OCI_IPTABLES=1.
+# cfvpn_is_oci [TAG_FILE] [VENDOR_FILE]
+# True on an Oracle Cloud instance. OCI stamps chassis_asset_tag with
+# "OracleCloud.com" and sys_vendor with "Oracle Corporation"; either signal is
+# enough, and the match is case-insensitive because the exact spelling has
+# changed between image generations. The paths are arguments so the tests can
+# hand over temp files instead of the real /sys.
+#
+# This gate matters because the REJECT pattern cfvpn_strip_oci_reject deletes
+# is NOT OCI-specific — "-j REJECT --reject-with icmp-host-prohibited" is the
+# stock tail of any Red-Hat-style ruleset. Running the strip unconditionally
+# would quietly delete a non-OCI node's own deliberate REJECT rules.
+# shellcheck disable=SC2120  # production calls pass nothing; the tests pass temp files
+cfvpn_is_oci() {
+  local tag_file="${1:-/sys/class/dmi/id/chassis_asset_tag}"
+  local vendor_file="${2:-/sys/class/dmi/id/sys_vendor}"
+  local f v
+  for f in "$tag_file" "$vendor_file"; do
+    [ -r "$f" ] || continue
+    v="$(tr '[:upper:]' '[:lower:]' < "$f" 2>/dev/null || true)"
+    case "$v" in *oracle*) return 0 ;; esac
+  done
+  return 1
+}
+
+# cfvpn_oci_firewall_fix — on Oracle Cloud only: strip the image's blanket
+# REJECT rules, apply the result, and hand the box over to ufw.
+#
+# CFVPN_FORCE_OCI=1 forces the OCI path and 0 forces the skip (tests, and the
+# rare image whose DMI is unreadable); unset means "ask the DMI".
+# CFVPN_KEEP_OCI_IPTABLES=1 keeps the image rules and the netfilter-persistent
+# unit exactly as they are.
 cfvpn_oci_firewall_fix() {
+  local is_oci=0
+  # shellcheck disable=SC2119  # cfvpn_is_oci takes no args here on purpose: real /sys paths
+  case "${CFVPN_FORCE_OCI:-}" in
+    1) is_oci=1 ;;
+    0) is_oci=0 ;;
+    *) cfvpn_is_oci && is_oci=1 ;;
+  esac
+  if [ "$is_oci" -ne 1 ]; then
+    log "not an Oracle Cloud instance — leaving this node's iptables rules untouched"
+    return 0
+  fi
   if [ "${CFVPN_KEEP_OCI_IPTABLES:-0}" = "1" ]; then
-    log "CFVPN_KEEP_OCI_IPTABLES=1 — leaving the image's iptables rules alone"
+    log "CFVPN_KEEP_OCI_IPTABLES=1 — leaving the image's iptables rules and netfilter-persistent alone"
     return 0
   fi
   local f removed total=0
+  local changed=()
   for f in /etc/iptables/rules.v4 /etc/iptables/rules.v6; do
     removed="$(cfvpn_strip_oci_reject "$f")"
     total=$((total + removed))
-    [ "$removed" -gt 0 ] && log "removed $removed blanket REJECT rule(s) from $f (Oracle Cloud image default; ports stay guarded by the VCN security list)"
+    if [ "$removed" -gt 0 ]; then
+      changed+=("$f")
+      log "removed $removed blanket REJECT rule(s) from $f (Oracle Cloud image default; ports stay guarded by the VCN security list)"
+    fi
   done
   if [ "$total" -gt 0 ]; then
     if command -v netfilter-persistent >/dev/null 2>&1; then
       netfilter-persistent reload >/dev/null 2>&1 || warn "netfilter-persistent reload failed; rules apply at next boot"
     else
-      iptables-restore < /etc/iptables/rules.v4 2>/dev/null || warn "iptables-restore failed; rules apply at next boot"
+      # Restore each ruleset with its own tool: piping rules.v6 through
+      # iptables-restore is a parse error, and before this only rules.v4 was
+      # ever re-applied, so an IPv6 client kept hitting the deleted REJECT
+      # until the next reboot.
+      for f in "${changed[@]}"; do
+        case "$f" in
+          *rules.v6)
+            if command -v ip6tables-restore >/dev/null 2>&1; then
+              ip6tables-restore < "$f" 2>/dev/null || warn "ip6tables-restore failed; rules apply at next boot"
+            fi
+            ;;
+          *)
+            iptables-restore < "$f" 2>/dev/null || warn "iptables-restore failed; rules apply at next boot"
+            ;;
+        esac
+      done
     fi
-    log "in-instance firewall now defers to the VCN security list — open 443/tcp, 443/udp and the HY2 UDP port there"
+    log "in-instance firewall now defers to the VCN security list — open 443/tcp and the HY2 UDP port there"
+  fi
+  # ufw is the only in-box firewall on this fleet. netfilter-persistent restores
+  # the image's remaining rules (notably "--dport 22 ACCEPT") ahead of ufw's
+  # chains at boot, so public :22 comes back open no matter what ufw says.
+  # `systemctl cat`, not `list-unit-files`: the latter exits 0 even when nothing
+  # matches the pattern, so it can never tell us the unit is absent.
+  #
+  # Only when ufw is already enforcing: stopping netfilter-persistent flushes
+  # the chains it owns, so doing it on a box where ufw is not active would
+  # leave the node with NO in-box firewall at all (policy ACCEPT) — worse than
+  # the image default we just edited. With the blanket REJECT gone, the image's
+  # remaining rules are harmless (policy ACCEPT, SSH accept), so keeping the
+  # unit until ufw is up costs nothing.
+  local ufw_status=""
+  command -v ufw >/dev/null 2>&1 && ufw_status="$(ufw status 2>/dev/null || true)"
+  case "$ufw_status" in
+    *'Status: active'*) ;;
+    *)
+      if systemctl cat netfilter-persistent.service >/dev/null 2>&1; then
+        warn "ufw is not active — keeping netfilter-persistent; enable ufw (fleet baseline: 17722/tcp, 443, the HY2 port) then re-run 'cfvpnctl reconcile-units' or disable netfilter-persistent by hand, or its rules will reload ahead of ufw at boot"
+      fi
+      return 0 ;;
+  esac
+  if systemctl cat netfilter-persistent.service >/dev/null 2>&1; then
+    if systemctl disable --now netfilter-persistent >/dev/null 2>&1; then
+      log "disabled netfilter-persistent — ufw is now the only in-box firewall"
+      # Stopping the unit flushes the chains it owns, which can take ufw's
+      # chains with it; re-assert them while we still have this session.
+      ufw reload >/dev/null 2>&1 || warn "ufw reload failed after disabling netfilter-persistent — check 'ufw status' before disconnecting"
+    else
+      warn "could not disable netfilter-persistent; its rules will reload ahead of ufw at boot"
+    fi
   fi
 }
