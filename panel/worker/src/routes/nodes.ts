@@ -6,7 +6,7 @@ import type {
   Env,
   NodeRow
 } from "../types";
-import { all, one, nowTs } from "../lib/db";
+import { all, MAX_ENTITY_ID_LEN, one, nowTs } from "../lib/db";
 import { callAgent, isConfigError, isTimeoutError, MAX_TIMEOUT_MS } from "../lib/agent-client";
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials, isCfTunnelId } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
@@ -22,10 +22,19 @@ const HEALTHCHECK_TIMEOUT_MS = 15000;
 const NODE_STATUSES = ["active", "disabled", "unreachable"] as const;
 type NodeStatus = (typeof NODE_STATUSES)[number];
 
+// Node ids are written verbatim into every user's Shadowrocket .conf, where
+// `AUTO =` / `PROXY =` are comma-separated lists (lib/shadowrocket.ts), so a ","
+// or newline in one id breaks the whole file. Case is stored as sent — D1 holds
+// "JPY-03", "OR-001" — only the derived admin host is lowercased. The length
+// bound is the Telegram callback_data one (see MAX_ENTITY_ID_LEN).
+const NODE_ID_RE = new RegExp(`^[a-z0-9-]{1,${MAX_ENTITY_ID_LEN}}$`, "i");
+
 interface NodeInput {
   id: string;
   label: string;
   admin_host?: string;
+  // Alias of vpn_host, accepted by both POST and PATCH (the web client's
+  // NodeInput carries both); when both are present `host` wins.
   host?: string;
   vpn_host?: string;
   hy2_host?: string;
@@ -66,6 +75,12 @@ export async function createNode(env: Env, request: Request, actor = "system"): 
   }
   if (!body.id || !body.label) {
     return error(400, { error: "invalid_node", detail: "id,label are required" });
+  }
+  if (typeof body.id !== "string" || !NODE_ID_RE.test(body.id)) {
+    return error(400, {
+      error: "invalid_node_id",
+      detail: `id must match [A-Za-z0-9-]{1,${MAX_ENTITY_ID_LEN}}`
+    });
   }
   let adminHost: string;
   if (typeof body.admin_host === "string" && body.admin_host.trim().length > 0) {
@@ -182,8 +197,11 @@ export async function patchNode(env: Env, id: string, request: Request, actor = 
       return error(400, { error: "invalid_admin_host", detail: hostError });
     }
   }
-  if (body.vpn_host !== undefined && (typeof body.vpn_host !== "string" || body.vpn_host.trim() === "")) {
-    return error(400, { error: "invalid_node", detail: "vpn_host must be a non-empty string" });
+  // Same alias rule as createNode; silently dropping `host` left the operator
+  // with a 200 and an unchanged row.
+  const vpnHostInput = body.host ?? body.vpn_host;
+  if (vpnHostInput !== undefined && (typeof vpnHostInput !== "string" || vpnHostInput.trim() === "")) {
+    return error(400, { error: "invalid_node", detail: "vpn_host (or host) must be a non-empty string" });
   }
   // Validate zone against the zones table so a PATCH cannot point a node at a
   // non-existent zone (which would break rotate / DNS cleanup later).
@@ -206,7 +224,7 @@ export async function patchNode(env: Env, id: string, request: Request, actor = 
   const updated = {
     label: body.label ?? existing.label,
     admin_host: body.admin_host ?? existing.admin_host,
-    vpn_host: body.vpn_host ?? existing.vpn_host,
+    vpn_host: vpnHostInput ?? existing.vpn_host,
     zone: body.zone ?? existing.zone,
     status: body.status ?? existing.status
   };
@@ -235,7 +253,10 @@ export async function patchNode(env: Env, id: string, request: Request, actor = 
   return json({ ok: true });
 }
 
-async function resolveZoneIdForHost(env: Env, host: string): Promise<string | null> {
+// Longest-suffix match of a hostname against the zones table. Guessing the
+// zone as the last two labels is wrong for "foo.bar.rwl247.dev" and for any
+// multi-label zone, so every zone lookup goes through here.
+async function resolveZoneForHost(env: Env, host: string): Promise<ZoneRow | null> {
   const labels = host.split(".");
   // Candidate zone names, longest suffix first so the most specific match wins.
   const candidates: string[] = [];
@@ -250,14 +271,18 @@ async function resolveZoneIdForHost(env: Env, host: string): Promise<string | nu
   const rows = await all<ZoneRow>(
     env.DB.prepare(`SELECT name, cf_zone_id FROM zones WHERE name IN (${placeholders})`).bind(...candidates)
   );
-  const byName = new Map(rows.map((r) => [r.name, r.cf_zone_id]));
+  const byName = new Map(rows.map((r) => [r.name, r]));
   for (const candidate of candidates) {
-    const id = byName.get(candidate);
-    if (id) {
-      return id;
+    const zone = byName.get(candidate);
+    if (zone?.cf_zone_id) {
+      return zone;
     }
   }
   return null;
+}
+
+async function resolveZoneIdForHost(env: Env, host: string): Promise<string | null> {
+  return (await resolveZoneForHost(env, host))?.cf_zone_id ?? null;
 }
 
 export async function deleteNode(env: Env, id: string, actor = "system"): Promise<Response> {
@@ -386,7 +411,10 @@ export async function deleteNode(env: Env, id: string, actor = "system"): Promis
 
 async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
   const row = await one<NodeRow>(
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid FROM nodes WHERE id = ?").bind(id)
+    // The runtime columns must be read here: persistNodeRuntime falls back to
+    // `row.<col>` for whatever the agent did not report, and a column missing
+    // from this SELECT would be written back as NULL/undefined.
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid,reality_pubkey,reality_sid,reality_sni,reality_dest,xhttp_path,xhttp_enabled,xhttp_direct_host,xhttp_direct_path FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -414,6 +442,40 @@ function mergeHy2Runtime(
   };
 }
 
+interface XhttpRuntime {
+  xhttp_path: string | null;
+  xhttp_enabled: number;
+  xhttp_direct_host: string | null;
+  xhttp_direct_path: string | null;
+}
+
+// XHTTP is the Cloudflare-mode inbound, so the agent's view only replaces the
+// row in that mode (same gate xhttp_path always had). An absent key means "not
+// reported" and keeps the row; an explicit "" means "unset" and clears it.
+function mergeXhttpRuntime(
+  row: NodeRow,
+  agent: { xhttp_path?: string; xhttp_enabled?: boolean; xhttp_direct_host?: string; xhttp_direct_path?: string },
+  apply: boolean
+): XhttpRuntime {
+  const fromRow: XhttpRuntime = {
+    xhttp_path: row.xhttp_path ?? null,
+    xhttp_enabled: row.xhttp_enabled ? 1 : 0,
+    xhttp_direct_host: row.xhttp_direct_host ?? null,
+    xhttp_direct_path: row.xhttp_direct_path ?? null
+  };
+  if (!apply) {
+    return fromRow;
+  }
+  const textOrKeep = (v: string | undefined, keep: string | null): string | null =>
+    v === undefined ? keep : v || null;
+  return {
+    xhttp_path: agent.xhttp_path ?? fromRow.xhttp_path,
+    xhttp_enabled: typeof agent.xhttp_enabled === "boolean" ? (agent.xhttp_enabled ? 1 : 0) : fromRow.xhttp_enabled,
+    xhttp_direct_host: textOrKeep(agent.xhttp_direct_host, fromRow.xhttp_direct_host),
+    xhttp_direct_path: textOrKeep(agent.xhttp_direct_path, fromRow.xhttp_direct_path)
+  };
+}
+
 async function persistNodeRuntime(
   env: Env,
   id: string,
@@ -429,12 +491,12 @@ async function persistNodeRuntime(
     reality_sid: string | null;
     reality_sni: string | null;
     reality_dest: string | null;
-    xhttp_path: string | null;
+    xhttp: XhttpRuntime;
     tunnel_uuid: string | null;
   }
 ): Promise<void> {
   await env.DB.prepare(
-    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, xhttp_enabled=?, xhttp_direct_host=?, xhttp_direct_path=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
   )
     .bind(
       fields.vpn_host,
@@ -446,11 +508,14 @@ async function persistNodeRuntime(
       fields.hy2.hy2_obfs_pw,
       fields.last_seen_at,
       fields.latency_ms,
-      fields.reality_pubkey,
-      fields.reality_sid,
-      fields.reality_sni,
-      fields.reality_dest,
-      fields.xhttp_path,
+      fields.reality_pubkey ?? null,
+      fields.reality_sid ?? null,
+      fields.reality_sni ?? null,
+      fields.reality_dest ?? null,
+      fields.xhttp.xhttp_path,
+      fields.xhttp.xhttp_enabled,
+      fields.xhttp.xhttp_direct_host,
+      fields.xhttp.xhttp_direct_path,
       fields.tunnel_uuid,
       id
     )
@@ -481,7 +546,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       reality_sid: syncRuntimeFields ? status.reality_sid ?? row.reality_sid : row.reality_sid,
       reality_sni: syncRuntimeFields ? status.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
-      xhttp_path: syncCloudflareFields ? status.xhttp_path ?? row.xhttp_path : row.xhttp_path,
+      xhttp: mergeXhttpRuntime(row, status, syncCloudflareFields),
       // The agent is only as trustworthy as the VPS it runs on: a compromised
       // node could report a tunnel_uuid crafted to escape the Cloudflare API
       // path template on the next deleteNode. Persist it only if it looks like
@@ -857,19 +922,26 @@ export async function nodeSyncCore(
     return row;
   }
   try {
+    // The agent refuses an empty user list unless told it is deliberate — an
+    // empty list from a D1 hiccup would otherwise wipe every user off the node.
+    const payload = users.length === 0 ? { users, confirm_empty: true } : { users };
     const out = await callAgent<AgentSyncResponse>(
       env,
       { adminHost: row.admin_host, agentSecret: row.agent_secret, nodeId: row.id },
       "/admin/v1/sync",
-      { method: "POST", body: JSON.stringify({ users }) },
+      { method: "POST", body: JSON.stringify(payload) },
       MAX_TIMEOUT_MS
     );
     const syncRuntimeFields = row.mode === "direct";
     const syncCloudflareFields = row.mode === "cloudflare";
     const hasSyncHost = typeof out.vpn_host === "string" && out.vpn_host.length > 0;
+    // A host whose zone is not in the zones table keeps the stored zone rather
+    // than a guessed suffix that rotate/DNS cleanup could never resolve.
+    const syncZone =
+      syncRuntimeFields && hasSyncHost ? (await resolveZoneForHost(env, out.vpn_host))?.name ?? row.zone : row.zone;
     await persistNodeRuntime(env, id, {
       vpn_host: syncRuntimeFields && hasSyncHost ? out.vpn_host : row.vpn_host,
-      zone: syncRuntimeFields && hasSyncHost ? out.vpn_host.split(".").slice(-2).join(".") : row.zone,
+      zone: syncZone,
       public_ip: syncRuntimeFields ? out.public_ip || row.public_ip : row.public_ip,
       mode: row.mode ?? null,
       hy2: mergeHy2Runtime(row, out),
@@ -879,7 +951,7 @@ export async function nodeSyncCore(
       reality_sid: syncRuntimeFields ? out.reality_sid ?? row.reality_sid : row.reality_sid,
       reality_sni: syncRuntimeFields ? out.reality_sni ?? row.reality_sni : row.reality_sni,
       reality_dest: syncRuntimeFields ? out.reality_dest ?? row.reality_dest : row.reality_dest,
-      xhttp_path: syncCloudflareFields ? out.xhttp_path ?? row.xhttp_path : row.xhttp_path,
+      xhttp: mergeXhttpRuntime(row, out, syncCloudflareFields),
       tunnel_uuid: row.tunnel_uuid, // sync response carries no tunnel_uuid; preserve persisted value
     });
     // Log a safe projection — never the full AgentSyncResponse, which carries

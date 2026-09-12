@@ -76,6 +76,11 @@ export interface AgentStatusResponse {
   reality_sni?: string;
   reality_dest?: string;
   xhttp_path?: string;
+  // Always present on /status (no omitempty on the Go side); the direct-route
+  // pair is omitted when unset.
+  xhttp_enabled?: boolean;
+  xhttp_direct_host?: string;
+  xhttp_direct_path?: string;
 }
 
 export interface AgentHealthcheckResponse {
@@ -106,6 +111,11 @@ export interface AgentSyncResponse {
   reality_sni?: string;
   reality_dest?: string;
   xhttp_path?: string;
+  // Not emitted by /sync today (only /status carries them); typed so the same
+  // merge applies once the agent adds them.
+  xhttp_enabled?: boolean;
+  xhttp_direct_host?: string;
+  xhttp_direct_path?: string;
 }
 
 export interface NodeRow {
@@ -128,6 +138,9 @@ export interface NodeRow {
   reality_sni: string | null;
   reality_dest: string | null;
   xhttp_path: string | null;
+  xhttp_enabled: number;
+  xhttp_direct_host: string | null;
+  xhttp_direct_path: string | null;
   agent_secret: string | null;
   tunnel_uuid: string | null;
 }

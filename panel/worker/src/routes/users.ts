@@ -18,6 +18,56 @@ interface UserWithNodes {
   nodes: string[];
 }
 
+// The agent POST and the user_nodes write are not one transaction. When the
+// write is the half that fails, the node already holds the credentials, so
+// re-running /adduser mints a *second* vless uuid + hy2 password on it while the
+// panel still cannot see the first — say so, otherwise the raw D1 message reads
+// like "nothing happened" and the operator retries into duplicates.
+const CREDS_ON_NODE_DETAIL =
+  "node đã có credentials (chỉ ghi D1 lỗi) — chạy /sync node, đừng thêm lại user kẻo tạo trùng";
+
+class CredentialsPersistError extends Error {
+  constructor(nodeId: string, cause: unknown) {
+    super(`user_nodes write failed for ${nodeId}: ${String(cause)}`);
+    this.name = "CredentialsPersistError";
+  }
+}
+
+async function recordNodeCredentials(
+  env: Env,
+  userId: string,
+  nodeId: string,
+  creds: AgentAddUserResponse
+): Promise<void> {
+  try {
+    await env.DB.prepare(
+      "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
+    )
+      .bind(userId, nodeId, creds.vless_uuid, creds.hy2_pw, nowTs())
+      .run();
+  } catch (e) {
+    throw new CredentialsPersistError(nodeId, e);
+  }
+}
+
+// A failed node keeps its raw error, plus the hint above when the failure landed
+// after the node was already provisioned.
+function failureEntry(
+  nodeId: string | undefined,
+  reason: unknown
+): { node_id: string | undefined; ok: false; error: string; detail?: string } {
+  return {
+    node_id: nodeId,
+    ok: false,
+    error: String(reason),
+    ...(reason instanceof CredentialsPersistError ? { detail: CREDS_ON_NODE_DETAIL } : {})
+  };
+}
+
+function credsLeftOnNode(results: PromiseSettledResult<unknown>[]): boolean {
+  return results.some((r) => r.status === "rejected" && r.reason instanceof CredentialsPersistError);
+}
+
 export async function listUsers(env: Env): Promise<Response> {
   const users = await all<{ id: string; name: string; created_at: number }>(
     env.DB.prepare("SELECT id,name,created_at FROM users ORDER BY id")
@@ -90,11 +140,7 @@ export async function createUserByName(env: Env, rawName: string | undefined, ac
         { method: "POST", body: JSON.stringify({ name: id }) },
         MAX_TIMEOUT_MS
       );
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
-      )
-        .bind(id, node.id, creds.vless_uuid, creds.hy2_pw, nowTs())
-        .run();
+      await recordNodeCredentials(env, id, node.id, creds);
       return { node_id: node.id, ok: true };
     })
   );
@@ -103,14 +149,17 @@ export async function createUserByName(env: Env, rawName: string | undefined, ac
     if (r.status === "fulfilled") {
       return r.value;
     }
-    return { node_id: nodes[i]?.id, ok: false, error: String(r.reason) };
+    return failureEntry(nodes[i]?.id, r.reason);
   });
   const failed = summary.some((x) => !x.ok);
   const succeeded = summary.some((x) => x.ok);
   const outcome = failed ? (succeeded ? "partial" : "error") : "ok";
   await logEvent(env, actor, "user.add", outcome, { user_id: id, results: summary }, undefined, id);
 
-  return json({ id, name, results: summary }, failed ? 207 : 201);
+  return json(
+    { id, name, results: summary, ...(credsLeftOnNode(results) ? { detail: CREDS_ON_NODE_DETAIL } : {}) },
+    failed ? 207 : 201
+  );
 }
 
 export async function deleteUser(env: Env, id: string, actor: string): Promise<Response> {
@@ -197,11 +246,7 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
         { method: "POST", body: JSON.stringify({ name: id }) },
         MAX_TIMEOUT_MS
       );
-      await env.DB.prepare(
-        "INSERT OR REPLACE INTO user_nodes (user_id,node_id,vless_uuid,hy2_pw,created_at) VALUES (?, ?, ?, ?, ?)"
-      )
-        .bind(id, node.id, creds.vless_uuid, creds.hy2_pw, nowTs())
-        .run();
+      await recordNodeCredentials(env, id, node.id, creds);
       addedNodes.push(node.id);
       return { node_id: node.id, ok: true };
     })
@@ -209,7 +254,7 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
 
   const summary = results.map((r, i) => {
     if (r.status === "fulfilled") return r.value;
-    return { node_id: nodesToAdd[i]?.id, ok: false, error: String(r.reason) };
+    return failureEntry(nodesToAdd[i]?.id, r.reason);
   });
   const failedCount = summary.filter((x) => !x.ok).length;
   const failed = failedCount > 0;
@@ -229,7 +274,9 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
   if (failed && !succeeded) {
     return error(502, {
       error: "upgrade_failed",
-      detail: "failed to add user to all missing nodes",
+      detail: credsLeftOnNode(results)
+        ? CREDS_ON_NODE_DETAIL
+        : "failed to add user to all missing nodes",
       userId: id,
       addedNodes,
       addedCount: addedNodes.length,
@@ -249,7 +296,8 @@ export async function userUpgradeNodes(env: Env, id: string, actor: string): Pro
       failedCount,
       alreadyPresentCount: existingNodeIds.size,
       totalNodesAfterUpgrade: existingNodeIds.size + addedNodes.length,
-      results: summary
+      results: summary,
+      ...(credsLeftOnNode(results) ? { detail: CREDS_ON_NODE_DETAIL } : {})
     },
     status
   );

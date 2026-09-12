@@ -11,7 +11,7 @@ vi.mock("../lib/events", () => ({
 
 import { callAgent } from "../lib/agent-client";
 import { logEvent } from "../lib/events";
-import { deleteUser, userUpgradeNodes } from "./users";
+import { createUserByName, deleteUser, userUpgradeNodes } from "./users";
 import type { Env } from "../types";
 
 type UserRow = { id: string; name: string };
@@ -23,6 +23,7 @@ function makeEnv(seed?: {
   nodes?: NodeRow[];
   userNodes?: UserNodeRow[];
   ran?: string[];
+  failRunSql?: RegExp;
 }): Env {
   const users = new Map((seed?.users ?? []).map((u) => [u.id, u]));
   const nodes = (seed?.nodes ?? []).slice();
@@ -61,6 +62,9 @@ function makeEnv(seed?: {
       },
       async run() {
         seed?.ran?.push(sql);
+        if (seed?.failRunSql?.test(sql)) {
+          throw new Error("D1_ERROR: database is locked");
+        }
         if (/INSERT OR REPLACE INTO user_nodes/.test(sql)) {
           const [user_id, node_id, vless_uuid, hy2_pw, created_at] = state.args as [string, string, string, string, number];
           const idx = userNodes.findIndex((r) => r.user_id === user_id && r.node_id === node_id);
@@ -187,5 +191,75 @@ describe("deleteUser membership cleanup", () => {
     expect(res.status).toBe(200);
     expect(ran.filter((sql) => /DELETE FROM user_nodes/.test(sql))).toHaveLength(0);
     expect(ran.filter((sql) => /DELETE FROM users WHERE id = \?/.test(sql))).toHaveLength(1);
+  });
+});
+
+describe("credentials left on the node when the D1 write fails", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  // The operator only sees this text (the bot prints detail ?? error), so it has
+  // to say the node is already provisioned — otherwise /adduser gets re-run and
+  // the node ends up with two sets of credentials.
+  const saysNodeAlreadyHasCreds = (detail: unknown) => {
+    expect(String(detail)).toContain("node đã có credentials");
+    expect(String(detail)).toContain("/sync");
+  };
+
+  it("tells the operator on /adduser that the node is already provisioned", async () => {
+    vi.mocked(callAgent).mockResolvedValue({ vless_uuid: "u1", hy2_pw: "p1" });
+    const env = makeEnv({
+      users: [],
+      nodes: [{ id: "JPY-03", admin_host: "jpy-03.rwl247.dev", status: "active" }],
+      userNodes: [],
+      failRunSql: /INSERT OR REPLACE INTO user_nodes/
+    });
+
+    const res = await createUserByName(env, "alice", "operator@example.com");
+    const body = (await res.json()) as { detail?: string; results: Array<{ ok: boolean; detail?: string; error?: string }> };
+
+    expect(res.status).toBe(207);
+    saysNodeAlreadyHasCreds(body.detail);
+    expect(body.results[0].ok).toBe(false);
+    saysNodeAlreadyHasCreds(body.results[0].detail);
+    // The raw D1 cause is still there for the log.
+    expect(body.results[0].error).toContain("database is locked");
+  });
+
+  it("says the same on /upgrade instead of a bare upgrade_failed", async () => {
+    vi.mocked(callAgent).mockResolvedValue({ vless_uuid: "u1", hy2_pw: "p1" });
+    const env = makeEnv({
+      users: [{ id: "alice", name: "alice" }],
+      nodes: [{ id: "JPY-03", admin_host: "jpy-03.rwl247.dev", status: "active" }],
+      userNodes: [],
+      failRunSql: /INSERT OR REPLACE INTO user_nodes/
+    });
+
+    const res = await userUpgradeNodes(env, "alice", "operator@example.com");
+    const body = (await res.json()) as { error?: string; detail?: string; results: Array<{ detail?: string }> };
+
+    expect(res.status).toBe(502);
+    expect(body.error).toBe("upgrade_failed");
+    saysNodeAlreadyHasCreds(body.detail);
+    saysNodeAlreadyHasCreds(body.results[0].detail);
+  });
+
+  it("keeps the plain error when the agent itself failed (nothing was created)", async () => {
+    vi.mocked(callAgent).mockRejectedValue(new Error("agent_http_502"));
+    const env = makeEnv({
+      users: [{ id: "alice", name: "alice" }],
+      nodes: [{ id: "JPY-03", admin_host: "jpy-03.rwl247.dev", status: "active" }],
+      userNodes: []
+    });
+
+    const res = await userUpgradeNodes(env, "alice", "operator@example.com");
+    const body = (await res.json()) as { detail?: string; results: Array<{ detail?: string }> };
+
+    expect(res.status).toBe(502);
+    expect(body.detail).toBe("failed to add user to all missing nodes");
+    expect(body.results[0].detail).toBeUndefined();
   });
 });

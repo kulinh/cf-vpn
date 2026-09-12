@@ -12,10 +12,10 @@ export async function one<T>(stmt: D1PreparedStatement): Promise<T | null> {
 }
 
 // Telegram callback_data is capped at 64 bytes and the longest wrapper the bot
-// builds is "u:del:" + id + ":yes" (10 bytes), so an id longer than this can
+// builds is "n:rotate:" + id + ":yes" (13 bytes), so an id longer than this can
 // never be put on a button — reject it at creation instead of discovering it
-// when /users silently stops answering.
-export const MAX_ENTITY_ID_LEN = 54;
+// when /rotate or /users silently stops answering.
+export const MAX_ENTITY_ID_LEN = 51;
 
 export function userIDFromName(name: string): string {
   return name

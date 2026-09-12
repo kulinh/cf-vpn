@@ -32,14 +32,19 @@ export function parseCommand(text: string): ParsedCommand | null {
   const sp = trimmed.indexOf(" ");
   const head = sp === -1 ? trimmed.slice(1) : trimmed.slice(1, sp);
   const arg = sp === -1 ? "" : trimmed.slice(sp + 1).trim();
-  const [rawCmd, rawTarget] = head.split("@");
+  // Everything after the first "@" is the target: "/cmd@a@b" must not collapse
+  // to "a" (which could match a real bot name) — "a@b" never matches and is
+  // ignored like any other foreign target.
+  const at = head.indexOf("@");
+  const rawCmd = at === -1 ? head : head.slice(0, at);
+  const rawTarget = at === -1 ? "" : head.slice(at + 1);
   const cmd = rawCmd.toLowerCase();
   if (!cmd) {
     return null;
   }
   // "/cmd@botname" names the bot the command is meant for. Two bots share the
   // ops group (this one and @rwl_vpn_bot), so the target decides silence.
-  return { cmd, arg, target: (rawTarget ?? "").toLowerCase() };
+  return { cmd, arg, target: rawTarget.toLowerCase() };
 }
 
 // This bot shares the group with @rwl_vpn_bot (/mode, /china, /derp). Since it
@@ -47,15 +52,24 @@ export function parseCommand(text: string): ParsedCommand | null {
 // command is almost always the other bot's; answer "unknown" only when the
 // message named this bot explicitly.
 function addressedToOtherBot(target: string, env: Env): boolean {
+  if (target === "") {
+    return false;
+  }
   const me = (env.TELEGRAM_BOT_USERNAME ?? "").toLowerCase();
-  return target !== "" && target !== me;
+  if (me === "") {
+    // Fail closed, but loudly: with the username unset, "/help@thisbot" is
+    // ignored too, which from the group looks exactly like the bot being down.
+    console.error("TELEGRAM_BOT_USERNAME is unset; ignoring command addressed to", `@${target}`);
+    return true;
+  }
+  return target !== me;
 }
 
 // callback_data is capped at 64 bytes by Telegram and is split on ":", so an id
 // carrying a colon would address a different entity than the button says, and an
 // over-long id makes sendMessage 400 — which used to make /nodes and /users
 // silently return nothing, forever. The bound is 64 minus the longest wrapper
-// the bot builds, "u:del:" + id + ":yes" = 10 bytes (see MAX_ENTITY_ID_LEN).
+// the bot builds, "n:rotate:" + id + ":yes" = 13 bytes (see MAX_ENTITY_ID_LEN).
 // Ids that fail this are never put on a button.
 const CALLBACK_ID_RE = new RegExp(`^[A-Za-z0-9._-]{1,${MAX_ENTITY_ID_LEN}}$`);
 
@@ -199,10 +213,12 @@ async function buildNodeSyncUsers(env: Env, nodeId: string): Promise<SyncUserRow
   );
 }
 
-function summarize(results: Array<{ node_id?: string; ok: boolean; error?: string }> | undefined): string {
+function summarize(
+  results: Array<{ node_id?: string; ok: boolean; error?: string; detail?: string }> | undefined
+): string {
   if (!results || results.length === 0) return "(không có node active)";
   return results
-    .map((r) => (r.ok ? `✅ ${escapeHtml(r.node_id ?? "?")}` : `⚠️ ${escapeHtml(r.node_id ?? "?")}: ${escapeHtml(r.error ?? "lỗi")}`))
+    .map((r) => (r.ok ? `✅ ${escapeHtml(r.node_id ?? "?")}` : `⚠️ ${escapeHtml(r.node_id ?? "?")}: ${escapeHtml(r.detail ?? r.error ?? "lỗi")}`))
     .join("\n");
 }
 
