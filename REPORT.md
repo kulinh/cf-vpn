@@ -210,6 +210,36 @@ không phải buffering.
   stream-up/stream-one qua CF và packet-up/auto vào đường direct), không phải
   sự cố.
 
+## Bổ sung 6 — điều khiển china-mode bằng Telegram (@rwl_vpn_bot)
+
+Bot `cfvpn-tgbot` (unit `cfvpn-tgbot.service`, **chỉ trên VNM-01**) long-poll
+`@rwl_vpn_bot` và nhận đúng các lệnh sau trong group `-1003806233980`:
+
+```
+/china status    (hoặc /derp)   — xem region + china-mode on/off
+/china on                        — chỉ dùng relay riêng (trước khi bay TQ)
+/china off                       — relay công cộng + riêng (bình thường)
+```
+
+Bot gọi thẳng `commands.RunDerpChinaMode` / `RunDerpShow` trong process nên
+snapshot policy, validate, `If-Match` và `tailscale netcheck` giống hệt khi gõ
+CLI; output được trả về ngay trong group. Lý do đặt bot trên VNM-01 thay vì
+trong Worker: lệnh cần OAuth client ở `/etc/cfvpn/tailscale-oauth.env`, để
+secret không phải rời máy. Bot này **khác** bot của Worker nên không tranh
+update stream (Telegram chỉ cho mỗi bot một trong hai: webhook hoặc getUpdates).
+
+Rào an toàn: chỉ phục vụ đúng chat id cấu hình; chỉ trả lời 2 lệnh trên và im
+lặng với mọi lệnh khác (`/status`, `/nodes`, `/sub`… là của bot panel, cùng
+group); bỏ qua lệnh gắn `@bot_khác`; chạy tuần tự một lệnh một lúc (hai lần
+ghi ACL song song sẽ đụng nhau); khi restart thì bỏ backlog, không replay lệnh
+đã xếp hàng lúc bot chết. Privacy mode đang bật nên bot chỉ nhận slash command.
+
+Verify thật: `cfvpn-tgbot --simulate "/derp"` và `"/china on"` → `"/china off"`
+chạy qua đúng bot và group, on 14 s / off 12 s, netcheck in ra trong group,
+`/status` bị bỏ qua, trạng thái cuối **china-mode off**. Menu lệnh đã đăng ký
+bằng `setMyCommands` chỉ cho chat này. Token lấy từ
+`/etc/cfvpn/fleet-probe.env` (mode 600, gitignore).
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |
