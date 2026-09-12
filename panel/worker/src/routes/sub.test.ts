@@ -416,3 +416,12 @@ describe("XHTTP-Direct line", () => {
     expect(buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn.example.com", xhttp_direct_path: null }]).split("\n")).toHaveLength(1);
   });
 });
+
+describe("?format=shadowrocket&final=", () => {
+  it("rejects an unknown final value", async () => {
+    const env = makeEnv(makeDB({}));
+    const res = await publicSubscription(env, "a".repeat(32), "shadowrocket", "maybe");
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_final");
+  });
+});

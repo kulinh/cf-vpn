@@ -17,7 +17,7 @@ function notFoundText(): Response {
   });
 }
 
-export async function publicSubscription(env: Env, token: string, format?: string | null): Promise<Response> {
+export async function publicSubscription(env: Env, token: string, format?: string | null, final?: string | null): Promise<Response> {
   if (!TOKEN_RE.test(token)) {
     return notFoundText();
   }
@@ -28,6 +28,11 @@ export async function publicSubscription(env: Env, token: string, format?: strin
   const wantsShadowrocket = format === "shadowrocket";
   if (format != null && format !== "" && !wantsClash && !wantsShadowrocket) {
     return error(400, { error: "invalid_format", detail: "supported: clash, shadowrocket (omit for base64)" });
+  }
+  // ?final= only means something for the Shadowrocket .conf; reject typos
+  // for the same reason as ?format=.
+  if (final != null && final !== "" && final !== "direct" && final !== "proxy") {
+    return error(400, { error: "invalid_final", detail: "supported: direct (default, blacklist mode with the CN module) or proxy (full tunnel)" });
   }
 
   const user = await one<{ id: string }>(
@@ -46,7 +51,15 @@ export async function publicSubscription(env: Env, token: string, format?: strin
   if (wantsShadowrocket) {
     // A Shadowrocket .conf: policy groups + rules only. The nodes themselves
     // come from the base64 subscription, whose names the groups reference.
-    return new Response(buildShadowrocketConfig(user.id, rows), {
+    // The panel itself sits behind Cloudflare Access; from China both the
+    // subscription refresh and the Access login must go through the proxy.
+    const alwaysProxyHosts: string[] = [".cloudflareaccess.com"];
+    try {
+      if (env.PANEL_PUBLIC_ORIGIN) alwaysProxyHosts.unshift(new URL(env.PANEL_PUBLIC_ORIGIN).hostname);
+    } catch {
+      // a malformed origin just means no panel rule
+    }
+    return new Response(buildShadowrocketConfig(user.id, rows, { final: final === "proxy" ? "proxy" : "direct", alwaysProxyHosts }), {
       status: 200,
       headers: {
         "content-type": "text/plain; charset=utf-8",

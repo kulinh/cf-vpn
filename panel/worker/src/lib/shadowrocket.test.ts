@@ -38,7 +38,7 @@ describe("buildShadowrocketConfig", () => {
     expect(conf).toContain(
       "[Proxy Group]\nAUTO = url-test, kulinh@JPY-02-Reality, kulinh@SIN-01-Reality, kulinh@JPY-01-HY2, kulinh@HKG-01-HY2, kulinh@OR-001-HTTPUpgrade, url = http://cp.cloudflare.com/generate_204, interval = 600, tolerance = 500, timeout = 8\n"
     );
-    expect(conf).toContain("\n[Rule]\nFINAL,AUTO\n");
+    expect(conf).toMatch(/\[Rule\]\n(#.*\n)*FINAL,DIRECT\n$/);
     expect(conf).toMatch(/^\[General\]\n/);
   });
 
@@ -67,13 +67,13 @@ describe("buildShadowrocketConfig", () => {
     const conf = buildShadowrocketConfig("kulinh", [row("USA-01", "direct", false)]);
     expect(conf).not.toContain("AUTO");
     expect(conf).toContain("PROXY = select, kulinh@USA-01-Reality");
-    expect(conf).toContain("FINAL,PROXY");
+    expect(conf).toMatch(/FINAL,DIRECT\n$/);
   });
 
   it("routes DIRECT for a user with no nodes", () => {
     const conf = buildShadowrocketConfig("kulinh", []);
     expect(conf).toContain("PROXY = select, DIRECT");
-    expect(conf).toContain("FINAL,PROXY");
+    expect(conf).toMatch(/FINAL,DIRECT\n$/);
   });
 
   it("never names a broken direct node", () => {
@@ -95,5 +95,28 @@ describe("XHTTP-Direct names", () => {
     const conf = buildShadowrocketConfig("kulinh", [{ ...row("JPY-01", "cloudflare", true), xhttp_direct_host: "cdn.example.com", xhttp_direct_path: "/abc" }, row("SIN-01", "direct", false)]);
     expect(conf).toContain("PROXY = select, AUTO, HY2-BACKUP, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-XHTTP-Direct, kulinh@JPY-01-HY2, kulinh@SIN-01-Reality");
     expect(conf).toContain("AUTO = url-test, kulinh@SIN-01-Reality, kulinh@JPY-01-HY2, url = ");
+  });
+});
+
+describe("[Rule] tail", () => {
+  it("defaults to blacklist mode (FINAL,DIRECT) so the CN module decides what is proxied", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet);
+    expect(conf).toMatch(/FINAL,DIRECT\n$/);
+    expect(conf).not.toContain("FINAL,AUTO");
+    expect(conf).not.toContain("FINAL,PROXY");
+  });
+  it("final=proxy makes everything ride the PROXY group", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet, { final: "proxy" });
+    expect(conf).toMatch(/FINAL,PROXY\n$/);
+  });
+  it("puts the always-proxy hosts ahead of FINAL, exact host or whole zone", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet, { alwaysProxyHosts: ["cp.rwl265.com", ".cloudflareaccess.com"] });
+    expect(conf).toContain("[Rule]\nDOMAIN,cp.rwl265.com,PROXY\nDOMAIN-SUFFIX,cloudflareaccess.com,PROXY\n");
+    expect(conf.indexOf("DOMAIN,cp.rwl265.com,PROXY")).toBeLessThan(conf.indexOf("FINAL,DIRECT"));
+  });
+  it("a user with no nodes still gets a valid tail", () => {
+    const conf = buildShadowrocketConfig("kulinh", []);
+    expect(conf).toContain("PROXY = select, DIRECT");
+    expect(conf).toMatch(/FINAL,DIRECT\n$/);
   });
 });

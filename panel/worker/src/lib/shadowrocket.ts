@@ -49,7 +49,23 @@ export function availableNames(username: string, rows: SubscriptionRow[]): strin
   return names;
 }
 
-export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[]): string {
+// How the config's own [Rule] section ends. "direct" is blacklist mode: the
+// sr_proxy_list_CN module (loaded above the config) decides what goes to
+// PROXY and everything else — Chinese and Vietnamese sites included — goes
+// direct; the right mode inside China. "proxy" sends everything through the
+// PROXY group (full tunnel), for use at home.
+export type ShadowrocketFinal = "direct" | "proxy";
+
+export interface ShadowrocketOptions {
+  final?: ShadowrocketFinal;
+  // Hostnames of our own control plane that must ride the proxy from China
+  // (the panel behind Cloudflare Access, its login page). Emitted as DOMAIN /
+  // DOMAIN-SUFFIX rules ahead of FINAL.
+  alwaysProxyHosts?: string[];
+}
+
+export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[], opts: ShadowrocketOptions = {}): string {
+  const final: ShadowrocketFinal = opts.final ?? "direct";
   const all = availableNames(username, rows);
   const have = new Set(all);
   const members = AUTO_MEMBERS.map(([id, name]) => name(username, id)).filter((n) => have.has(n));
@@ -77,6 +93,20 @@ export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[
   } else {
     out.push("PROXY = select, DIRECT");
   }
-  out.push("", "[Rule]", members.length > 0 ? "FINAL,AUTO" : "FINAL,PROXY", "");
+  out.push("", "[Rule]");
+  for (const h of opts.alwaysProxyHosts ?? []) {
+    // A bare hostname matches exactly; a leading dot means the whole zone.
+    out.push(h.startsWith(".") ? `DOMAIN-SUFFIX,${h.slice(1)},PROXY` : `DOMAIN,${h},PROXY`);
+  }
+  if (final === "proxy") {
+    out.push("# Full tunnel: everything not matched above goes through the PROXY group.", "FINAL,PROXY");
+  } else {
+    out.push(
+      "# Blacklist mode: load the sr_proxy_list_CN module above this config; it decides",
+      "# what goes to PROXY. Everything else (Chinese and Vietnamese sites) goes direct.",
+      "FINAL,DIRECT"
+    );
+  }
+  out.push("");
   return out.join("\n");
 }
