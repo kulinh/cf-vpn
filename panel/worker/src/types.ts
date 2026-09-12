@@ -11,6 +11,10 @@ export interface Env {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_GROUP_ID?: string;
+  // The bot's own @username (without @). Commands addressed to another bot in
+  // the group are ignored, and "unknown command" is only answered when the
+  // message named this bot explicitly.
+  TELEGRAM_BOT_USERNAME?: string;
   // Public origin of the Access-fronted custom domain. The Telegram webhook is
   // served on *.workers.dev, where /sub/* is 404 by design, so subscription
   // links must be built from this rather than from the request origin.

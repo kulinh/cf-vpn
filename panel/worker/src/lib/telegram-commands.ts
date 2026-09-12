@@ -14,6 +14,7 @@ import { nodeHealthcheck, nodeRotateCore, nodeStatus, nodeSyncCore } from "../ro
 export interface ParsedCommand {
   cmd: string;
   arg: string;
+  target: string; // "" or the @botname the command was addressed to
 }
 
 export interface ParsedCallback {
@@ -31,11 +32,23 @@ export function parseCommand(text: string): ParsedCommand | null {
   const sp = trimmed.indexOf(" ");
   const head = sp === -1 ? trimmed.slice(1) : trimmed.slice(1, sp);
   const arg = sp === -1 ? "" : trimmed.slice(sp + 1).trim();
-  const cmd = head.split("@")[0].toLowerCase();
+  const [rawCmd, rawTarget] = head.split("@");
+  const cmd = rawCmd.toLowerCase();
   if (!cmd) {
     return null;
   }
-  return { cmd, arg };
+  // "/cmd@botname" names the bot the command is meant for. Two bots share the
+  // ops group (this one and @rwl_vpn_bot), so the target decides silence.
+  return { cmd, arg, target: (rawTarget ?? "").toLowerCase() };
+}
+
+// This bot shares the group with @rwl_vpn_bot (/mode, /china, /derp). Since it
+// is a group admin, Telegram hands it every command in the group, so an unknown
+// command is almost always the other bot's; answer "unknown" only when the
+// message named this bot explicitly.
+function addressedToOtherBot(target: string, env: Env): boolean {
+  const me = (env.TELEGRAM_BOT_USERNAME ?? "").toLowerCase();
+  return target !== "" && target !== me;
 }
 
 // callback_data is capped at 64 bytes by Telegram and is split on ":", so an id
@@ -326,6 +339,7 @@ export async function dispatch(env: Env, ctx: ExecutionContext, update: TgUpdate
   const chatId = msg.chat.id;
   const parsed = parseCommand(msg.text);
   if (!parsed) return;
+  if (addressedToOtherBot(parsed.target, env)) return;
 
   switch (parsed.cmd) {
     case "start":
@@ -393,7 +407,13 @@ export async function dispatch(env: Env, ctx: ExecutionContext, update: TgUpdate
       });
       return;
     }
-    default:
-      await sendMessage(token, chatId, "Lệnh không rõ. Gõ /help.");
+    default: {
+      const me = (env.TELEGRAM_BOT_USERNAME ?? "").toLowerCase();
+      if (me !== "" && parsed.target === me) {
+        await sendMessage(token, chatId, "Lệnh không rõ. Gõ /help.");
+      }
+      // Otherwise stay silent: it is @rwl_vpn_bot's command, or a typo we
+      // would only make noisier by answering.
+    }
   }
 }

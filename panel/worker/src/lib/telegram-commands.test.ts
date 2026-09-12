@@ -3,19 +3,20 @@ import { parseCommand, parseCallback } from "./telegram-commands";
 
 describe("parseCommand", () => {
   it("parses a bare command", () => {
-    expect(parseCommand("/nodes")).toEqual({ cmd: "nodes", arg: "" });
+    expect(parseCommand("/nodes")).toEqual({ cmd: "nodes", arg: "", target: "" });
   });
   it("parses a command with an argument", () => {
-    expect(parseCommand("/adduser alice")).toEqual({ cmd: "adduser", arg: "alice" });
+    expect(parseCommand("/adduser alice")).toEqual({ cmd: "adduser", arg: "alice", target: "" });
   });
   it("strips an @botname suffix", () => {
-    expect(parseCommand("/help@cfvpn_bot")).toEqual({ cmd: "help", arg: "" });
+    expect(parseCommand("/help@cfvpn_bot")).toEqual({ cmd: "help", arg: "", target: "cfvpn_bot" });
+    expect(parseCommand("/help")).toEqual({ cmd: "help", arg: "", target: "" });
   });
   it("returns null for non-command text", () => {
     expect(parseCommand("hello there")).toBeNull();
   });
   it("trims surrounding whitespace in the argument", () => {
-    expect(parseCommand("/sub   bob  ")).toEqual({ cmd: "sub", arg: "bob" });
+    expect(parseCommand("/sub   bob  ")).toEqual({ cmd: "sub", arg: "bob", target: "" });
   });
 });
 
@@ -96,6 +97,48 @@ function message(text: string, fromId: number) {
     message: { message_id: 2, chat: { id: -100, type: "group" }, from: { id: fromId, is_bot: false }, text }
   };
 }
+
+describe("sharing the group with @rwl_vpn_bot", () => {
+  const botEnv = { TELEGRAM_BOT_TOKEN: "T", TELEGRAM_BOT_USERNAME: "xiaoqie001_bot" } as Env;
+  const sent = () => (sendMessage as any).mock.calls.length;
+
+  it("stays silent on the other bot's commands (/mode, /china, /derp)", async () => {
+    const before = sent();
+    for (const t of ["/mode uae", "/china on", "/derp", "/mode"]) {
+      await dispatch(botEnv, fakeCtx(), message(t, 9), "https://panel.example");
+    }
+    expect(sent()).toBe(before);
+  });
+
+  it("ignores a known command explicitly addressed to another bot", async () => {
+    const before = sent();
+    await dispatch(botEnv, fakeCtx(), message("/nodes@rwl_vpn_bot", 9), "https://panel.example");
+    expect(sent()).toBe(before);
+  });
+
+  it("still answers unknown commands that name this bot, and its own commands", async () => {
+    const before = sent();
+    await dispatch(botEnv, fakeCtx(), message("/foo@xiaoqie001_bot", 9), "https://panel.example");
+    expect(sent()).toBe(before + 1);
+    expect((sendMessage as any).mock.calls.at(-1)[2]).toContain("Lệnh không rõ");
+    await dispatch(botEnv, fakeCtx(), message("/help@XiaoQie001_bot", 9), "https://panel.example");
+    expect((sendMessage as any).mock.calls.at(-1)[2]).toContain("cfvpn bot");
+    await dispatch(botEnv, fakeCtx(), message("/help", 9), "https://panel.example");
+    expect((sendMessage as any).mock.calls.at(-1)[2]).toContain("cfvpn bot");
+  });
+
+  it("never answers plain text", async () => {
+    const before = sent();
+    await dispatch(botEnv, fakeCtx(), message("ok anh đã mở port rồi", 9), "https://panel.example");
+    expect(sent()).toBe(before);
+  });
+
+  it("without a configured username, unknown commands are always silent", async () => {
+    const before = sent();
+    await dispatch({ TELEGRAM_BOT_TOKEN: "T" } as Env, fakeCtx(), message("/foo@xiaoqie001_bot", 9), "https://panel.example");
+    expect(sent()).toBe(before);
+  });
+});
 
 describe("dispatch confirm gating", () => {
   it("/deluser only prompts, does not delete", async () => {
