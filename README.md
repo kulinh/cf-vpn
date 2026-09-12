@@ -147,7 +147,7 @@ cfvpnctl derp china-mode on        # before flying to China: devices use ONLY ou
 cfvpnctl derp china-mode off       # back home: public relays + our relays (normal)
 cfvpnctl rules-mode show           # which blocked-site list the Shadowrocket .conf inlines
 cfvpnctl rules-mode set uae        # cn (default) | uae | none — written to D1 settings.rules_mode
-cfvpnctl derp region add --id 901 --code jpy --name JPY-01 --host derp-xxxx.duylinh.net   # ports default 8443/3478
+cfvpnctl derp region add --id 902 --code osa --name JPY-03 --host derp-xxxx.duylinh.net   # ports default 8443/3478; live: 900 HKG-01, 901 JPY-01, 902 JPY-03
 cfvpnctl derp region remove --id 901
 ```
 

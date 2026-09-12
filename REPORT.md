@@ -491,13 +491,21 @@ giữ làm dự phòng. Tailscale: exit node đã duyệt, key expiry đã tắt
 **DERP region 902:** derper 1.102.4 (build chéo arm64) chạy trên JPY-03 với
 cert Let's Encrypt cho `derp-de29e117.duylinh.net` (hết hạn 11/12/2026, cron gia hạn
 hàng tháng 04:31 ngày 1), STUN 3478, unit + ufw sẵn. **Chưa `region add`** vì
-Security List VCN chưa mở `8443/tcp` và `3478/udp` (đo từ VNM-01 không tới);
-mở xong là một lệnh `cfvpnctl derp region add --id 902 --code osa --name JPY-03
---host derp-de29e117.duylinh.net`.
+Security List VCN chưa mở `8443/tcp` và `3478/udp`. **Cập nhật 21:40:** anh mở xong, em kiểm chứng
+DERP 8443 trả 200 từ VNM-01 và SIN-01, 3 gói UDP 3478 qua VCN đều tới (derper
+không đáp STUN thô nên đo bằng bộ đếm iptables), rồi `cfvpnctl derp region add
+--id 902 --code osa --name JPY-03 --host derp-de29e117.duylinh.net`. Netcheck sau đó
+(china-mode đang on nên chỉ thấy relay riêng):
 
-**Anh còn làm tay:** mở `8443/tcp` + `3478/udp` trên VCN (cho DERP), bỏ rule
-`22/tcp` trên VCN (SSH public giờ đi 17722), đổi tên máy trong console OCI từ
-`osk-001` thành `JPY-03`. Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
+| Từ | Relay gần nhất | osa (JPY-03) | jpy (JPY-01) | hkg (HKG-01) |
+|---|---|---|---|---|
+| VNM-01 | HKG-01 | 121 ms | (không đo được lúc đó) | 86 ms |
+| SIN-01 | JPY-01 | 118 ms | 68 ms | (không tới, như đã biết) |
+| JPY-03 | JPY-03 | 0.5 ms | 9 ms | 108 ms |
+
+SIN-01 giờ có hai relay riêng dùng được (JPY-01 và JPY-03) thay vì một.
+
+**Anh còn làm tay:** bỏ rule `22/tcp` trên VCN (SSH public giờ đi 17722). Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
 group AUTO (danh sách cố định trong Worker, hiện JPY-02/SIN-01/JPY-01-HY2/
 HKG-01-HY2/OR-001).
 

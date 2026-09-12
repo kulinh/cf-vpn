@@ -1,4 +1,4 @@
-# Custom Tailscale DERP relays on HKG-01 and JPY-01 — DEPLOYED 2026-09-12
+# Custom Tailscale DERP relays on HKG-01, JPY-01 and JPY-03 — DEPLOYED 2026-09-12
 
 Status: `derper` runs on HKG-01 and the tailnet policy carries `derpMap`
 with regions 900 (HKG-01) and 901 (JPY-01). `OmitDefaultRegions` was set to `true` for ~40
@@ -59,10 +59,15 @@ every run snapshots the policy under `/root/cfvpn-backups/acl/`.
   "OmitDefaultRegions": false,
   "Regions": {
     "900": { "RegionID": 900, "RegionCode": "hkg", "RegionName": "HKG-01", "Nodes": [{ "Name": "900a", "RegionID": 900, "HostName": "derp-f2a4f360.duylinh.net", "DERPPort": 8443, "STUNPort": 3478 }] },
-    "901": { "RegionID": 901, "RegionCode": "jpy", "RegionName": "JPY-01", "Nodes": [{ "Name": "901a", "RegionID": 901, "HostName": "derp-da32d5af.duylinh.net", "DERPPort": 8443, "STUNPort": 3478 }] }
+    "901": { "RegionID": 901, "RegionCode": "jpy", "RegionName": "JPY-01", "Nodes": [{ "Name": "901a", "RegionID": 901, "HostName": "derp-da32d5af.duylinh.net", "DERPPort": 8443, "STUNPort": 3478 }] },
+    "902": { "RegionID": 902, "RegionCode": "osa", "RegionName": "JPY-03", "Nodes": [{ "Name": "902a", "RegionID": 902, "HostName": "derp-de29e117.duylinh.net", "DERPPort": 8443, "STUNPort": 3478 }] }
   }
 }
 ```
 
 Rollback = remove `derpMap` from the policy; on the node
 `systemctl disable --now derper; ufw delete allow 8443/tcp; ufw delete allow 3478/udp`.
+
+## Region 902 — JPY-03 (Oracle Cloud Osaka, arm64), added 2026-09-12 21:40
+
+Same recipe: `derper` 1.102.4 cross-compiled on VNM-01 (`GOOS=linux GOARCH=arm64 go install tailscale.com/cmd/derper@v1.102.4`, binary under `$GOPATH/bin/linux_arm64/`), host `derp-de29e117.duylinh.net` → 129.225.185.197 (A, not proxied), lego DNS-01 cert expiring 2026-12-11, `/etc/cron.d/derper-cert-renew` at 04:31 on the 1st, unit identical to JPY-01's, ufw 8443/tcp + 3478/udp, plus the OCI VCN security list for the same two ports. derper ignores bare STUN binding requests, so a raw-socket STUN test says nothing — verify UDP reachability with a packet counter (`iptables -I INPUT -p udp --dport 3478 -j ACCEPT` + `-L -v`) or simply `tailscale netcheck` from another node. Netcheck after the add: osa 121 ms from VNM-01, 118 ms from SIN-01 (which now has two usable private relays), 0.5 ms locally.
