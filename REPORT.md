@@ -413,6 +413,39 @@ group đúng. Go test toàn bộ pass, Worker 162 test pass, version `504b6afc`.
 **Anh nhớ:** sau `/mode …`, vào Shadowrocket kéo cập nhật config RWL8899 một
 lần (link không đổi). Ở UAE thêm bước bỏ module `zalo_zalopay`.
 
+## Bổ sung 11 — tin nhắn bot tự xoá sau 24 h, reply viết gọn
+
+**Tự xoá.** Telegram không có TTL cho tin nhắn bot và chỉ cho xoá tin dưới
+48 h, nên bot tự giữ hàng đợi: mỗi tin gửi ra (và cả lệnh của anh mà nó trả
+lời, vì bot đã là admin) được ghi thành một file JSON trong
+`/var/lib/cfvpn/tg-ttl/` (`{chat_id, message_id, delete_at}`), một vòng
+reaper trong bot xoá các tin đến hạn mỗi phút; file sống qua restart. Một
+file một tin nên không cần lock: `fleet-probe.py` cũng ghi cảnh báo của nó
+vào cùng thư mục để bot xoá luôn. Lỗi vĩnh viễn (tin đã bị xoá tay, quá
+48 h) thì bỏ file; lỗi tạm (rate limit) thì thử lại. Cấu hình:
+`TELEGRAM_TTL_DIR=` (rỗng) để tắt, `TELEGRAM_MESSAGE_TTL_HOURS` đổi thời
+gian; `cfvpn-tgbot --reap` chạy một lượt bằng tay. **Đã kiểm chứng live:**
+simulate `/derp` với TTL 2 giây → file hàng đợi xuất hiện → `--reap` xoá tin
+khỏi group, hàng đợi trống. Tin nhắn cũ trước bản này bot không biết để xoá.
+
+**Reply viết gọn.** Bot không còn đổ nguyên output `cfvpnctl` (snapshot
+path, netcheck 30 dòng, cảnh báo portmap) mà parse ra vài dòng HTML:
+
+```
+✅ Chế độ UAE · 11 s
+📄 Config RWL8899 → list UAE (gọi OTT + site TDRA chặn)
+🌐 China-mode → off · đã off sẵn, policy giữ nguyên
+📶 Relay: Hong Kong 26 ms · HKG-01 52 ms · JPY-01 126 ms
+👉 Kéo cập nhật config RWL8899 trong Shadowrocket. Ở UAE bỏ module zalo_zalopay.
+```
+
+`/mode status` in 3 dòng (list đang nhúng + thời điểm đặt, china-mode, relay
+riêng); lỗi in `✖ … thất bại` + dòng lỗi + đuôi output; output lạ không
+parse được thì rơi về khối `<pre>` đã lọc noise, HTML hỏng hoặc quá dài thì
+gửi lại dạng text thuần. Cảnh báo UDP bị chặn từ netcheck vẫn được giữ. Test:
+`internal/tgbot` dùng đúng output thật ghi từ VNM-01 ngày 12/09 để kiểm tra
+parser; Go toàn bộ pass, pytest 10 pass.
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |
