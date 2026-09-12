@@ -338,7 +338,7 @@ The same token serves two formats; both list exactly the same nodes with the sam
 
 | URL | Format | Clients |
 |---|---|---|
-| `https://<panel-host>/sub/<token>` | base64 URI list (default) | Shadowrocket, v2rayN, v2rayNG, Nekobox |
+| `https://<panel-host>/sub/<token>` | base64 URI list (default) | Shadowrocket, Hiddify (`hiddify://import/<sub-url>`), v2rayN, v2rayNG, Nekobox |
 | `https://<panel-host>/sub/<token>?format=clash` | mihomo/Clash YAML | Clash Verge (Rev), mihomo, Stash, Shadowrocket's Clash import |
 
 Any other `?format=` value returns `400 invalid_format` rather than silently serving base64.
