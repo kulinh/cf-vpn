@@ -442,18 +442,27 @@ parser; Go toàn bộ pass, pytest 10 pass.
 ## Bổ sung 12 — tách việc dọn sang bot lao công @xiaoqie001_bot
 
 Anh muốn một con bot riêng làm lao công cho group, và hai bot kia không còn
-chức năng tự xoá. Có một giới hạn của Telegram định hình toàn bộ thiết kế:
-**Telegram không bao giờ gửi tin nhắn của bot cho bot khác** — `getUpdates`
-của lao công không thấy tin của `@rwl_vpn_bot` hay `@xiaoqie2_bot`, dù nó là
-admin và dù tắt privacy mode. Ngược lại, bot admin có `can_delete_messages`
-thì **xoá được mọi tin**, chỉ là không biết tin nào tồn tại.
+chức năng tự xoá. Hai giới hạn của Telegram định hình thiết kế, em đã **thử
+bằng API thật** chứ không đoán:
 
-Nên chia việc qua một thư mục spool `/var/lib/xiaoqie-janitor/spool`:
+1. **Telegram không bao giờ gửi tin nhắn của bot cho bot khác** — `getUpdates`
+   của lao công không thấy tin của `@rwl_vpn_bot` hay `@xiaoqie2_bot`, dù nó là
+   admin và dù tắt privacy mode.
+2. **Bot chỉ xoá được tin của chính nó.** Lao công là admin có
+   `can_delete_messages` (đã kiểm tra `getChatMember`), vậy mà xoá tin 679 của
+   `@rwl_vpn_bot` vẫn bị trả `message to delete not found`; chính
+   `@rwl_vpn_bot` xoá tin đó thì `ok=true`.
+
+Vì điểm 2, lao công xoá tin của bot nào thì dùng **token của bot ấy**, đọc
+ngay tại file env sẵn có (`/etc/cfvpn/fleet-probe.env`, `/opt/sms2tele/.env`)
+nên token không bị nhân bản sang chỗ thứ ba; trường `source` trong file spool
+quyết định dùng token nào. Chia việc qua thư mục spool
+`/var/lib/xiaoqie-janitor/spool`:
 
 | Vai | Ai | Làm gì |
 |---|---|---|
 | Ghi sổ | `@rwl_vpn_bot` (`internal/tgbot/spool.go`), `fleet-probe.py`, `@xiaoqie2_bot` | gửi tin xong ghi một file `<chat>_<msg>.json` (`source`, `kind`, `sent_at`) — không quyết định gì, không gọi `deleteMessage` |
-| Dọn | `@xiaoqie001_bot` (`/opt/xiaoqie_bot`, unit `xiaoqie-janitor`) | quét mỗi 60 s, đến hạn thì xoá tin rồi xoá file |
+| Dọn | `@xiaoqie001_bot` (`/opt/xiaoqie_bot`, unit `xiaoqie-janitor`) | quét mỗi 60 s, đến hạn thì xoá tin (bằng token của bot ghi trong `source`) rồi xoá file |
 
 Chính sách TTL nằm hết ở lao công: mặc định 24 giờ, `kind="otp"` 15 phút (tin
 OTP của sms2tele không nên nằm lâu), `delete_at` tuyệt đối thì thắng TTL (dùng
@@ -472,11 +481,23 @@ mới (lao công đọc được cả định dạng cũ chỉ có `delete_at`).
 nên 24 *giờ* thành 24 *giây*, tức mọi tin sẽ bị xoá sau 24 giây. Đã sửa và
 thêm test chặn đúng trường hợp thiếu biến môi trường.
 
-**Đã kiểm chứng live:** `janitor.py --selftest` (tự gửi 1 tin rồi tự xoá) OK;
-`cfvpn-tgbot --simulate "/derp"` → tin 677 xuất hiện trong spool với
-`source=rwl_vpn_bot, kind=reply` và bot **không** gọi `deleteMessage` nữa;
-`--status` đọc đúng 11 tin đang chờ. Test: lao công 18, cf-vpn Go toàn bộ pass,
-pytest 10.
+**Đã kiểm chứng live, cả hai nhánh:**
+
+| Bước | Kết quả |
+|---|---|
+| `janitor.py --selftest` | tự gửi rồi tự xoá tin của chính nó: OK |
+| `cfvpn-tgbot --simulate "/derp"` | tin 680 vào spool `source=rwl_vpn_bot kind=reply`, bot **không** gọi `deleteMessage` |
+| lao công xoá tin 680 | `đã xoá rwl_vpn_bot/reply msg 680` (dùng token rwl_vpn_bot) |
+| chèn 1 SMS test → sms2tele gửi | tin 681 vào spool `source=xiaoqie2_bot kind=sms` |
+| lao công xoá tin 681 | `đã xoá xiaoqie2_bot/sms msg 681` (dùng token xiaoqie2_bot) |
+
+10 tin đang chờ trong hàng đợi cũ đã chuyển sang spool mới (lao công đọc được
+cả định dạng cũ chỉ có `delete_at`, và coi chúng là của `@rwl_vpn_bot` theo
+`DEFAULT_SOURCE`). Test: lao công 21, cf-vpn Go toàn bộ pass, pytest 10,
+sms2tele 139. Một lỗi nữa bắt được nhờ chạy thật: `tests/test_main.py` của
+sms2tele ghi vào spool **thật** của máy (dùng `spool_dir` mặc định) — bộ lọc
+`ALLOWED_CHAT_IDS` của lao công đã chặn đúng file lạ đó, và test đã được trỏ
+vào `tmp_path`.
 
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 

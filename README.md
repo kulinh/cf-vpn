@@ -130,13 +130,15 @@ cfvpnctl derp region remove --id 901
 
 Replies are short Telegram HTML (what changed, relay latencies, what to do
 next) rather than raw `cfvpnctl` output. Keeping the group tidy is **not** this
-bot's job: a separate janitor bot (`@xiaoqie001_bot`, `/opt/xiaoqie_bot`)
-deletes every bot message in the group a day later. Telegram never shows one
-bot's messages to another, so this bot notes what it sent — one JSON file per
-message in `/var/lib/xiaoqie-janitor/spool/`, the same directory
-`scripts/fleet-probe.py` writes its alerts to — and the janitor does the
-deleting. `TELEGRAM_SPOOL_DIR=` (empty) turns the hand-off off and leaves the
-messages in the group.
+bot's job: the janitor service (`@xiaoqie001_bot`, `/opt/xiaoqie_bot`) deletes
+every bot message in the group a day later. This bot only notes what it sent —
+one JSON file per message in `/var/lib/xiaoqie-janitor/spool/`, the same
+directory `scripts/fleet-probe.py` writes its alerts to — and the janitor does
+the deleting, using *this* bot's token (it reads `TELEGRAM_BOT_TOKEN` from
+`/etc/cfvpn/fleet-probe.env`), because Telegram lets a bot delete only the
+messages it sent itself and never shows one bot's messages to another.
+`TELEGRAM_SPOOL_DIR=` (empty) turns the hand-off off and leaves the messages in
+the group.
 
 It runs the same `cfvpnctl derp` code in-process, so snapshots, validation and
 the netcheck afterwards are identical; the reply carries that output. The

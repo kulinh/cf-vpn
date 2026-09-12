@@ -13,18 +13,22 @@ import (
 // bot (@xiaoqie001_bot, /opt/xiaoqie_bot) owns the policy and the
 // deleteMessage calls for every bot in the group.
 //
-// Why a hand-off rather than deleting our own messages: Telegram never
-// delivers one bot's messages to another bot, so the janitor cannot discover
-// what we posted; it can only delete what it is told about. All this bot does
-// is drop a note per message it sent:
+// Why a hand-off rather than deleting our own messages: the janitor owns the
+// schedule for every bot in the group, so the policy lives in one place. Two
+// Telegram limits shape it — a bot never sees another bot's messages (so the
+// janitor cannot discover what we posted), and a bot can only delete messages
+// it sent itself (so the janitor deletes ours with OUR token, which it reads
+// from /etc/cfvpn/fleet-probe.env). All this bot does is drop a note per
+// message it sent:
 //
 //	<SpoolDir>/<chat_id>_<message_id>.json
 //	{"chat_id":-100…,"message_id":123,"source":"rwl_vpn_bot","kind":"reply","sent_at":1789300800}
 //
 // One file per message means no locking between the writers (sms2tele writes
-// the same directory) and nothing is lost across restarts. The janitor decides
-// when the message goes (24 h by default) and removes the file afterwards.
-// SpoolDir empty disables the hand-off entirely.
+// the same directory) and nothing is lost across restarts. "source" tells the
+// janitor whose token to delete with; it decides when the message goes (24 h by
+// default) and removes the file afterwards. SpoolDir empty disables the
+// hand-off entirely.
 
 // DefaultSpoolDir is where the janitor bot reads from.
 const DefaultSpoolDir = "/var/lib/xiaoqie-janitor/spool"
