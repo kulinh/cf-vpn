@@ -476,14 +476,14 @@ func runUpgradeCore(ctx context.Context, in UpgradeInputs, deps InstallDeps, env
 				return fail(fmt.Errorf("generate reality params: %w", err))
 			}
 		}
-		xrayRendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		xrayRendered, err = templates.RenderXrayDirectReality(WithH3FromEnv(templates.XrayDirectRealityInputs{
 			Users:       users,
 			PrivateKey:  realityParams.PrivateKey,
 			ShortIDs:    []string{realityParams.ShortID},
 			Dest:        realityParams.Dest,
 			ServerNames: []string{realityParams.SNI},
 			DNSServers:  xrayDNSServersFromEnv(env),
-		})
+		}, env))
 		if err != nil {
 			return fail(fmt.Errorf("render xray reality config: %w", err))
 		}
@@ -637,14 +637,14 @@ func reRenderInPlace(ctx context.Context, in UpgradeInputs, deps InstallDeps, en
 			}
 			return UpgradeResult{OldHost: domain, NewHost: domain, PublicIP: env["PUBLIC_IP"], Skipped: true}, nil
 		}
-		xrayRendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		xrayRendered, err = templates.RenderXrayDirectReality(WithH3FromEnv(templates.XrayDirectRealityInputs{
 			Users:       users,
 			PrivateKey:  realityParams.PrivateKey,
 			ShortIDs:    []string{realityParams.ShortID},
 			Dest:        realityParams.Dest,
 			ServerNames: []string{realityParams.SNI},
 			DNSServers:  xrayDNSServersFromEnv(env),
-		})
+		}, env))
 		if err != nil {
 			return UpgradeResult{}, fmt.Errorf("render xray reality config: %w", err)
 		}
@@ -1227,14 +1227,18 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	users := []templates.XrayUser{{Name: in.User1Name, UUID: userUUID}}
 	var xrayRendered string
 	if in.Mode == "direct" {
-		xrayRendered, err = templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		// A fresh install has no H3 route yet (the operator enables it
+		// afterwards with `cfvpnctl xhttp-h3`), so there is no env to read
+		// here — but it still goes through the helper so this call site can
+		// never be the one that silently drops the inbound.
+		xrayRendered, err = templates.RenderXrayDirectReality(WithH3FromEnv(templates.XrayDirectRealityInputs{
 			Users:       users,
 			PrivateKey:  realityParams.PrivateKey,
 			ShortIDs:    []string{realityParams.ShortID},
 			Dest:        realityParams.Dest,
 			ServerNames: []string{realityParams.SNI},
 			DNSServers:  xrayDNSServersCSV(in.XrayDNSServers),
-		})
+		}, nil))
 		if err != nil {
 			return fmt.Errorf("render xray reality config: %w", err)
 		}

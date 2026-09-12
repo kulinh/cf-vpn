@@ -109,6 +109,22 @@ func BuildVLESSXHTTPDirectURI(name, uuid, host, path, mode string) string {
 	)
 }
 
+// BuildVLESSXHTTPH3URI builds the URI of the H3 (QUIC) XHTTP route on a
+// direct-mode node: real TLS on the node's own hostname, served over UDP by
+// quic-go, so the address MUST be the hostname the certificate was issued for.
+// Mirrors buildVLESSXHTTPH3URI() in panel/worker/src/lib/subscription.ts.
+//
+// alpn=h3 is load-bearing, not decoration: xray only binds the UDP port when
+// the TLS alpn list is exactly ["h3"], and a client that omits it dials TCP,
+// where nothing is listening on this route.
+func BuildVLESSXHTTPH3URI(name, uuid, host, path, mode string) string {
+	enc := EncodeURIComponent
+	return fmt.Sprintf(
+		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=%s&alpn=h3&sni=%s#%s-XHTTP-H3",
+		uuid, host, enc(host), encodeVLESSPath(path), enc(mode), enc(host), enc(name),
+	)
+}
+
 // BuildHy2URI builds the Hysteria2 client URI. Mirrors buildHy2URI() in
 // panel/worker/src/lib/subscription.ts.
 //

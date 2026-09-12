@@ -710,14 +710,14 @@ func renderXrayForMode(env map[string]string, users []commands.ExistingUser) (st
 		return out, nil
 	}
 	if commands.IsRealityMode(env) {
-		out, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+		out, err := templates.RenderXrayDirectReality(commands.WithH3FromEnv(templates.XrayDirectRealityInputs{
 			Users:       tplUsers,
 			PrivateKey:  env[state.KeyRealityPriv],
 			ShortIDs:    []string{env[state.KeyRealityShortID]},
 			Dest:        env[state.KeyRealityDest],
 			ServerNames: []string{env[state.KeyRealitySNI]},
 			DNSServers:  commands.XrayDNSServersFromEnv(env),
-		})
+		}, env))
 		if err != nil {
 			return "", fmt.Errorf("render reality xray: %w", err)
 		}

@@ -183,3 +183,16 @@ func TestGoldenXHTTPDirectURIMatchesWorker(t *testing.T) {
 		t.Fatalf("\n got %s\nwant %s", got, want)
 	}
 }
+
+// The H3 route differs from XHTTP-Direct in exactly one parameter: alpn=h3.
+// That single element is what makes xray serve the inbound over QUIC/UDP
+// instead of TCP (an alpn list with more than one entry falls back to TCP),
+// so the client URI must carry it or the client dials a port nothing listens
+// on.
+func TestGoldenXHTTPH3URIMatchesWorker(t *testing.T) {
+	got := BuildVLESSXHTTPH3URI("kulinh@JPY-03", "2f8a1c3e-1111-4222-8333-abcdefabcdef", "quic-b55170f3.dongnat247.com", "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10", "stream-one")
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#kulinh%40JPY-03-XHTTP-H3"
+	if got != want {
+		t.Fatalf("xhttp-h3 URI drifted from Worker\n got: %s\nwant: %s", got, want)
+	}
+}

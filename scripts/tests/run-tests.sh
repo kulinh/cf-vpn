@@ -270,6 +270,8 @@ HY2_ENABLED=0
 XHTTP_ENABLED=1
 XHTTP_DIRECT_HOST=static-df60bd79.duylinh.org
 XHTTP_DIRECT_PATH=/api/v1/sync
+XHTTP_H3_HOST=quic-b55170f3.dongnat247.com
+XHTTP_H3_PATH=/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10
 CLOUDFLARED_PROTOCOL=http2
 REALITY_DEST=www.sony.jp:443
 REALITY_SNI=www.sony.jp
@@ -282,6 +284,10 @@ is "$(grep -c '^XHTTP_ENABLED=1$' "$ENVF")" "1"          "forced rewrite keeps X
 is "$(grep -c '^XHTTP_DIRECT_HOST=static-df60bd79.duylinh.org$' "$ENVF")" "1" \
    "forced rewrite keeps XHTTP_DIRECT_HOST"
 is "$(grep -c '^XHTTP_DIRECT_PATH=/api/v1/sync$' "$ENVF")" "1" "forced rewrite keeps XHTTP_DIRECT_PATH"
+is "$(grep -c '^XHTTP_H3_HOST=quic-b55170f3.dongnat247.com$' "$ENVF")" "1" \
+   "forced rewrite keeps XHTTP_H3_HOST (losing it silently drops the H3 route)"
+is "$(grep -c '^XHTTP_H3_PATH=/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10$' "$ENVF")" "1" \
+   "forced rewrite keeps XHTTP_H3_PATH"
 is "$(grep -c '^CLOUDFLARED_PROTOCOL=http2$' "$ENVF")" "1"    "forced rewrite keeps CLOUDFLARED_PROTOCOL"
 is "$(grep -c '^REALITY_DEST=www.sony.jp:443$' "$ENVF")" "1"  "forced rewrite keeps the per-node REALITY_DEST"
 is "$(grep -c '^REALITY_SNI=www.sony.jp$' "$ENVF")" "1"       "forced rewrite keeps REALITY_SNI"

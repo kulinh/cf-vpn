@@ -24,3 +24,18 @@ const XHTTPDirectPort = 10003
 // XHTTPDirectMode is the client mode for the direct route: no CDN in the way,
 // so a single bidirectional stream is fine.
 const XHTTPDirectMode = "stream-one"
+
+// XHTTPH3Port is the UDP port of the H3 (QUIC) XHTTP inbound on direct-mode
+// nodes. It is 443 on purpose and does NOT collide with REALITY: REALITY owns
+// TCP 443, quic-go owns UDP 443.
+const XHTTPH3Port = 443
+
+// XHTTPH3Mode is the client mode for the H3 route. Nothing sits in front of
+// the node, so a single bidirectional stream is fine; stream-one is one of the
+// two modes XHTTP supports over H3.
+const XHTTPH3Mode = "stream-one"
+
+// XHTTPH3ALPN is the TLS alpn list of the H3 inbound. Exactly one element is
+// load-bearing: xray listens on UDP with quic-go only when alpn is precisely
+// ["h3"]; any additional entry drops it back to a TCP listener.
+var XHTTPH3ALPN = []string{"h3"}
