@@ -264,6 +264,10 @@ log "writing /etc/cfvpn/cfvpn.env"
 } | bash "$ENV_FILE_HELPER" write
 
 # ----- 6. firewall hygiene ----------------------------------------------------
+# Oracle Cloud images block everything but :22 inside the instance as well as
+# in the VCN security list; drop that in-image blanket rule (see
+# cfvpn_oci_firewall_fix in lib/cfvpn-common.sh). No-op on other providers.
+cfvpn_oci_firewall_fix
 if command -v ufw >/dev/null 2>&1; then
   UFW_STATUS="$(ufw status 2>/dev/null || true)"
   if grep -q 'Status: active' <<<"$UFW_STATUS"; then

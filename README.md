@@ -59,6 +59,33 @@ sudo -E \
 
 `AGENT_SHARED_SECRET` is generated automatically when not exported, written to `/etc/cfvpn/cfvpn.env` and mirrored into D1 (`nodes.agent_secret`) by the installer itself — nothing to copy by hand.
 
+### ARM (Oracle Cloud Ampere A1) and other OCI notes
+
+The installer is architecture-neutral: `cfvpnctl`/`cfvpn-agent` are built on the
+node, Xray and Hysteria come from their official install scripts (they detect
+the CPU), cloudflared from Cloudflare's apt repo and lego via `go install`. The
+Go fallback downloads in `internal/binary` pick `linux-amd64` or `linux-arm64`
+from the running CPU. `GOOS=linux GOARCH=arm64 go build ./...` is part of the
+checks. Only `scripts/install-node-CN.sh` (offline staging for nodes inside
+China) is still x86_64-only and says so.
+
+On Oracle Cloud pick **Ubuntu 24.04 (Minimal)** — Oracle Linux and AlmaLinux
+have no `apt` and the installer refuses them — then:
+
+1. **VCN security list** (subnet → Security Lists → Default): add ingress for
+   `443/tcp`, `443/udp` and the Hysteria2 UDP port (random, printed by the
+   installer and stored as `HY2_PORT` in `cfvpn.env`; add it after install). For
+   a DERP relay also `8443/tcp` and `3478/udp`.
+2. **In-instance iptables**: OCI images end `/etc/iptables/rules.v4` with a
+   blanket `REJECT` that leaves only `:22` open even after step 1. The installer
+   removes that line (backup kept next to the file, `netfilter-persistent
+   reload`), so the VCN list is the single firewall. Set
+   `CFVPN_KEEP_OCI_IPTABLES=1` to keep the image rules and open ports yourself.
+3. Give the instance a **reserved public IP** (the default ephemeral one changes
+   when the VM is recreated, and subscriptions dial Reality/HY2 by IP).
+4. Then the usual `sudo -E CF_API_TOKEN=… CF_ACCOUNT_ID=… NODE_ID=… bash
+   scripts/install-node.sh`.
+
 ## Upgrading an existing VPS
 
 ```bash

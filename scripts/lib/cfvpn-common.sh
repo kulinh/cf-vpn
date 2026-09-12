@@ -181,3 +181,50 @@ cfvpn_download_verified() {
   fi
   cfvpn_verify_sha256 "$out" "$expected" "$name"
 }
+
+# cfvpn_strip_oci_reject <rules-file>
+# Oracle Cloud's stock Ubuntu/Oracle Linux images ship an in-instance iptables
+# ruleset (/etc/iptables/rules.v4, restored by netfilter-persistent at boot)
+# that ends every chain with "-j REJECT --reject-with icmp-host-prohibited", so
+# only :22 is reachable even after the VCN security list has been opened — the
+# classic "opened the security list, 443 still dead" OCI trap. The node's
+# ports (443, a random HY2 UDP port chosen later by cfvpnctl install) are
+# protected by the VCN security list, which is the layer the operator already
+# manages, so the redundant in-image REJECT lines are removed. Everything else
+# in the file (SSH accept, established, loopback) is kept. Prints the number of
+# lines removed; a file without the OCI signature is left untouched (prints 0).
+cfvpn_strip_oci_reject() {
+  local f="$1" n
+  [ -f "$f" ] || { printf '0\n'; return 0; }
+  n="$(grep -cE -- '-j REJECT --reject-with icmp6?-(host|adm)-prohibited' "$f" || true)"
+  if [ "${n:-0}" -eq 0 ]; then
+    printf '0\n'
+    return 0
+  fi
+  cp -p -- "$f" "$f.cfvpn-orig.$(date -u +%Y%m%dT%H%M%SZ)"
+  sed -i -E '/-j REJECT --reject-with icmp6?-(host|adm)-prohibited/d' "$f"
+  printf '%s\n' "$n"
+}
+
+# cfvpn_oci_firewall_fix — apply cfvpn_strip_oci_reject to the live rulesets and
+# reload them. Skipped when CFVPN_KEEP_OCI_IPTABLES=1.
+cfvpn_oci_firewall_fix() {
+  if [ "${CFVPN_KEEP_OCI_IPTABLES:-0}" = "1" ]; then
+    log "CFVPN_KEEP_OCI_IPTABLES=1 — leaving the image's iptables rules alone"
+    return 0
+  fi
+  local f removed total=0
+  for f in /etc/iptables/rules.v4 /etc/iptables/rules.v6; do
+    removed="$(cfvpn_strip_oci_reject "$f")"
+    total=$((total + removed))
+    [ "$removed" -gt 0 ] && log "removed $removed blanket REJECT rule(s) from $f (Oracle Cloud image default; ports stay guarded by the VCN security list)"
+  done
+  if [ "$total" -gt 0 ]; then
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+      netfilter-persistent reload >/dev/null 2>&1 || warn "netfilter-persistent reload failed; rules apply at next boot"
+    else
+      iptables-restore < /etc/iptables/rules.v4 2>/dev/null || warn "iptables-restore failed; rules apply at next boot"
+    fi
+    log "in-instance firewall now defers to the VCN security list — open 443/tcp, 443/udp and the HY2 UDP port there"
+  fi
+}

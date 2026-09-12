@@ -356,6 +356,33 @@ NODE_UUID=$(mk nodeuuid 'JPY-01\tkulinh\tuuid-WRONG\tpassword-aaaa\nSIN-01\tkuli
 OUT=$(drift_compare "$D1_OK" "$NODE_UUID")
 contains "$OUT" "vless_uuid" "vless uuid drift is reported"
 
+
+# ----- cfvpn_strip_oci_reject -------------------------------------------------
+oci_rules="$(mktemp)"
+cat >"$oci_rules" <<'OCI'
+*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -m state --state RELATED,ESTABLISHED -j ACCEPT
+-A INPUT -p icmp -j ACCEPT
+-A INPUT -i lo -j ACCEPT
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
+-A INPUT -j REJECT --reject-with icmp-host-prohibited
+-A FORWARD -j REJECT --reject-with icmp-host-prohibited
+COMMIT
+OCI
+is "$(cfvpn_strip_oci_reject "$oci_rules")" "2" "oci: both blanket REJECT rules counted"
+is "$(grep -c 'REJECT' "$oci_rules")" "0" "oci: REJECT lines removed"
+is "$(grep -c -- '--dport 22 -j ACCEPT' "$oci_rules")" "1" "oci: SSH accept kept"
+is "$(grep -c '^COMMIT' "$oci_rules")" "1" "oci: COMMIT kept"
+is "$(ls "$oci_rules".cfvpn-orig.* | wc -l)" "1" "oci: original backed up"
+is "$(cfvpn_strip_oci_reject "$oci_rules")" "0" "oci: second run is a no-op"
+plain_rules="$(mktemp)"
+printf '*filter\n-A INPUT -j DROP\nCOMMIT\n' >"$plain_rules"
+is "$(cfvpn_strip_oci_reject "$plain_rules")" "0" "oci: a non-OCI ruleset is left alone"
+is "$(cat "$plain_rules")" "$(printf '*filter\n-A INPUT -j DROP\nCOMMIT\n')" "oci: non-OCI file unchanged"
+is "$(cfvpn_strip_oci_reject /nonexistent/rules.v4)" "0" "oci: missing file is fine"
+rm -f "$oci_rules" "$oci_rules".cfvpn-orig.* "$plain_rules"
+
 # A user D1 promises but the node does not serve is just as broken.
 NODE_MISSING=$(mk nodemissing 'JPY-01\tkulinh\tuuid-a\tpassword-aaaa\n')
 OUT=$(drift_compare "$D1_OK" "$NODE_MISSING"); RC=$?

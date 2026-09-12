@@ -258,3 +258,48 @@ func TestEnsureLegoRefusesOnChecksumMismatch(t *testing.T) {
 		t.Fatalf("install ran despite the mismatch: %#v", fake.Calls)
 	}
 }
+
+// Ampere A1 (OCI free tier) and any other arm64 box must fetch the arm64
+// assets; the names are derived from the CPU arch, never hard-coded.
+func TestReleaseAssetsFollowTheCPUArch(t *testing.T) {
+	defer func(prev string) { goarch = prev }(goarch)
+
+	goarch = "arm64"
+	const body = "fake-arm64-cloudflared"
+	fake := &downloadFaker{files: map[string]string{
+		"cloudflared-linux-arm64": body,
+		"checksums.txt":           sha256Hex(body) + "  cloudflared-linux-arm64\n",
+	}}
+	if err := EnsureCloudflared(context.Background(), fake, false); err != nil {
+		t.Fatal(err)
+	}
+	download := strings.Join(fake.Calls[0], " ")
+	if !strings.Contains(download, "cloudflared-linux-arm64") || strings.Contains(download, "amd64") {
+		t.Errorf("arm64 host must fetch the arm64 asset only: %s", download)
+	}
+	if install := strings.Join(fake.Calls[1], " "); !strings.Contains(install, "cloudflared-linux-arm64") {
+		t.Errorf("install call = %s", install)
+	}
+
+	const legoAsset = "lego_v5.4.1_linux_arm64.tar.gz"
+	legoFake := &downloadFaker{files: map[string]string{
+		legoAsset:       "fake-lego",
+		"asset_name":    legoAsset,
+		"checksums.txt": sha256Hex("fake-lego") + "  " + legoAsset + "\n",
+	}}
+	if err := EnsureLego(context.Background(), legoFake, false); err != nil {
+		t.Fatal(err)
+	}
+	if d := strings.Join(legoFake.Calls[0], " "); !strings.Contains(d, "linux_arm64.tar.gz") {
+		t.Errorf("lego download must look for the arm64 tarball: %s", d)
+	}
+
+	goarch = "riscv64"
+	err := EnsureCloudflared(context.Background(), &downloadFaker{}, false)
+	if err == nil || !strings.Contains(err.Error(), "riscv64") {
+		t.Fatalf("an arch without release assets must fail clearly, got %v", err)
+	}
+	if err := EnsureLego(context.Background(), &downloadFaker{}, false); err == nil {
+		t.Fatal("lego on an unsupported arch must fail before downloading")
+	}
+}
