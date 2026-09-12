@@ -28,6 +28,7 @@ import fcntl
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -244,6 +245,11 @@ def record_ttl(ttl_dir: str, chat_id: str, message_id: int, hours: float, now: f
     return path
 
 
+def probe_label(env: dict) -> str:
+    """Name of this vantage point in alerts: PROBE_LABEL, else the hostname."""
+    return (env.get("PROBE_LABEL") or "").strip() or socket.gethostname().lower()
+
+
 def send_telegram(token: str, chat_id: str, text: str) -> bool:
     if not token:
         print("telegram: TELEGRAM_BOT_TOKEN empty; alert not sent:\n" + text, file=sys.stderr)
@@ -321,8 +327,10 @@ def main(argv=None) -> int:
     os.replace(tmp, state_file)
 
     if alerts:
+        # Two probes run (home box + a datacenter node); the label tells which
+        # vantage point saw the failure: both = the node is down, one = its path.
         send_telegram(env.get("TELEGRAM_BOT_TOKEN", ""), env.get("TELEGRAM_CHAT_ID", "-1003806233980"),
-                      "cfvpn fleet-probe @vnm-01\n" + "\n".join(alerts))
+                      f"cfvpn fleet-probe @{probe_label(env)}\n" + "\n".join(alerts))
 
     if args.once:
         for name, ms in results.items():

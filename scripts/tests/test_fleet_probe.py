@@ -102,3 +102,10 @@ def test_configure_ttl_reads_env(monkeypatch):
     fp.configure_ttl({"TELEGRAM_TTL_DIR": "/tmp/x", "TELEGRAM_MESSAGE_TTL_HOURS": ""})
     assert fp.TTL["dir"] == "/tmp/x" and fp.TTL["hours"] == 0.5
     fp.TTL.update({"dir": "/var/lib/cfvpn/tg-ttl", "hours": 24.0})
+
+
+def test_probe_label_prefers_env_then_hostname(monkeypatch):
+    assert fp.probe_label({"PROBE_LABEL": " JPY-03 "}) == "JPY-03"
+    monkeypatch.setattr(fp.socket, "gethostname", lambda: "VNM-01")
+    assert fp.probe_label({}) == "vnm-01"
+    assert fp.probe_label({"PROBE_LABEL": ""}) == "vnm-01"
