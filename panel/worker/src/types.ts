@@ -81,6 +81,9 @@ export interface AgentStatusResponse {
   xhttp_enabled?: boolean;
   xhttp_direct_host?: string;
   xhttp_direct_path?: string;
+  // Direct-mode only; omitted when the node has no H3 route.
+  xhttp_h3_host?: string;
+  xhttp_h3_path?: string;
 }
 
 export interface AgentHealthcheckResponse {
@@ -116,6 +119,8 @@ export interface AgentSyncResponse {
   xhttp_enabled?: boolean;
   xhttp_direct_host?: string;
   xhttp_direct_path?: string;
+  xhttp_h3_host?: string;
+  xhttp_h3_path?: string;
 }
 
 export interface NodeRow {
@@ -141,6 +146,8 @@ export interface NodeRow {
   xhttp_enabled: number;
   xhttp_direct_host: string | null;
   xhttp_direct_path: string | null;
+  xhttp_h3_host: string | null;
+  xhttp_h3_path: string | null;
   agent_secret: string | null;
   tunnel_uuid: string | null;
 }

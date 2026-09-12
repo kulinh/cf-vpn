@@ -273,14 +273,14 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		restoreHy2Cert()
 		return RotateDirectResult{}, err
 	}
-	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+	rendered, err := templates.RenderXrayDirectReality(WithH3FromEnv(templates.XrayDirectRealityInputs{
 		Users:       users,
 		PrivateKey:  realityParams.PrivateKey,
 		ShortIDs:    []string{realityParams.ShortID},
 		Dest:        realityParams.Dest,
 		ServerNames: []string{realityParams.SNI},
 		DNSServers:  xrayDNSServersFromEnv(env),
-	})
+	}, env))
 	if err != nil {
 		restoreHy2Cert()
 		return RotateDirectResult{}, fmt.Errorf("render xray reality config: %w", err)

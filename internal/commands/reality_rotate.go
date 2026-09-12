@@ -78,14 +78,14 @@ func RunRotateReality(ctx context.Context, in RotateRealityInputs, runner system
 	if err != nil {
 		return err
 	}
-	rendered, err := templates.RenderXrayDirectReality(templates.XrayDirectRealityInputs{
+	rendered, err := templates.RenderXrayDirectReality(WithH3FromEnv(templates.XrayDirectRealityInputs{
 		Users:       users,
 		PrivateKey:  params.PrivateKey,
 		ShortIDs:    []string{params.ShortID},
 		Dest:        params.Dest,
 		ServerNames: []string{params.SNI},
 		DNSServers:  xrayDNSServersFromEnv(env),
-	})
+	}, env))
 	if err != nil {
 		return fmt.Errorf("render xray reality config: %w", err)
 	}

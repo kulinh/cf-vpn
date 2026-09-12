@@ -33,6 +33,14 @@ const (
 	KeyXHTTPDirectHost = "XHTTP_DIRECT_HOST"
 	KeyXHTTPDirectPath = "XHTTP_DIRECT_PATH"
 
+	// XHTTP-over-H3 route (direct-mode nodes): a second xray inbound on UDP
+	// templates.XHTTPH3Port serving XHTTP_H3_PATH under real TLS for
+	// XHTTP_H3_HOST. Both empty = no H3 route. The certificate is the HY2 one
+	// (same host), which xray hot-reloads from disk, so nothing extra has to
+	// run on renewal.
+	KeyXHTTPH3Host = "XHTTP_H3_HOST"
+	KeyXHTTPH3Path = "XHTTP_H3_PATH"
+
 	// Hysteria2 on/off. Absent = on. "0"/"false"/"no"/"off" = the node runs no
 	// HY2 (unit disabled, no HY2 line in subscriptions, no HY2 cert renewal).
 	KeyHy2Enabled = "HY2_ENABLED"

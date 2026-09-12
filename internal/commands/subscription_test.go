@@ -311,3 +311,60 @@ func TestRegenerateSubscriptionsWritesBothLines(t *testing.T) {
 		t.Fatalf("unexpected subscription payload:\n%s", decoded)
 	}
 }
+
+// A direct node that has opted into the H3 route serves it alongside REALITY,
+// so the user's subscription must carry both lines. The H3 line dials the
+// certificate's hostname, not PUBLIC_IP: unlike REALITY, this route presents a
+// real certificate and the SNI has to match it.
+func TestBuildUserURIsDirectEmitsH3WhenConfigured(t *testing.T) {
+	env := directEnv()
+	env[state.KeyXHTTPH3Host] = "quic-b55170f3.dongnat247.com"
+	env[state.KeyXHTTPH3Path] = "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10"
+
+	var warn bytes.Buffer
+	got := buildUserURIs("alice", testUUID, "cdn-a1b2.rwl.one", "Zm9vYmFy_-abc", env, &warn)
+
+	wantH3 := "vless://" + testUUID + "@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#alice%40SG1-XHTTP-H3"
+	want := []string{wantRealityURI, wantH3, wantHy2URI}
+	if len(got) != len(want) {
+		t.Fatalf("got %d lines, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("line %d:\n got: %s\nwant: %s", i, got[i], want[i])
+		}
+	}
+}
+
+// Half-configured means no line at all, not a broken one. Emitting a URI with
+// an empty path would hand the client a route xray answers with 404.
+func TestBuildUserURIsDirectSkipsH3WhenHalfConfigured(t *testing.T) {
+	env := directEnv()
+	env[state.KeyXHTTPH3Host] = "quic-b55170f3.dongnat247.com"
+
+	var warn bytes.Buffer
+	got := buildUserURIs("alice", testUUID, "cdn-a1b2.rwl.one", "Zm9vYmFy_-abc", env, &warn)
+	for _, line := range got {
+		if strings.Contains(line, "XHTTP-H3") {
+			t.Fatalf("emitted an H3 line from a half-configured node: %s", line)
+		}
+	}
+}
+
+// The H3 keys only describe a direct-mode inbound. A cloudflare-mode node that
+// somehow carries them must not advertise a route it does not serve.
+func TestBuildUserURIsCloudflareIgnoresH3Keys(t *testing.T) {
+	env := map[string]string{
+		state.KeyMode:        "cloudflare",
+		state.KeyDomain:      "cdn-a1b2.rwl.one",
+		state.KeyNodeID:      "SG1",
+		state.KeyXHTTPH3Host: "quic-b55170f3.dongnat247.com",
+		state.KeyXHTTPH3Path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10",
+	}
+	var warn bytes.Buffer
+	for _, line := range buildUserURIs("alice", testUUID, "cdn-a1b2.rwl.one", "", env, &warn) {
+		if strings.Contains(line, "XHTTP-H3") {
+			t.Fatalf("cloudflare-mode node advertised an H3 route: %s", line)
+		}
+	}
+}

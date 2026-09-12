@@ -66,8 +66,10 @@ drift_compare() {
 #
 # Both files are TSV, one row per node, holding the RAW values so the
 # default-on/default-off rules live in one place:
-#   d1:   <node_id>\t<hy2_host>\t<xhttp_enabled>\t<xhttp_direct_host>   (NULL -> "")
-#   node: <node_id>\t<HY2_ENABLED>\t<XHTTP_ENABLED>\t<XHTTP_DIRECT_HOST> (absent -> "")
+#   d1:   <node_id>\t<hy2_host>\t<xhttp_enabled>\t<xhttp_direct_host>\t<xhttp_h3_host>
+#   node: <node_id>\t<HY2_ENABLED>\t<XHTTP_ENABLED>\t<XHTTP_DIRECT_HOST>\t<XHTTP_H3_HOST>
+# (NULL/absent -> ""). Rows written before the H3 column existed have only four
+# fields; an absent fifth reads as "no route" on both sides, so it is not drift.
 #
 # Prints "<node>\t-\t<field>\td1=<x>\tnode=<y>" per mismatch (the "-" holds the
 # user column of drift_compare's format, since these flags are per node) and
@@ -94,7 +96,7 @@ drift_transport_compare() {
     function report(node, field, d1v, nodev) {
       if (d1v != nodev) { print node "\t-\t" field "\td1=" d1v "\tnode=" nodev; bad = 1 }
     }
-    NR == FNR { d1[$1] = $2 "\t" $3 "\t" $4; next }
+    NR == FNR { d1[$1] = $2 "\t" $3 "\t" $4 "\t" $5; next }
     {
       node = $1
       seen[node] = 1
@@ -103,6 +105,7 @@ drift_transport_compare() {
       report(node, "hy2_enabled",       hy2_d1(want[1]), hy2_node($2))
       report(node, "xhttp_enabled",     xh_d1(want[2]),  xh_node($3))
       report(node, "xhttp_direct_host", host(want[3]),   host($4))
+      report(node, "xhttp_h3_host",     host(want[4]),   host($5))
     }
     END {
       for (node in d1) if (!(node in seen)) { print node "\t-\tnode_row\td1=present\tnode=<absent>"; bad = 1 }

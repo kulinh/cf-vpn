@@ -50,6 +50,8 @@ const PERSIST_COLUMNS = [
   "xhttp_enabled",
   "xhttp_direct_host",
   "xhttp_direct_path",
+  "xhttp_h3_host",
+  "xhttp_h3_path",
   "tunnel_uuid",
   "id"
 ] as const;
@@ -189,6 +191,8 @@ describe("nodeRotate", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -257,6 +261,8 @@ describe("nodeHealthcheck", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -327,6 +333,8 @@ describe("deleteNode", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -389,6 +397,8 @@ describe("deleteNode", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -433,6 +443,8 @@ describe("deleteNode", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -480,6 +492,8 @@ describe("deleteNode", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: "persisted-tunnel-xyz"
       },
@@ -524,6 +538,8 @@ describe("deleteNode", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -565,6 +581,8 @@ describe("deleteNode", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -619,6 +637,8 @@ describe("nodeSyncCore", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -939,6 +959,8 @@ describe("nodeRotate persistence split (M-W6)", () => {
     xhttp_enabled: 0,
     xhttp_direct_host: null,
     xhttp_direct_path: null,
+    xhttp_h3_host: null,
+    xhttp_h3_path: null,
     agent_secret: null,
     tunnel_uuid: null
   };
@@ -1073,6 +1095,8 @@ describe("patchNode status whitelist", () => {
     xhttp_enabled: 0,
     xhttp_direct_host: null,
     xhttp_direct_path: null,
+    xhttp_h3_host: null,
+    xhttp_h3_path: null,
     agent_secret: null,
     tunnel_uuid: null
   };
@@ -1128,6 +1152,8 @@ describe("deleteNode row removal", () => {
         xhttp_enabled: 0,
         xhttp_direct_host: null,
         xhttp_direct_path: null,
+        xhttp_h3_host: null,
+        xhttp_h3_path: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -1171,6 +1197,8 @@ const reviewRow: NodeRow = {
   xhttp_enabled: 0,
   xhttp_direct_host: null,
   xhttp_direct_path: null,
+  xhttp_h3_host: null,
+  xhttp_h3_path: null,
   agent_secret: null,
   tunnel_uuid: null
 };
@@ -1430,5 +1458,128 @@ describe("patchNode host alias", () => {
     const res = await patch(env, { host: "   " });
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe("invalid_node");
+  });
+});
+
+// The H3 route lives on a DIRECT node, so it rides the same gate as the other
+// direct-mode runtime fields (reality_*), not the cloudflare gate that
+// xhttp_path / xhttp_direct_* use.
+describe("nodeStatus XHTTP-H3 runtime", () => {
+  // Reads a persisted column by name, deriving the bind index from the SQL's
+  // own SET clause rather than a positional constant, so this block cannot be
+  // silently invalidated by a column added elsewhere in the statement.
+  function persistedByName(writes: RunWrite[], column: string): unknown {
+    const w = writes.find((x) => /UPDATE nodes SET status='active'/.test(x.sql));
+    if (!w) throw new Error("no runtime UPDATE was issued");
+    const set = w.sql.slice(w.sql.indexOf("SET ") + 4, w.sql.indexOf(" WHERE "));
+    const cols = set.split(",").map((c) => c.trim().split("=")[0].trim());
+    // status='active' is a literal, not a bind, so it consumes no argument.
+    const binds = cols.filter((c) => c !== "status");
+    const i = binds.indexOf(column);
+    if (i < 0) throw new Error(`the runtime UPDATE does not persist ${column}: ${set}`);
+    return w.args[i];
+  }
+
+  const directRow: NodeRow = {
+    id: "JPY-03",
+    label: "JPY 03",
+    admin_host: "jpy-03.rwl247.dev",
+    vpn_host: "edge-64b43148.dongnat247.com",
+    zone: "dongnat247.com",
+    status: "active",
+    last_seen_at: null,
+    latency_ms: null,
+    created_at: 1,
+    public_ip: "129.225.185.197",
+    mode: "direct",
+    hy2_host: "quic-b55170f3.dongnat247.com",
+    hy2_port: 32443,
+    hy2_obfs_pw: "obfs",
+    reality_pubkey: "pk",
+    reality_sid: "2441ae2d78da98bb",
+    reality_sni: "www.sony.jp",
+    reality_dest: "www.sony.jp:443",
+    xhttp_path: null,
+    xhttp_enabled: 0,
+    xhttp_direct_host: null,
+    xhttp_direct_path: null,
+    xhttp_h3_host: null,
+    xhttp_h3_path: null,
+    agent_secret: null,
+    tunnel_uuid: null
+  };
+
+  it("persists the H3 pair a direct node reports", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      xray: "active", cloudflared: "active", hysteria: "active",
+      vpn_host: "edge-64b43148.dongnat247.com", mode: "direct",
+      tunnel_uuid: "", last_rotate_at: 0,
+      xhttp_h3_host: "quic-b55170f3.dongnat247.com",
+      xhttp_h3_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10"
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: directRow, zones: [], writes });
+
+    await nodeStatus(env, "JPY-03", "operator@example.com");
+
+    expect(persistedByName(writes, "xhttp_h3_host")).toBe("quic-b55170f3.dongnat247.com");
+    expect(persistedByName(writes, "xhttp_h3_path")).toBe("/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10");
+  });
+
+  // `cfvpnctl xhttp-h3 disable` writes empty strings, which Go's omitempty
+  // then drops from the payload entirely — so "absent" must keep the row and
+  // only an explicit "" may clear it, exactly like xhttp_direct_*.
+  it("clears the pair when the node reports empty strings", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      xray: "active", cloudflared: "active", hysteria: "active",
+      vpn_host: "edge-64b43148.dongnat247.com", mode: "direct",
+      tunnel_uuid: "", last_rotate_at: 0,
+      xhttp_h3_host: "", xhttp_h3_path: ""
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({
+      node: { ...directRow, xhttp_h3_host: "quic-b55170f3.dongnat247.com", xhttp_h3_path: "/old" },
+      zones: [], writes
+    });
+
+    await nodeStatus(env, "JPY-03", "operator@example.com");
+
+    expect(persistedByName(writes, "xhttp_h3_host")).toBeNull();
+    expect(persistedByName(writes, "xhttp_h3_path")).toBeNull();
+  });
+
+  it("keeps the stored pair when the node does not report it at all", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      xray: "active", cloudflared: "active", hysteria: "active",
+      vpn_host: "edge-64b43148.dongnat247.com", mode: "direct",
+      tunnel_uuid: "", last_rotate_at: 0
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({
+      node: { ...directRow, xhttp_h3_host: "quic-b55170f3.dongnat247.com", xhttp_h3_path: "/keep" },
+      zones: [], writes
+    });
+
+    await nodeStatus(env, "JPY-03", "operator@example.com");
+
+    expect(persistedByName(writes, "xhttp_h3_host")).toBe("quic-b55170f3.dongnat247.com");
+    expect(persistedByName(writes, "xhttp_h3_path")).toBe("/keep");
+  });
+
+  // A cloudflare-mode node has no H3 inbound; anything it claims about one is
+  // not applied, the same way its reality_* claims are not.
+  it("ignores an H3 pair claimed by a cloudflare-mode node", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      xray: "active", cloudflared: "active", hysteria: "inactive",
+      vpn_host: "edge.rwl247.dev", mode: "cloudflare",
+      tunnel_uuid: "", last_rotate_at: 0,
+      xhttp_h3_host: "evil.example.com", xhttp_h3_path: "/whatever"
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: { ...directRow, mode: "cloudflare" }, zones: [], writes });
+
+    await nodeStatus(env, "JPY-03", "operator@example.com");
+
+    expect(persistedByName(writes, "xhttp_h3_host")).toBeNull();
   });
 });

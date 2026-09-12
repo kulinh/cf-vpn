@@ -69,6 +69,14 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 			}
 			lines = append(lines, subscription.BuildVLESSRealityURI(tag, uuid, host, sni, pub, sid))
 		}
+		// The H3 route is independent of REALITY: it can be advertised even
+		// when the Reality params above are incomplete, because it describes a
+		// different inbound. Unlike REALITY it dials the hostname, not
+		// PUBLIC_IP — this route presents a real certificate and the SNI has
+		// to match it.
+		if h3h, h3p := strings.TrimSpace(env[state.KeyXHTTPH3Host]), strings.TrimSpace(env[state.KeyXHTTPH3Path]); h3h != "" && h3p != "" {
+			lines = append(lines, subscription.BuildVLESSXHTTPH3URI(tag, uuid, h3h, h3p, templates.XHTTPH3Mode))
+		}
 	case "cloudflare":
 		path := env[state.KeyXHTTPPath]
 		if path == "" {

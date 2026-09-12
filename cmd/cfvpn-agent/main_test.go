@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -112,5 +113,50 @@ func TestParsePortOrWarn(t *testing.T) {
 		if got := parsePortOrWarn("HY2_PORT", in); got != want {
 			t.Errorf("parsePortOrWarn(%q) = %d, want %d", in, got, want)
 		}
+	}
+}
+
+// The panel learns about a node's H3 route from /status and nowhere else
+// (mergeH3Runtime in panel/worker/src/routes/nodes.ts). If the agent stops
+// reporting the pair, the panel keeps a stale row instead of noticing the
+// route was turned off — and `omitempty` here is what lets "disabled" arrive
+// as an absent key, so the encoding matters as much as the value.
+func TestStatusResponseCarriesTheH3Route(t *testing.T) {
+	resp := statusResponse{
+		XHTTPH3Host: "quic-b55170f3.dongnat247.com",
+		XHTTPH3Path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10",
+	}
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["xhttp_h3_host"] != "quic-b55170f3.dongnat247.com" {
+		t.Errorf("xhttp_h3_host = %v", got["xhttp_h3_host"])
+	}
+	if got["xhttp_h3_path"] != "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10" {
+		t.Errorf("xhttp_h3_path = %v", got["xhttp_h3_path"])
+	}
+}
+
+// A node without the route must omit both keys, which the panel reads as
+// "not reported, keep the row" rather than "clear it".
+func TestStatusResponseOmitsTheH3RouteWhenUnset(t *testing.T) {
+	raw, err := json.Marshal(statusResponse{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got["xhttp_h3_host"]; ok {
+		t.Error("xhttp_h3_host must be omitted when unset")
+	}
+	if _, ok := got["xhttp_h3_path"]; ok {
+		t.Error("xhttp_h3_path must be omitted when unset")
 	}
 }

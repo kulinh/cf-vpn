@@ -21,9 +21,17 @@ export interface SubscriptionRow {
   // Direct XHTTP route (TLS front on the node's own hostname); both set = on.
   xhttp_direct_host?: string | null;
   xhttp_direct_path?: string | null;
+  // XHTTP-over-H3 route on a DIRECT node: xray serves it on UDP 443 under a
+  // real certificate, next to REALITY on TCP 443. Both set = on.
+  xhttp_h3_host?: string | null;
+  xhttp_h3_path?: string | null;
 }
 
 export const XHTTP_DIRECT_MODE = "stream-one";
+
+// Nothing sits in front of the node on this route, so a single bidirectional
+// stream is fine. Mirrors templates.XHTTPH3Mode in Go.
+export const XHTTP_H3_MODE = "stream-one";
 
 export const XHTTP_PATH = "/api/v2/stream";
 export const XHTTP_MODE = "packet-up";
@@ -63,12 +71,28 @@ export function hasXHTTPDirect(r: SubscriptionRow): boolean {
   return isCloudflareRow(r) && !!r.xhttp_direct_host && !!r.xhttp_direct_path;
 }
 
+// The H3 inbound only exists on direct-mode nodes. It is deliberately NOT
+// gated on isRealityRow: it is a separate inbound and stays serviceable even
+// if the row's Reality params are incomplete.
+export function hasXHTTPH3(r: SubscriptionRow): boolean {
+  return r.mode === "direct" && !!r.xhttp_h3_host && !!r.xhttp_h3_path;
+}
+
 // Mirrors BuildVLESSXHTTPDirectURI in internal/subscription: real TLS on the
 // node's own hostname, so the address is the hostname, never the IP.
 export function buildVLESSXHTTPDirectURI(name: string, uuid: string, host: string, path: string, mode: string): string {
   const enc = encodeURIComponent;
   const encPath = path.split("/").map(enc).join("%2F");
   return `vless://${uuid}@${host}:443?encryption=none&security=tls&type=xhttp&host=${enc(host)}&path=${encPath}&mode=${enc(mode)}&sni=${enc(host)}#${enc(name)}-XHTTP-Direct`;
+}
+
+// Mirrors BuildVLESSXHTTPH3URI in internal/subscription. The address is the
+// hostname the certificate was issued for, never the public IP: unlike
+// REALITY this route presents a real certificate and the SNI must match it.
+export function buildVLESSXHTTPH3URI(name: string, uuid: string, host: string, path: string, mode: string): string {
+  const enc = encodeURIComponent;
+  const encPath = path.split("/").map(enc).join("%2F");
+  return `vless://${uuid}@${host}:443?encryption=none&security=tls&type=xhttp&host=${enc(host)}&path=${encPath}&mode=${enc(mode)}&alpn=h3&sni=${enc(host)}#${enc(name)}-XHTTP-H3`;
 }
 
 export function buildHy2URI(tag: string, username: string, password: string, address: string, sniHost: string, port: number, obfsPw: string): string {
@@ -133,6 +157,9 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
     }
     if (hasXHTTPDirect(r)) {
       lines.push(buildVLESSXHTTPDirectURI(tag, r.vless_uuid, r.xhttp_direct_host!, r.xhttp_direct_path!, XHTTP_DIRECT_MODE));
+    }
+    if (hasXHTTPH3(r)) {
+      lines.push(buildVLESSXHTTPH3URI(tag, r.vless_uuid, r.xhttp_h3_host!, r.xhttp_h3_path!, XHTTP_H3_MODE));
     }
     if (hasHy2(r)) {
       lines.push(buildHy2URI(tag, username, r.hy2_pw, hy2Address(r), r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!));

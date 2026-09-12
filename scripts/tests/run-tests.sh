@@ -270,6 +270,8 @@ HY2_ENABLED=0
 XHTTP_ENABLED=1
 XHTTP_DIRECT_HOST=static-df60bd79.duylinh.org
 XHTTP_DIRECT_PATH=/api/v1/sync
+XHTTP_H3_HOST=quic-b55170f3.dongnat247.com
+XHTTP_H3_PATH=/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10
 CLOUDFLARED_PROTOCOL=http2
 REALITY_DEST=www.sony.jp:443
 REALITY_SNI=www.sony.jp
@@ -282,6 +284,10 @@ is "$(grep -c '^XHTTP_ENABLED=1$' "$ENVF")" "1"          "forced rewrite keeps X
 is "$(grep -c '^XHTTP_DIRECT_HOST=static-df60bd79.duylinh.org$' "$ENVF")" "1" \
    "forced rewrite keeps XHTTP_DIRECT_HOST"
 is "$(grep -c '^XHTTP_DIRECT_PATH=/api/v1/sync$' "$ENVF")" "1" "forced rewrite keeps XHTTP_DIRECT_PATH"
+is "$(grep -c '^XHTTP_H3_HOST=quic-b55170f3.dongnat247.com$' "$ENVF")" "1" \
+   "forced rewrite keeps XHTTP_H3_HOST (losing it silently drops the H3 route)"
+is "$(grep -c '^XHTTP_H3_PATH=/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10$' "$ENVF")" "1" \
+   "forced rewrite keeps XHTTP_H3_PATH"
 is "$(grep -c '^CLOUDFLARED_PROTOCOL=http2$' "$ENVF")" "1"    "forced rewrite keeps CLOUDFLARED_PROTOCOL"
 is "$(grep -c '^REALITY_DEST=www.sony.jp:443$' "$ENVF")" "1"  "forced rewrite keeps the per-node REALITY_DEST"
 is "$(grep -c '^REALITY_SNI=www.sony.jp$' "$ENVF")" "1"       "forced rewrite keeps REALITY_SNI"
@@ -706,6 +712,31 @@ TD1_NULL=$(mk td1null 'JPY-01\t\t0\t\n')
 TNODE_ON=$(mk tnodeon 'JPY-01\t1\t\t\n')
 contains "$(drift_transport_compare "$TD1_NULL" "$TNODE_ON")" \
    "JPY-01	-	hy2_enabled	d1=off	node=on" "hy2 NULL in D1 while the node runs it is drift too"
+
+# XHTTP-H3 (column 5): the node turns it on with `cfvpnctl xhttp-h3 enable`,
+# and until the agent's next /status the panel does not know, so the
+# subscription lacks a route the node is serving. The reverse — D1 still
+# advertising a route the node turned off — hands clients a dead endpoint.
+TD1_H3=$(mk td1h3 'JPY-03\thy.a\t0\t\tquic-b55.dongnat247.com\n')
+TNODE_H3_OFF=$(mk tnodeh3off 'JPY-03\t\t\t\t\n')
+OUT=$(drift_transport_compare "$TD1_H3" "$TNODE_H3_OFF"); RC=$?
+is "$RC" "1" "H3 set in D1 but not on the node exits 1"
+contains "$OUT" "JPY-03	-	xhttp_h3_host	d1=quic-b55.dongnat247.com	node=-" \
+   "H3 drift names the node and both sides"
+
+TNODE_H3_ON=$(mk tnodeh3on 'JPY-03\t\t\t\tquic-b55.dongnat247.com\n')
+TD1_NO_H3=$(mk td1noh3 'JPY-03\thy.a\t0\t\t\n')
+contains "$(drift_transport_compare "$TD1_NO_H3" "$TNODE_H3_ON")" \
+   "JPY-03	-	xhttp_h3_host	d1=-	node=quic-b55.dongnat247.com" \
+   "H3 running on the node while D1 does not know is drift too"
+
+is "$(drift_transport_compare "$TD1_H3" "$(mk tnodeh3same 'JPY-03\t\t\t\tquic-b55.dongnat247.com\n')" | grep -c xhttp_h3_host)" "0" \
+   "matching H3 on both sides is not drift"
+
+# Rows written before the H3 column existed have only four fields; an absent
+# fifth column must read as "no route", not as drift.
+is "$(drift_transport_compare "$(mk td1legacy 'JPY-01\thy.a\t0\t\n')" "$(mk tnodelegacy 'JPY-01\t\t\t\n')" | grep -c xhttp_h3_host)" "0" \
+   "legacy four-column rows do not report phantom H3 drift"
 
 # Every documented spelling of off/on must normalise like commands.Hy2Enabled
 # and commands.XHTTPEnabled, or a node flipped by hand reads as drifted.

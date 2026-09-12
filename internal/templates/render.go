@@ -29,6 +29,15 @@ type XrayDirectRealityInputs struct {
 	// means the international DoH default (dohServers) — CHN nodes pass domestic
 	// resolvers here instead.
 	DNSServers []string
+	// H3Host/H3Path/H3Cert/H3Key describe the optional XHTTP-over-H3 inbound
+	// that sits next to REALITY on a direct-mode node. All four empty (the
+	// fleet default) renders exactly the config it rendered before this
+	// inbound existed. H3Host is the hostname the certificate was issued for;
+	// it doubles as the TLS serverName and the XHTTP Host header.
+	H3Host string
+	H3Path string
+	H3Cert string
+	H3Key  string
 }
 
 type HysteriaUser struct{ Name, Password string }
@@ -345,6 +354,19 @@ func RenderXrayDirectReality(in XrayDirectRealityInputs) (string, error) {
 	if len(in.ShortIDs) == 0 {
 		return "", errors.New("at least one shortId is required")
 	}
+	// The H3 inbound is all-or-nothing. A half-filled set would render an
+	// inbound with an empty path or certificate path, xray would reject the
+	// config, and the caller's restart would take down a node that was fine a
+	// moment earlier.
+	h3Set := in.H3Host != "" || in.H3Path != "" || in.H3Cert != "" || in.H3Key != ""
+	if h3Set {
+		if in.H3Host == "" || in.H3Path == "" || in.H3Cert == "" || in.H3Key == "" {
+			return "", errors.New("h3 route needs host, path, cert and key together")
+		}
+		if !strings.HasPrefix(in.H3Path, "/") {
+			return "", errors.New("h3 path must start with /")
+		}
+	}
 
 	clients := make([]map[string]string, 0, len(in.Users))
 	for _, u := range in.Users {
@@ -355,37 +377,84 @@ func RenderXrayDirectReality(in XrayDirectRealityInputs) (string, error) {
 		})
 	}
 
-	cfg := map[string]any{
-		"log": map[string]string{"loglevel": "warning"},
-		"dns": dnsBlock(in.DNSServers),
-		"inbounds": []any{
-			map[string]any{
-				"tag":      "vless-reality",
-				"listen":   "0.0.0.0",
-				"port":     443,
-				"protocol": "vless",
-				"settings": map[string]any{
-					"clients":    clients,
-					"decryption": "none",
+	inbounds := []any{
+		map[string]any{
+			"tag":      "vless-reality",
+			"listen":   "0.0.0.0",
+			"port":     443,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]any{
+				"network":  "tcp",
+				"security": "reality",
+				"realitySettings": map[string]any{
+					"show":        false,
+					"dest":        in.Dest,
+					"xver":        0,
+					"serverNames": in.ServerNames,
+					"privateKey":  in.PrivateKey,
+					"shortIds":    in.ShortIDs,
 				},
-				"streamSettings": map[string]any{
-					"network":  "tcp",
-					"security": "reality",
-					"realitySettings": map[string]any{
-						"show":        false,
-						"dest":        in.Dest,
-						"xver":        0,
-						"serverNames": in.ServerNames,
-						"privateKey":  in.PrivateKey,
-						"shortIds":    in.ShortIDs,
+			},
+			// NB: no sniffing on the Reality inbound. Sniffing with
+			// destOverride rewrites the connection destination, which breaks
+			// the xtls-rprx-vision splice and hangs the connection. DNS is
+			// still forced via dns-out (port-53 hijack) + freedom UseIP.
+		},
+	}
+
+	if in.H3Host != "" {
+		// Deliberately NOT the `clients` slice above: that one carries
+		// flow=xtls-rprx-vision, which only works over raw TCP. An H3 client
+		// with a flow is rejected by xray.
+		h3Clients := make([]map[string]string, 0, len(in.Users))
+		for _, u := range in.Users {
+			h3Clients = append(h3Clients, map[string]string{
+				"id":    u.UUID,
+				"email": u.Name + "@vpn",
+			})
+		}
+		inbounds = append(inbounds, map[string]any{
+			"tag":      "vless-xhttp-h3",
+			"listen":   "0.0.0.0",
+			"port":     XHTTPH3Port,
+			"protocol": "vless",
+			"settings": map[string]any{
+				"clients":    h3Clients,
+				"decryption": "none",
+			},
+			"streamSettings": map[string]any{
+				"network":  "xhttp",
+				"security": "tls",
+				"tlsSettings": map[string]any{
+					"serverName": in.H3Host,
+					"alpn":       XHTTPH3ALPN,
+					"certificates": []any{
+						map[string]any{
+							"certificateFile": in.H3Cert,
+							"keyFile":         in.H3Key,
+						},
 					},
 				},
-				// NB: no sniffing on the Reality inbound. Sniffing with
-				// destOverride rewrites the connection destination, which breaks
-				// the xtls-rprx-vision splice and hangs the connection. DNS is
-				// still forced via dns-out (port-53 hijack) + freedom UseIP.
+				"xhttpSettings": map[string]any{
+					"host": in.H3Host,
+					"path": in.H3Path,
+					"mode": XHTTPH3Mode,
+				},
 			},
-		},
+			// Unlike REALITY above, sniffing is safe here: there is no
+			// xtls-rprx-vision splice on this inbound to break.
+			"sniffing": sniffingBlock(),
+		})
+	}
+
+	cfg := map[string]any{
+		"log":       map[string]string{"loglevel": "warning"},
+		"dns":       dnsBlock(in.DNSServers),
+		"inbounds":  inbounds,
 		"outbounds": standardOutbounds(),
 		"routing":   standardRouting(),
 	}

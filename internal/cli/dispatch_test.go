@@ -200,3 +200,33 @@ func TestParseUpgradeArgsBinariesFlag(t *testing.T) {
 		t.Fatalf("combined flags = %#v ok:%v", both, ok)
 	}
 }
+
+// Argument shapes that must be rejected before anything touches the node.
+// These all return 2 (usage error) without reaching commands.RunXHTTPH3Set,
+// so they are safe to exercise here.
+func TestRunXHTTPH3UsageErrors(t *testing.T) {
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"no subcommand", []string{"xhttp-h3"}},
+		{"unknown subcommand", []string{"xhttp-h3", "toggle"}},
+		{"enable without flags", []string{"xhttp-h3", "enable"}},
+		{"enable without path", []string{"xhttp-h3", "enable", "--host", "quic.example.com"}},
+		{"enable without host", []string{"xhttp-h3", "enable", "--path", "/long-random-path-here"}},
+		{"unknown flag", []string{"xhttp-h3", "enable", "--host", "quic.example.com", "--mode", "packet-up"}},
+		{"dangling flag value", []string{"xhttp-h3", "enable", "--host"}},
+		{"disable with extra args", []string{"xhttp-h3", "disable", "--host", "quic.example.com"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errOut bytes.Buffer
+			if code := Run(tc.args, &out, &errOut); code != 2 {
+				t.Fatalf("exit = %d, want 2 (stderr: %s)", code, errOut.String())
+			}
+			if !strings.Contains(errOut.String(), "usage: cfvpnctl xhttp-h3") {
+				t.Fatalf("expected the xhttp-h3 usage line, got %q", errOut.String())
+			}
+		})
+	}
+}

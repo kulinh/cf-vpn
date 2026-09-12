@@ -156,3 +156,42 @@ describe("[Rule] tail", () => {
     expect(conf).toMatch(/FINAL,DIRECT\n$/);
   });
 });
+
+// JPY-03 gained an XHTTP-over-H3 route on 2026-09-13. Measured from VNM-01
+// (home VNPT line) it beat the same node's REALITY route by 2-3x on
+// throughput and TTFB, so it joins AUTO — ahead of that node's REALITY entry,
+// which stays as the fallback for when UDP is throttled.
+function jpy03WithH3(): SubscriptionRow {
+  return {
+    ...row("JPY-03", "direct", true),
+    xhttp_h3_host: "quic-b55170f3.dongnat247.com",
+    xhttp_h3_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10"
+  };
+}
+
+const fleetWithH3: SubscriptionRow[] = fleet.map((r) => (r.node_id === "JPY-03" ? jpy03WithH3() : r));
+
+describe("XHTTP-H3 in the Shadowrocket config", () => {
+  it("lists the H3 route among the user's nodes", () => {
+    expect(availableNames("kulinh", fleetWithH3)).toContain("kulinh@JPY-03-XHTTP-H3");
+  });
+
+  it("puts H3 in AUTO ahead of the same node's REALITY entry", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleetWithH3);
+    const auto = conf.split("\n").find((l) => l.startsWith("AUTO = "))!;
+    expect(auto).toContain("kulinh@JPY-03-XHTTP-H3");
+    expect(auto.indexOf("kulinh@JPY-03-XHTTP-H3")).toBeLessThan(auto.indexOf("kulinh@JPY-03-Reality"));
+  });
+
+  it("keeps JPY-03 REALITY in AUTO as the fallback when UDP is throttled", () => {
+    const auto = buildShadowrocketConfig("kulinh", fleetWithH3).split("\n").find((l) => l.startsWith("AUTO = "))!;
+    expect(auto).toContain("kulinh@JPY-03-Reality");
+  });
+
+  // The group must never name a node the subscription does not contain.
+  it("omits the H3 member for a user whose JPY-03 row has no H3 route", () => {
+    const auto = buildShadowrocketConfig("kulinh", fleet).split("\n").find((l) => l.startsWith("AUTO = "))!;
+    expect(auto).not.toContain("XHTTP-H3");
+    expect(auto).toContain("kulinh@JPY-03-Reality");
+  });
+});

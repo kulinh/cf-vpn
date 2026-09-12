@@ -380,49 +380,21 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 	case "rules-mode":
 		return runRulesMode(ctx, args[1:], stdout, stderr)
 	case "xhttp-direct":
-		usage := "usage: cfvpnctl xhttp-direct enable --host <host> --path </long-random-path> | disable"
-		if len(args) < 2 {
-			fmt.Fprintln(stderr, usage)
-			return 2
-		}
-		var host, path string
-		switch args[1] {
-		case "disable":
-			if len(args) != 2 {
-				fmt.Fprintln(stderr, usage)
-				return 2
-			}
-		case "enable":
-			for i := 2; i < len(args); i++ {
-				switch args[i] {
-				case "--host":
-					if i+1 >= len(args) {
-						fmt.Fprintln(stderr, usage)
-						return 2
-					}
-					host = args[i+1]
-					i++
-				case "--path":
-					if i+1 >= len(args) {
-						fmt.Fprintln(stderr, usage)
-						return 2
-					}
-					path = args[i+1]
-					i++
-				default:
-					fmt.Fprintln(stderr, usage)
-					return 2
-				}
-			}
-			if host == "" || path == "" {
-				fmt.Fprintln(stderr, usage)
-				return 2
-			}
-		default:
-			fmt.Fprintln(stderr, usage)
+		host, path, ok := parseEnableDisableHostPath(args, "xhttp-direct", stderr)
+		if !ok {
 			return 2
 		}
 		if err := commands.RunXHTTPDirectSet(ctx, host, path, systemd.ExecRunner{}, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	case "xhttp-h3":
+		host, path, ok := parseEnableDisableHostPath(args, "xhttp-h3", stderr)
+		if !ok {
+			return 2
+		}
+		if err := commands.RunXHTTPH3Set(ctx, host, path, systemd.ExecRunner{}, stdout, stderr); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -588,4 +560,52 @@ func runRulesMode(ctx context.Context, args []string, stdout, stderr io.Writer) 
 	}
 	fmt.Fprintln(stderr, usage)
 	return 2
+}
+
+// parseEnableDisableHostPath parses the shared "<cmd> enable --host H --path P
+// | <cmd> disable" shape used by the xhttp-direct and xhttp-h3 routes. It
+// returns empty host and path for "disable" — which is how both RunXHTTP*Set
+// functions spell "turn this off" — and ok=false after printing the usage line
+// for anything malformed.
+func parseEnableDisableHostPath(args []string, cmd string, stderr io.Writer) (host, path string, ok bool) {
+	usage := "usage: cfvpnctl " + cmd + " enable --host <host> --path </long-random-path> | disable"
+	fail := func() (string, string, bool) {
+		fmt.Fprintln(stderr, usage)
+		return "", "", false
+	}
+	if len(args) < 2 {
+		return fail()
+	}
+	switch args[1] {
+	case "disable":
+		if len(args) != 2 {
+			return fail()
+		}
+		return "", "", true
+	case "enable":
+		for i := 2; i < len(args); i++ {
+			switch args[i] {
+			case "--host":
+				if i+1 >= len(args) {
+					return fail()
+				}
+				host = args[i+1]
+				i++
+			case "--path":
+				if i+1 >= len(args) {
+					return fail()
+				}
+				path = args[i+1]
+				i++
+			default:
+				return fail()
+			}
+		}
+		if host == "" || path == "" {
+			return fail()
+		}
+		return host, path, true
+	default:
+		return fail()
+	}
 }

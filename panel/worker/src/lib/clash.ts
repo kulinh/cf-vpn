@@ -73,6 +73,9 @@ export function xhttpName(username: string, nodeId: string): string {
 export function xhttpDirectName(username: string, nodeId: string): string {
   return `${username}@${nodeId}-XHTTP-Direct`;
 }
+export function xhttpH3Name(username: string, nodeId: string): string {
+  return `${username}@${nodeId}-XHTTP-H3`;
+}
 
 const AUTO_GROUP = "Auto";
 const SELECT_GROUP = "Proxy";
