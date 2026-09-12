@@ -292,9 +292,23 @@ FINAL,DIRECT                          # blacklist: module quyết định cái g
 ```
 
 Thêm `&final=proxy` vào URL subscription thì đuôi thành `FINAL,PROXY` (full
-tunnel, không cần module); giá trị khác trả 400 `invalid_final`. Worker đã
-deploy (version `fa879944`), `final/RWL8899.conf` trong thư mục backup đã
-tải lại từ bản live và kiểm tra đúng đuôi trên. 146 test Worker pass.
+tunnel, không cần module); giá trị khác trả 400 `invalid_final`.
+
+**Tối ưu tiếp (câu hỏi "có nên đưa RWL8899.conf vào module không"):** không —
+conf chứa UUID/mật khẩu node của từng user (repo module là public), và module
+Shadowrocket vốn không chứa được `[Proxy]`/`[Proxy Group]`. Làm chiều ngược
+lại: Worker tải `sr_proxy_list_CN.module` từ GitHub **tại edge Cloudflare**
+(cache 1 giờ; điện thoại ở TQ không cần tới GitHub), đổi policy mọi rule về
+`PROXY` rồi chép thẳng vào `[Rule]` trước `FINAL,DIRECT`. Kết quả: không cần
+cài module bằng tay, sửa module trên GitHub → lần refresh config sau tự có.
+Conf live giờ 333 dòng, 314 rule nhúng (etag `fbadbd21`), fetch lần 2 qua
+edge cache 0,16 s. Tuỳ chọn URL: `&rules=none` (đuôi trần như cũ, tự nạp
+module), `&final=proxy` (không nhúng), giá trị lạ → 400 `invalid_rules`. Nếu
+edge không tải được GitHub, conf có dòng
+`RULE-SET,…/sr_proxy_list_CN.list,PROXY` thay cho phần nhúng (file `.list`
+mới, sinh tự động cùng JSON v2rayNG; commit `c818493` trên repo module).
+Worker version `75552b0f`, 159 test pass, `final/RWL8899.conf` trong backup
+đã tải lại từ bản live.
 
 **Audit module (commit `416de1c` trên master của shadowrocket-vietnamese):**
 đối chiếu gfwlist, `gstatic.com/ipranges/goog.json`, RIPEstat (AS32934 Meta;
@@ -355,8 +369,8 @@ pass, shellcheck sạch. Test thật từ Trung Quốc vẫn là bước kiểm 
 
 1. **Import `final/RWL8899.conf`** trên Shadowrocket (tải lại từ subscription,
    đuôi `[Rule]` mới), xác nhận AUTO (5 đường), HY2-BACKUP (6 đường) và node
-   lẻ `JPY-01-XHTTP-Direct`. Thêm module `sr_proxy_list_CN.module` (bản
-   `416de1c`) và chọn group `PROXY` trên màn hình chính.
+   lẻ `JPY-01-XHTTP-Direct`. Không cần thêm module `sr_proxy_list_CN` nữa
+   (conf đã nhúng sẵn); chọn group `PROXY` trên màn hình chính.
 2. **Trước khi bay Trung Quốc:** gõ `/china on` trong group Telegram (hoặc
    `cfvpnctl derp china-mode on` trên VNM-01); khi về gõ `/china off`. Nhớ
    SIN-01 chỉ relay được qua JPY-01.
