@@ -275,6 +275,63 @@ khoá `CF_API_TOKEN`, `CF_ACCOUNT_ID`, `NODE_ID`, `MODE`, `DOMAIN`.
 
 Probe lại sau thay đổi: 19/19 đường 204, drift 9/9 khớp.
 
+## Bổ sung 8 — audit sr_proxy_list_CN.module và ghép với RWL8899.conf
+
+**Cách ghép (đã làm, không cần chỉnh tay):** module của repo
+`kulinh/shadowrocket-vietnamese` trỏ mọi rule tới policy `PROXY`; file
+`RWL8899.conf` sinh từ panel có đúng group tên `PROXY` (select, mặc định =
+`AUTO` url-test 5 đường, có thể chuyển sang `HY2-BACKUP` hoặc node lẻ). Vì
+vậy chỉ cần: (1) Cài đặt > Module thêm `sr_proxy_list_CN.module` (đặt dưới
+module reject nếu có); (2) import `RWL8899.conf`; (3) màn hình chính chọn
+group `PROXY`. Đuôi `[Rule]` của conf giờ do Worker sinh:
+
+```
+DOMAIN,cp.rwl265.com,PROXY            # panel + subscription luôn đi proxy
+DOMAIN-SUFFIX,cloudflareaccess.com,PROXY  # trang login Access
+FINAL,DIRECT                          # blacklist: module quyết định cái gì đi proxy
+```
+
+Thêm `&final=proxy` vào URL subscription thì đuôi thành `FINAL,PROXY` (full
+tunnel, không cần module); giá trị khác trả 400 `invalid_final`. Worker đã
+deploy (version `fa879944`), `final/RWL8899.conf` trong thư mục backup đã
+tải lại từ bản live và kiểm tra đúng đuôi trên. 146 test Worker pass.
+
+**Audit module (commit `416de1c` trên master của shadowrocket-vietnamese):**
+đối chiếu gfwlist, `gstatic.com/ipranges/goog.json`, RIPEstat (AS32934 Meta;
+AS62014/62041/59930/44907/211157 Telegram) và test HTTP thật từ ~297 node
+đại lục qua itdog.cn ngày 12/09/2026.
+
+| Domain | itdog: node lỗi / tổng | Kết luận |
+|---|---|---|
+| google.com (chuẩn "bị chặn") | 251 / 297 | — |
+| apple.com (chuẩn "mở") | 2 / 297 | — |
+| go.dev | 142 / 298 | chặn nửa số node → giữ |
+| voatiengviet.com | 257 / 298 | chặn → thêm (mục BÁO CHÍ) |
+| proton.me | 256 / 298 | chặn → thêm |
+| waze.com | 257 / 299 | chặn → giữ |
+| notion.so | ~69 / 112 đã trả lời | chặn không đều → thêm notion.so/.site/.com |
+| pages.dev | 9 / 298 | mở, nhưng giữ vì Pages/Workers hay bị chặn lẻ |
+| figma.com | 10 / 298 | mở → không thêm |
+| paypal.com | 2 / 298 | mở → không thêm |
+| edition.cnn.com | 16 / 298 | mở → không thêm |
+| bitbucket.org | 1 / 36 đã trả lời | mở → không thêm |
+| kubernetes.io | 4 / 299 | mở → không thêm |
+| npmjs.com | 25 / 299 (156 là 403 bot-check) | mở → giữ vì tốc độ |
+| rwl265.cloudflareaccess.com | 3 / 299 | mở, vẫn ép proxy cho ổn định login |
+
+Thay đổi trong module: Google +5 dải IPv4 lớn +4 dải IPv6 theo goog.json;
+Meta +9 dải AS32934 (57.141/57.144, 163.70, 185.89.216, 2620:0:1c00::/40);
+Telegram bỏ 149.154.164.0/22 (trùng), thêm 91.105.192.0/23, 185.76.151.0/24,
+2a0a:f280::/32; thêm Kakao/Naver, Poe/Character/Mistral, Docker/Go/Vercel/
+Netlify/Heroku/pages.dev/workers.dev, Disney+/Max/Prime, SoundCloud/
+Dailymotion, Tumblr/Flickr/WordPress/Substack/Patreon/Canva, DuckDuckGo/
+Startpage/Yahoo, archive.org, Mega/Box/Proton, Notion; hai mục mới BÁO CHÍ và
+DNS CÔNG CỘNG (8.8.8.8, 1.1.1.1, cloudflare-dns.com). Không xoá domain nào
+đang có. Tổng: 244 DOMAIN-SUFFIX, 1 DOMAIN, 8 DOMAIN-KEYWORD, 61 IP-CIDR,
+không trùng, mọi dòng đúng cú pháp. `docs/v2rayng_rulesets_CN.json` sinh lại
+bằng script mới `docs/module2v2rayng.py` (253 domain, 61 IP; `--check` để so
+khớp), README có mục "Dùng với cf-vpn".
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |
@@ -296,8 +353,10 @@ pass, shellcheck sạch. Test thật từ Trung Quốc vẫn là bước kiểm 
 
 ## Việc anh còn phải làm tay
 
-1. **Import `final/RWL8899.conf`** trên Shadowrocket, xác nhận AUTO (5 đường),
-   HY2-BACKUP (6 đường) và node lẻ `JPY-01-XHTTP-Direct`.
+1. **Import `final/RWL8899.conf`** trên Shadowrocket (tải lại từ subscription,
+   đuôi `[Rule]` mới), xác nhận AUTO (5 đường), HY2-BACKUP (6 đường) và node
+   lẻ `JPY-01-XHTTP-Direct`. Thêm module `sr_proxy_list_CN.module` (bản
+   `416de1c`) và chọn group `PROXY` trên màn hình chính.
 2. **Trước khi bay Trung Quốc:** gõ `/china on` trong group Telegram (hoặc
    `cfvpnctl derp china-mode on` trên VNM-01); khi về gõ `/china off`. Nhớ
    SIN-01 chỉ relay được qua JPY-01.
