@@ -425,3 +425,68 @@ describe("?format=shadowrocket&final=", () => {
     expect((await res.json() as { error: string }).error).toBe("invalid_final");
   });
 });
+
+describe("?format=shadowrocket&rules=", () => {
+  const token = "c".repeat(32);
+  const db = () => makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] } });
+  const moduleText = "#!name=x\n[Rule]\n# c\nDOMAIN-SUFFIX,google.com,PROXY\nIP-CIDR,8.8.8.0/24,PROXY,no-resolve\n";
+
+  it("rejects an unknown rules value before touching the database", async () => {
+    const res = await publicSubscription(makeEnv(makeDB({})), token, "shadowrocket", null, "bogus");
+    expect(res.status).toBe(400);
+    expect((await res.json() as { error: string }).error).toBe("invalid_rules");
+  });
+
+  it("inlines the module fetched at the edge by default", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      calls.push(input);
+      return new Response(moduleText, { status: 200, headers: { etag: '"abc"' } });
+    });
+    try {
+      const res = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, null);
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(calls).toEqual(["https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_CN.module"]);
+      expect(body).toContain("\nDOMAIN-SUFFIX,google.com,PROXY\n");
+      expect(body).toContain("\nIP-CIDR,8.8.8.0/24,PROXY,no-resolve\n");
+      expect(body).toContain("(2 rules, etag abc");
+      expect(body).not.toContain("RULE-SET,");
+      expect(body).toMatch(/FINAL,DIRECT\n$/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("falls back to a RULE-SET line pointing at the .list when GitHub is unreachable", async () => {
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("connect timeout");
+    });
+    try {
+      const res = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "cn");
+      const body = await res.text();
+      expect(body).toContain("RULE-SET,https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_CN.list,PROXY\n");
+      expect(body).not.toContain("google.com");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("rules=none and final=proxy skip the fetch entirely", async () => {
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls++;
+      return new Response(moduleText);
+    });
+    try {
+      const none = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "none")).text();
+      expect(none).toContain("load the sr_proxy_list_CN module above this config");
+      const full = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", "proxy", null)).text();
+      expect(full).toMatch(/FINAL,PROXY\n$/);
+      expect(full).not.toContain("RULE-SET,");
+      expect(calls).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});

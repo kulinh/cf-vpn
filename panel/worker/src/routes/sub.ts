@@ -3,6 +3,7 @@ import { all, one } from "../lib/db";
 import { buildSubscriptionURIs, encodeSubscriptionBody, type SubscriptionRow } from "../lib/subscription";
 import { buildClashConfig } from "../lib/clash";
 import { buildShadowrocketConfig } from "../lib/shadowrocket";
+import { DEFAULT_CN_RULES_URL, fetchCNRules } from "../lib/cnrules";
 import { error } from "../lib/http";
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
@@ -17,7 +18,13 @@ function notFoundText(): Response {
   });
 }
 
-export async function publicSubscription(env: Env, token: string, format?: string | null, final?: string | null): Promise<Response> {
+export async function publicSubscription(
+  env: Env,
+  token: string,
+  format?: string | null,
+  final?: string | null,
+  rules?: string | null
+): Promise<Response> {
   if (!TOKEN_RE.test(token)) {
     return notFoundText();
   }
@@ -33,6 +40,12 @@ export async function publicSubscription(env: Env, token: string, format?: strin
   // for the same reason as ?format=.
   if (final != null && final !== "" && final !== "direct" && final !== "proxy") {
     return error(400, { error: "invalid_final", detail: "supported: direct (default, blacklist mode with the CN module) or proxy (full tunnel)" });
+  }
+  // ?rules=cn (default) inlines the sr_proxy_list_CN module into the .conf;
+  // ?rules=none leaves the [Rule] section bare for users who load the module
+  // themselves.
+  if (rules != null && rules !== "" && rules !== "cn" && rules !== "none") {
+    return error(400, { error: "invalid_rules", detail: "supported: cn (default, inline the sr_proxy_list_CN module) or none" });
   }
 
   const user = await one<{ id: string }>(
@@ -59,7 +72,21 @@ export async function publicSubscription(env: Env, token: string, format?: strin
     } catch {
       // a malformed origin just means no panel rule
     }
-    return new Response(buildShadowrocketConfig(user.id, rows, { final: final === "proxy" ? "proxy" : "direct", alwaysProxyHosts }), {
+    // Blacklist mode pulls the blocked-site module at the edge (GitHub is
+    // reachable from Cloudflare, not from China) and inlines it. Full tunnel
+    // has no use for it.
+    const wantsRules = final !== "proxy" && rules !== "none";
+    const moduleURL = env.CN_RULES_URL || DEFAULT_CN_RULES_URL;
+    const cnRules = wantsRules ? await fetchCNRules(moduleURL) : undefined;
+    const conf = buildShadowrocketConfig(user.id, rows, {
+      final: final === "proxy" ? "proxy" : "direct",
+      alwaysProxyHosts,
+      cnRules,
+      // The RULE-SET fallback wants a plain rule list, which the module repo
+      // publishes next to the module.
+      cnRulesFallbackURL: wantsRules ? moduleURL.replace(/\.module$/, ".list") : undefined
+    });
+    return new Response(conf, {
       status: 200,
       headers: {
         "content-type": "text/plain; charset=utf-8",

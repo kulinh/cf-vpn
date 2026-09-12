@@ -114,6 +114,41 @@ describe("[Rule] tail", () => {
     expect(conf).toContain("[Rule]\nDOMAIN,cp.rwl265.com,PROXY\nDOMAIN-SUFFIX,cloudflareaccess.com,PROXY\n");
     expect(conf.indexOf("DOMAIN,cp.rwl265.com,PROXY")).toBeLessThan(conf.indexOf("FINAL,DIRECT"));
   });
+  it("inlines the CN module rules between the always-proxy hosts and FINAL,DIRECT", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet, {
+      alwaysProxyHosts: ["cp.rwl265.com"],
+      cnRules: { rules: ["DOMAIN-SUFFIX,google.com,PROXY", "IP-CIDR,8.8.8.0/24,PROXY,no-resolve"], comment: "# sr_proxy_list_CN from x (2 rules)" },
+      cnRulesFallbackURL: "https://example.com/sr_proxy_list_CN.list"
+    });
+    const i = (s: string) => conf.indexOf(s);
+    expect(i("DOMAIN,cp.rwl265.com,PROXY")).toBeGreaterThan(-1);
+    expect(i("DOMAIN,cp.rwl265.com,PROXY")).toBeLessThan(i("# sr_proxy_list_CN from x (2 rules)"));
+    expect(i("# sr_proxy_list_CN from x (2 rules)")).toBeLessThan(i("DOMAIN-SUFFIX,google.com,PROXY"));
+    expect(i("IP-CIDR,8.8.8.0/24,PROXY,no-resolve")).toBeLessThan(i("FINAL,DIRECT"));
+    expect(conf).not.toContain("RULE-SET,");
+    expect(conf).not.toContain("load the sr_proxy_list_CN module");
+    expect(conf).toMatch(/FINAL,DIRECT\n$/);
+  });
+  it("falls back to a RULE-SET line when the module could not be fetched", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet, { cnRules: null, cnRulesFallbackURL: "https://example.com/sr_proxy_list_CN.list" });
+    expect(conf).toContain("RULE-SET,https://example.com/sr_proxy_list_CN.list,PROXY\n");
+    expect(conf.indexOf("RULE-SET,")).toBeLessThan(conf.indexOf("FINAL,DIRECT"));
+  });
+  it("leaves the tail bare when neither rules nor a fallback are given (user loads the module)", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet);
+    expect(conf).toContain("load the sr_proxy_list_CN module above this config");
+    expect(conf).not.toContain("RULE-SET,");
+  });
+  it("final=proxy never inlines the module: a full tunnel has no use for it", () => {
+    const conf = buildShadowrocketConfig("kulinh", fleet, {
+      final: "proxy",
+      cnRules: { rules: ["DOMAIN-SUFFIX,google.com,PROXY"], comment: "# x" },
+      cnRulesFallbackURL: "https://example.com/sr_proxy_list_CN.list"
+    });
+    expect(conf).not.toContain("google.com");
+    expect(conf).not.toContain("RULE-SET,");
+    expect(conf).toMatch(/FINAL,PROXY\n$/);
+  });
   it("a user with no nodes still gets a valid tail", () => {
     const conf = buildShadowrocketConfig("kulinh", []);
     expect(conf).toContain("PROXY = select, DIRECT");
