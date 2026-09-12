@@ -346,6 +346,47 @@ không trùng, mọi dòng đúng cú pháp. `docs/v2rayng_rulesets_CN.json` sin
 bằng script mới `docs/module2v2rayng.py` (253 domain, 61 IP; `--check` để so
 khớp), README có mục "Dùng với cf-vpn".
 
+## Bổ sung 9 — module UAE viết lại theo kiểm chứng thật, conf có `&rules=uae`
+
+**Cách đo:** UAE không có itdog; em dùng globalping.io, chọn đúng 2 probe
+nằm trong mạng dân dụng **du (AS15802)** và **Etisalat (AS5384)**, GET
+HTTPS `/` cho ~70 domain. Dấu hiệu chặn rất rõ: du = TLS handshake timeout,
+Etisalat = ECONNRESET hoặc DNS timeout (Etisalat chặn cả ở tầng DNS); site
+mở trả 200/30x. Chuẩn: pornhub chặn cả hai, google mở cả hai.
+
+| Nhóm | Kết quả từ du + Etisalat | Quyết định |
+|---|---|---|
+| Web WhatsApp/Viber/Zalo/Telegram/Signal/Discord/Snapchat/LINE/Kakao/WeChat | mở hết | TDRA chỉ chặn kênh thoại → giữ domain + IP media |
+| Google/YouTube/Netflix/X/TikTok/Threads | mở | bỏ khỏi module (proxy chỉ làm chậm) |
+| Teams/Meet/Zoom | mở (đã cấp phép) | bỏ; Skype tiêu dùng đóng 05/2025 → bỏ |
+| Wikipedia/Reddit/Twitch/BBC/Al Jazeera/RFA/VOA/archive.org/binance | mở | không thêm |
+| ynet.co.il | mở | Israel đã bỏ chặn → không thêm |
+| pornhub/xvideos/xhamster/youporn/redtube/chaturbate/stripchat/livejasmin/onlyfans | chặn cả hai | giữ/thêm |
+| bet365/pokerstars/1xbet/betway/m88/dafabet | chặn cả hai (888 chỉ du; fun88, w88 mở) | thêm; fun88/w88 không |
+| grindr/badoo/bumble/okcupid | chặn cả hai (tinder chỉ Etisalat; hinge mở) | thêm |
+| nordvpn/protonvpn/expressvpn/surfshark/windscribe/mullvad | chặn cả hai | thêm |
+| middleeasteye.net | chặn cả hai | thêm |
+| imo.im | chặn trên du | thêm |
+| botim.me | mở | đúng, app cấp phép, không proxy |
+
+**Module mới (commit `688cd7c` + `e54e8c7` sửa dải trùng trên master repo module):**
+96 DOMAIN-SUFFIX, 1 DOMAIN, 3 KEYWORD, 55 IP-CIDR (cũ: 103 domain, 29 IP).
+Bỏ hẳn nhóm CDN (akamai/cloudfront/amazonaws/cloudflare/fastly) vì nó đẩy
+nửa Internet, kể cả site UAE, qua proxy; bỏ apple.com/icloud/mzstatic
+(FaceTime chỉ cần facetime/ess/ids/push.apple.com + 17.0.0.0/8). IP media
+theo BGP 09/2026: Meta AS32934 đủ 23 dải, Telegram thêm 3 dải mới, và **mới
+VNG/AS38244 (Zalo)** 9 dải v4 + 3 v6 collapse từ 128 prefix để cuộc gọi Zalo
+không rớt. Thêm imo, Snapchat, KakaoTalk, Instagram call, nhóm DNS công
+cộng. Cảnh báo trong module + README: **không nạp `zalo_zalopay` ở UAE** (nó
+ép Zalo đi thẳng). Tiện thể phát hiện dải Meta 31.13.96.0/19 em thêm ở bản
+CN hôm nay nằm trong 31.13.64.0/18 → bỏ ở cả hai module.
+
+**Worker:** `?format=shadowrocket&rules=uae` nhúng module UAE thay vì CN
+(`rules=cn` mặc định, `none` để trần, giá trị lạ 400); nguồn là map key →
+file dưới `RULES_BASE_URL`. Version `6f241700`, 161 test pass. Generator
+`docs/module2v2rayng.py` chạy cho cả CN và UAE (bản UAE không có ruleset
+"Direct - China"), sinh `sr_proxy_list_UAE.list` cho fallback RULE-SET.
+
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 
 | Đường | Trước (19:38Z) | Cuối (21:32Z) |
@@ -371,10 +412,13 @@ pass, shellcheck sạch. Test thật từ Trung Quốc vẫn là bước kiểm 
    đuôi `[Rule]` mới), xác nhận AUTO (5 đường), HY2-BACKUP (6 đường) và node
    lẻ `JPY-01-XHTTP-Direct`. Không cần thêm module `sr_proxy_list_CN` nữa
    (conf đã nhúng sẵn); chọn group `PROXY` trên màn hình chính.
-2. **Trước khi bay Trung Quốc:** gõ `/china on` trong group Telegram (hoặc
+2. **Đi UAE:** trong Shadowrocket thêm config từ link
+   `?format=shadowrocket&rules=uae` (hoặc sửa link config đang có), bỏ module
+   `zalo_zalopay`; không cần `/china on` (DERP mặc định vẫn tới được ở UAE).
+3. **Trước khi bay Trung Quốc:** gõ `/china on` trong group Telegram (hoặc
    `cfvpnctl derp china-mode on` trên VNM-01); khi về gõ `/china off`. Nhớ
    SIN-01 chỉ relay được qua JPY-01.
-3. **Merge PR #9.**
+4. **Merge PR #9.**
 
 Đã xong trong phiên, không cần làm gì thêm: Telegram alert cho fleet-probe
 (@rwl_vpn_bot trong group "RWL Hub"), bot điều khiển `/china`, gỡ forward
