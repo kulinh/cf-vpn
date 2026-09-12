@@ -3,7 +3,7 @@ import { all, one } from "../lib/db";
 import { buildSubscriptionURIs, encodeSubscriptionBody, type SubscriptionRow } from "../lib/subscription";
 import { buildClashConfig } from "../lib/clash";
 import { buildShadowrocketConfig } from "../lib/shadowrocket";
-import { DEFAULT_CN_RULES_URL, fetchCNRules } from "../lib/cnrules";
+import { fetchModuleRules, isRuleSetKey, moduleURL } from "../lib/cnrules";
 import { error } from "../lib/http";
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
@@ -41,11 +41,11 @@ export async function publicSubscription(
   if (final != null && final !== "" && final !== "direct" && final !== "proxy") {
     return error(400, { error: "invalid_final", detail: "supported: direct (default, blacklist mode with the CN module) or proxy (full tunnel)" });
   }
-  // ?rules=cn (default) inlines the sr_proxy_list_CN module into the .conf;
-  // ?rules=none leaves the [Rule] section bare for users who load the module
-  // themselves.
-  if (rules != null && rules !== "" && rules !== "cn" && rules !== "none") {
-    return error(400, { error: "invalid_rules", detail: "supported: cn (default, inline the sr_proxy_list_CN module) or none" });
+  // ?rules=cn (default) inlines the sr_proxy_list_CN module into the .conf,
+  // ?rules=uae the UAE one; ?rules=none leaves the [Rule] section bare for
+  // users who load a module themselves.
+  if (rules != null && rules !== "" && rules !== "none" && !isRuleSetKey(rules)) {
+    return error(400, { error: "invalid_rules", detail: "supported: cn (default, inline sr_proxy_list_CN), uae (inline sr_proxy_list_UAE) or none" });
   }
 
   const user = await one<{ id: string }>(
@@ -76,15 +76,15 @@ export async function publicSubscription(
     // reachable from Cloudflare, not from China) and inlines it. Full tunnel
     // has no use for it.
     const wantsRules = final !== "proxy" && rules !== "none";
-    const moduleURL = env.CN_RULES_URL || DEFAULT_CN_RULES_URL;
-    const cnRules = wantsRules ? await fetchCNRules(moduleURL) : undefined;
+    const source = moduleURL(rules && isRuleSetKey(rules) ? rules : "cn", env.RULES_BASE_URL || undefined);
+    const moduleRules = wantsRules ? await fetchModuleRules(source) : undefined;
     const conf = buildShadowrocketConfig(user.id, rows, {
       final: final === "proxy" ? "proxy" : "direct",
       alwaysProxyHosts,
-      cnRules,
+      moduleRules,
       // The RULE-SET fallback wants a plain rule list, which the module repo
-      // publishes next to the module.
-      cnRulesFallbackURL: wantsRules ? moduleURL.replace(/\.module$/, ".list") : undefined
+      // publishes next to each module.
+      moduleFallbackURL: wantsRules ? source.replace(/\.module$/, ".list") : undefined
     });
     return new Response(conf, {
       status: 200,

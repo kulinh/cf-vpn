@@ -1,7 +1,7 @@
 import type { SubscriptionRow } from "./subscription";
 import { realityName, httpUpgradeName, hy2Name, xhttpName, xhttpDirectName, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
 import { hasXHTTP, hasXHTTPDirect } from "./subscription";
-import type { CNRules } from "./cnrules";
+import type { ModuleRules } from "./cnrules";
 
 // Shadowrocket ".conf" companion to the base64 subscription. The subscription
 // carries the nodes; this file carries the policy groups and rules that the
@@ -64,13 +64,13 @@ export interface ShadowrocketOptions {
   // DOMAIN-SUFFIX rules ahead of FINAL.
   alwaysProxyHosts?: string[];
   // Blacklist mode only. The blocked-site rules pulled from the public
-  // sr_proxy_list_CN module, inlined ahead of FINAL so the phone needs no
-  // module and never has to reach GitHub from China. null/undefined with a
-  // fallback URL set means the edge fetch failed: emit a RULE-SET line that
-  // points Shadowrocket at the list itself. Neither set: the user loads the
-  // module by hand (the pre-2026-09-12 behaviour).
-  cnRules?: CNRules | null;
-  cnRulesFallbackURL?: string;
+  // sr_proxy_list_<CN|UAE> module, inlined ahead of FINAL so the phone needs
+  // no module and never has to reach GitHub. null/undefined with a fallback
+  // URL set means the edge fetch failed: emit a RULE-SET line that points
+  // Shadowrocket at the list itself. Neither set: the user loads a module by
+  // hand (the pre-2026-09-12 behaviour).
+  moduleRules?: ModuleRules | null;
+  moduleFallbackURL?: string;
 }
 
 export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[], opts: ShadowrocketOptions = {}): string {
@@ -109,28 +109,28 @@ export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[
   }
   if (final === "proxy") {
     out.push("# Full tunnel: everything not matched above goes through the PROXY group.", "FINAL,PROXY");
-  } else if (opts.cnRules && opts.cnRules.rules.length > 0) {
+  } else if (opts.moduleRules && opts.moduleRules.rules.length > 0) {
     out.push(
       "# --- Blocked-site list, inlined from the public module kulinh/shadowrocket-vietnamese.",
       "# --- Edit it there, not here: the next config refresh picks the change up.",
-      opts.cnRules.comment,
-      ...opts.cnRules.rules,
-      "# --- end of sr_proxy_list_CN ---",
+      opts.moduleRules.comment,
+      ...opts.moduleRules.rules,
+      "# --- end of inlined module ---",
       "# Blacklist mode: everything not matched above (Chinese and Vietnamese sites) goes direct.",
       "FINAL,DIRECT"
     );
-  } else if (opts.cnRulesFallbackURL) {
+  } else if (opts.moduleFallbackURL) {
     out.push(
       "# The blocked-site module could not be fetched at the edge just now, so Shadowrocket",
       "# pulls the list itself (needs GitHub reachable). Refresh this config once more later",
       "# to get the rules inlined again.",
-      `RULE-SET,${opts.cnRulesFallbackURL},PROXY`,
+      `RULE-SET,${opts.moduleFallbackURL},PROXY`,
       "# Blacklist mode: everything not matched above (Chinese and Vietnamese sites) goes direct.",
       "FINAL,DIRECT"
     );
   } else {
     out.push(
-      "# Blacklist mode: load the sr_proxy_list_CN module above this config; it decides",
+      "# Blacklist mode: load the sr_proxy_list_CN (or _UAE) module above this config; it decides",
       "# what goes to PROXY. Everything else (Chinese and Vietnamese sites) goes direct.",
       "FINAL,DIRECT"
     );

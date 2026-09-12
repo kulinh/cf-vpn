@@ -1,12 +1,28 @@
 // The blocked-site list for the Shadowrocket .conf comes from the public
-// module kulinh/shadowrocket-vietnamese:sr_proxy_list_CN.module. The Worker
-// pulls it at the Cloudflare edge (GitHub is reachable from there, not from
+// modules of kulinh/shadowrocket-vietnamese (sr_proxy_list_CN.module for
+// China, sr_proxy_list_UAE.module for the UAE). The Worker pulls the chosen
+// one at the Cloudflare edge (GitHub is reachable from there, not from
 // China) and inlines the rules into the config, so the phone never has to
-// reach GitHub and the user installs no module by hand. The module stays the
-// single source of truth: edit it there, the next subscription refresh picks
-// it up.
+// reach GitHub and the user installs no module by hand. The modules stay the
+// single source of truth: edit them there, the next subscription refresh
+// picks it up.
 
-export const DEFAULT_CN_RULES_URL = "https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_CN.module";
+export const DEFAULT_RULES_BASE_URL = "https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/";
+
+// ?rules= value → module file. Keep in sync with the repo.
+export const RULE_SETS = {
+  cn: "sr_proxy_list_CN.module",
+  uae: "sr_proxy_list_UAE.module"
+} as const;
+export type RuleSetKey = keyof typeof RULE_SETS;
+
+export function isRuleSetKey(v: string): v is RuleSetKey {
+  return Object.prototype.hasOwnProperty.call(RULE_SETS, v);
+}
+
+export function moduleURL(key: RuleSetKey, base: string = DEFAULT_RULES_BASE_URL): string {
+  return (base.endsWith("/") ? base : base + "/") + RULE_SETS[key];
+}
 
 // Rule types Shadowrocket accepts in a .conf [Rule] section that a module
 // can also carry. Anything else (and module-only sections) is dropped.
@@ -46,7 +62,7 @@ export function parseModuleRules(text: string): string[] {
   return out;
 }
 
-export interface CNRules {
+export interface ModuleRules {
   rules: string[];
   // One comment line describing where the rules came from, for the .conf.
   comment: string;
@@ -58,7 +74,7 @@ export type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
 // The edge cache keeps GitHub out of the hot path: one origin hit per hour
 // per colo. A failure must not break the subscription, the caller falls
 // back to a RULE-SET line instead.
-export async function fetchCNRules(url: string = DEFAULT_CN_RULES_URL, fetcher: Fetcher = fetch, timeoutMs = 5000): Promise<CNRules | null> {
+export async function fetchModuleRules(url: string, fetcher: Fetcher = fetch, timeoutMs = 5000): Promise<ModuleRules | null> {
   try {
     const res = await fetcher(url, {
       signal: AbortSignal.timeout(timeoutMs),
@@ -70,9 +86,10 @@ export async function fetchCNRules(url: string = DEFAULT_CN_RULES_URL, fetcher: 
     if (rules.length === 0) return null;
     const etag = (res.headers.get("etag") ?? "").replace(/^W\//, "").replace(/"/g, "");
     const day = new Date().toISOString().slice(0, 10);
+    const name = url.slice(url.lastIndexOf("/") + 1).replace(/\.module$/, "") || "module";
     return {
       rules,
-      comment: `# sr_proxy_list_CN from ${url} (${rules.length} rules${etag ? `, etag ${etag.slice(0, 12)}` : ""}, fetched ${day})`
+      comment: `# ${name} from ${url} (${rules.length} rules${etag ? `, etag ${etag.slice(0, 12)}` : ""}, fetched ${day})`
     };
   } catch {
     return null;

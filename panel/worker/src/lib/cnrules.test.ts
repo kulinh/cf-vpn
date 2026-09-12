@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_CN_RULES_URL, fetchCNRules, parseModuleRules } from "./cnrules";
+import { DEFAULT_RULES_BASE_URL, fetchModuleRules, isRuleSetKey, moduleURL, parseModuleRules } from "./cnrules";
 
 const moduleText = `#!name=GFW Optimized Proxy List (CN) 2026
 #!desc=...
@@ -48,23 +48,33 @@ describe("parseModuleRules", () => {
   });
 });
 
-describe("fetchCNRules", () => {
+describe("moduleURL", () => {
+  it("maps the ?rules= keys to the repo's module files", () => {
+    expect(moduleURL("cn")).toBe(DEFAULT_RULES_BASE_URL + "sr_proxy_list_CN.module");
+    expect(moduleURL("uae")).toBe(DEFAULT_RULES_BASE_URL + "sr_proxy_list_UAE.module");
+    expect(moduleURL("uae", "https://mirror.example/rules")).toBe("https://mirror.example/rules/sr_proxy_list_UAE.module");
+    expect(isRuleSetKey("cn") && isRuleSetKey("uae")).toBe(true);
+    expect(isRuleSetKey("none") || isRuleSetKey("toString") || isRuleSetKey("")).toBe(false);
+  });
+});
+
+describe("fetchModuleRules", () => {
   it("fetches the module through the edge cache and describes the result", async () => {
     let seen: { url: string; init?: RequestInit } | undefined;
-    const got = await fetchCNRules(DEFAULT_CN_RULES_URL, async (url, init) => {
+    const got = await fetchModuleRules(moduleURL("cn"), async (url, init) => {
       seen = { url, init };
       return new Response(moduleText, { status: 200, headers: { etag: 'W/"0123456789abcdef"' } });
     });
-    expect(seen?.url).toBe(DEFAULT_CN_RULES_URL);
+    expect(seen?.url).toBe(DEFAULT_RULES_BASE_URL + "sr_proxy_list_CN.module");
     expect((seen?.init as { cf?: { cacheTtl?: number } })?.cf?.cacheTtl).toBe(3600);
     expect(got?.rules.length).toBe(9);
     expect(got?.comment).toMatch(/^# sr_proxy_list_CN from https:\/\/raw\.githubusercontent\.com\/.* \(9 rules, etag 0123456789ab, fetched \d{4}-\d{2}-\d{2}\)$/);
   });
   it("returns null on a non-2xx, on an empty module, and on a thrown fetch", async () => {
-    expect(await fetchCNRules("u", async () => new Response("nope", { status: 404 }))).toBeNull();
-    expect(await fetchCNRules("u", async () => new Response("# only comments\n[Rule]\n"))).toBeNull();
+    expect(await fetchModuleRules("u", async () => new Response("nope", { status: 404 }))).toBeNull();
+    expect(await fetchModuleRules("u", async () => new Response("# only comments\n[Rule]\n"))).toBeNull();
     expect(
-      await fetchCNRules("u", async () => {
+      await fetchModuleRules("u", async () => {
         throw new Error("boom");
       })
     ).toBeNull();

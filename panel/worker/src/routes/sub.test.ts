@@ -472,6 +472,22 @@ describe("?format=shadowrocket&rules=", () => {
     }
   });
 
+  it("rules=uae inlines the UAE module instead", async () => {
+    const calls: string[] = [];
+    vi.stubGlobal("fetch", async (input: string) => {
+      calls.push(input);
+      return new Response("[Rule]\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
+    });
+    try {
+      const body = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "uae")).text();
+      expect(calls).toEqual(["https://raw.githubusercontent.com/kulinh/shadowrocket-vietnamese/master/sr_proxy_list_UAE.module"]);
+      expect(body).toContain("# sr_proxy_list_UAE from ");
+      expect(body).toContain("\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("rules=none and final=proxy skip the fetch entirely", async () => {
     let calls = 0;
     vi.stubGlobal("fetch", async () => {
@@ -480,7 +496,7 @@ describe("?format=shadowrocket&rules=", () => {
     });
     try {
       const none = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "none")).text();
-      expect(none).toContain("load the sr_proxy_list_CN module above this config");
+      expect(none).toContain("load the sr_proxy_list_CN (or _UAE) module above this config");
       const full = await (await publicSubscription(makeEnv(db()), token, "shadowrocket", "proxy", null)).text();
       expect(full).toMatch(/FINAL,PROXY\n$/);
       expect(full).not.toContain("RULE-SET,");
