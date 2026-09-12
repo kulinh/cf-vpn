@@ -27,6 +27,7 @@ const fleet: SubscriptionRow[] = [
   row("HKG-01", "direct", true),
   row("JPY-01", "cloudflare", true),
   row("JPY-02", "direct", false),
+  row("JPY-03", "direct", true),
   row("OR-001", "cloudflare", false),
   row("SIN-01", "direct", false),
   row("USA-01", "direct", false)
@@ -36,7 +37,7 @@ describe("buildShadowrocketConfig", () => {
   it("emits AUTO with the fixed members in the fixed order and the operator's url-test options", () => {
     const conf = buildShadowrocketConfig("kulinh", fleet);
     expect(conf).toContain(
-      "[Proxy Group]\nAUTO = url-test, kulinh@JPY-02-Reality, kulinh@SIN-01-Reality, kulinh@JPY-01-HY2, kulinh@HKG-01-HY2, kulinh@OR-001-HTTPUpgrade, url = http://cp.cloudflare.com/generate_204, interval = 600, tolerance = 500, timeout = 8\n"
+      "[Proxy Group]\nAUTO = url-test, kulinh@JPY-02-Reality, kulinh@SIN-01-Reality, kulinh@JPY-03-Reality, kulinh@JPY-01-HY2, kulinh@HKG-01-HY2, kulinh@OR-001-HTTPUpgrade, url = http://cp.cloudflare.com/generate_204, interval = 600, tolerance = 500, timeout = 8\n"
     );
     expect(conf).toMatch(/\[Rule\]\n(#.*\n)*FINAL,DIRECT\n$/);
     expect(conf).toMatch(/^\[General\]\n/);
@@ -46,13 +47,13 @@ describe("buildShadowrocketConfig", () => {
     const conf = buildShadowrocketConfig("kulinh", fleet);
     const proxyLine = conf.split("\n").find((l) => l.startsWith("PROXY = select, "));
     expect(proxyLine).toBe(
-      "PROXY = select, AUTO, HY2-BACKUP, kulinh@HAN-01-Reality, kulinh@HKG-01-Reality, kulinh@HKG-01-HY2, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-HY2, kulinh@JPY-02-Reality, kulinh@OR-001-HTTPUpgrade, kulinh@SIN-01-Reality, kulinh@USA-01-Reality"
+      "PROXY = select, AUTO, HY2-BACKUP, kulinh@HAN-01-Reality, kulinh@HKG-01-Reality, kulinh@HKG-01-HY2, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-HY2, kulinh@JPY-02-Reality, kulinh@JPY-03-Reality, kulinh@JPY-03-HY2, kulinh@OR-001-HTTPUpgrade, kulinh@SIN-01-Reality, kulinh@USA-01-Reality"
     );
   });
 
   it("emits HY2-BACKUP as a select over every HY2 route, and omits it when there is none", () => {
     const conf = buildShadowrocketConfig("kulinh", fleet);
-    expect(conf).toContain("\nHY2-BACKUP = select, kulinh@HKG-01-HY2, kulinh@JPY-01-HY2\n");
+    expect(conf).toContain("\nHY2-BACKUP = select, kulinh@HKG-01-HY2, kulinh@JPY-01-HY2, kulinh@JPY-03-HY2\n");
     const none = buildShadowrocketConfig("kulinh", [row("SIN-01", "direct", false)]);
     expect(none).not.toContain("HY2-BACKUP");
     expect(none).toContain("PROXY = select, AUTO, kulinh@SIN-01-Reality");

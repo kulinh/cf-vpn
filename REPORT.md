@@ -505,9 +505,16 @@ không đáp STUN thô nên đo bằng bộ đếm iptables), rồi `cfvpnctl de
 
 SIN-01 giờ có hai relay riêng dùng được (JPY-01 và JPY-03) thay vì một.
 
-**Anh còn làm tay:** bỏ rule `22/tcp` trên VCN (SSH public giờ đi 17722); xoay
-token bot `7848387381:…` ở BotFather rồi xoá journal cũ trên VNM-01 (xem Bổ
-sung 14 mục 2). Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
+**Đã xong (13/09 rạng sáng):** rule `22/tcp` trên VCN đã bỏ (kiểm chứng từ
+VNM-01: public 22 đóng, 17722 và Tailscale 22 vào được); **JPY-03-Reality đã
+vào group AUTO** (6 đường, Worker version `ab00531f`, conf trong backup đã tải
+lại, HY2-BACKUP cũng có JPY-03-HY2); VNM-01 chạy `cfvpnctl hy2 disable` để khớp
+D1 nên `check-fleet-drift` giờ sạch 10/10.
+
+**Anh còn làm tay:** xoay token bot **@xiaoqiehn_bot** (小企鹅🐧, id
+`7848387381`, chạy từ `checkpn.service` = `/opt/checkPN/bot.py`) ở BotFather —
+token của nó nằm trong journal VNM-01 ~967k dòng vì httpx log mặc định mức INFO.
+Sửa tận gốc ở repo đó: `logging.getLogger("httpx").setLevel(logging.WARNING)`. Sau vài ngày ổn thì cân nhắc đưa JPY-03-Reality vào
 group AUTO (danh sách cố định trong Worker, hiện JPY-02/SIN-01/JPY-01-HY2/
 HKG-01-HY2/OR-001).
 
