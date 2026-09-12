@@ -392,9 +392,9 @@ func TestRunRequiresConfig(t *testing.T) {
 	}
 }
 
-// ---- TTL --------------------------------------------------------------------
+// ---- spool hand-off to the janitor bot --------------------------------------
 
-func readQueue(t *testing.T, dir string) []string {
+func readSpool(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, _ := os.ReadDir(dir)
 	var names []string
@@ -404,101 +404,72 @@ func readQueue(t *testing.T, dir string) []string {
 	return names
 }
 
-func TestTTLQueuesRepliesAndCommandsThenReaps(t *testing.T) {
+func TestSpoolNotesReplyAndCommandButDeletesNothing(t *testing.T) {
 	f, rr := &fakeTelegram{}, &recordingRunner{}
 	b := newTestBot(t, f, rr)
-	b.TTLDir = t.TempDir()
-	b.TTL = time.Hour
-	ctx := context.Background()
+	b.SpoolDir = t.TempDir()
 
-	// A handled command queues both the reply (id 101) and the command (id 7).
-	b.handle(ctx, tgUpdate{UpdateID: 1, Message: &tgMessage{MessageID: 7, Chat: tgChat{ID: -100123}, Text: "/derp"}})
-	names := readQueue(t, b.TTLDir)
+	// A handled command notes both the reply (id 101) and the command (id 7).
+	b.handle(context.Background(), tgUpdate{UpdateID: 1, Message: &tgMessage{MessageID: 7, Chat: tgChat{ID: -100123}, Text: "/derp"}})
+
+	names := readSpool(t, b.SpoolDir)
 	if len(names) != 2 || names[0] != "-100123_101.json" || names[1] != "-100123_7.json" {
-		t.Fatalf("queue = %v", names)
+		t.Fatalf("spool = %v", names)
 	}
-	raw, _ := os.ReadFile(filepath.Join(b.TTLDir, "-100123_101.json"))
-	var e ttlEntry
-	if err := json.Unmarshal(raw, &e); err != nil || e.ChatID != -100123 || e.MessageID != 101 {
+	raw, _ := os.ReadFile(filepath.Join(b.SpoolDir, "-100123_101.json"))
+	var e spoolEntry
+	if err := json.Unmarshal(raw, &e); err != nil {
 		t.Fatalf("entry = %s (%v)", raw, err)
 	}
-	if until := time.Until(time.Unix(e.DeleteAt, 0)); until < 55*time.Minute || until > 65*time.Minute {
-		t.Fatalf("delete_at must be ~1h out, got %s", until)
+	if e.ChatID != -100123 || e.MessageID != 101 || e.Source != "rwl_vpn_bot" || e.Kind != "reply" {
+		t.Fatalf("entry = %+v", e)
+	}
+	if e.SentAt < time.Now().Unix()-60 {
+		t.Fatalf("sent_at = %d, want about now", e.SentAt)
+	}
+	cmdRaw, _ := os.ReadFile(filepath.Join(b.SpoolDir, "-100123_7.json"))
+	var cmd spoolEntry
+	_ = json.Unmarshal(cmdRaw, &cmd)
+	if cmd.Kind != "command" {
+		t.Fatalf("command entry = %+v", cmd)
 	}
 
-	// Nothing is due yet.
-	if n, err := b.ReapOnce(ctx); err != nil || n != 0 {
-		t.Fatalf("early reap: n=%d err=%v", n, err)
-	}
-	// Backdate one entry (as fleet-probe.py would write it) and reap.
-	past := ttlEntry{ChatID: -100123, MessageID: 55, DeleteAt: time.Now().Add(-time.Minute).Unix()}
-	rawPast, _ := json.Marshal(past)
-	_ = os.WriteFile(filepath.Join(b.TTLDir, "-100123_55.json"), rawPast, 0o600)
-	if n, err := b.ReapOnce(ctx); err != nil || n != 1 {
-		t.Fatalf("reap: n=%d err=%v", n, err)
-	}
+	// The deleting is the janitor's job now: this bot must never call it.
 	f.mu.Lock()
-	deleted := append([]string(nil), f.deleted...)
-	f.mu.Unlock()
-	if strings.Join(deleted, ",") != "-100123/55" {
-		t.Fatalf("deleted = %v", deleted)
-	}
-	if names := readQueue(t, b.TTLDir); len(names) != 2 {
-		t.Fatalf("the reaped file must be gone, queue = %v", names)
+	defer f.mu.Unlock()
+	if len(f.deleted) != 0 {
+		t.Fatalf("bot must not delete anything itself, got %v", f.deleted)
 	}
 }
 
-func TestTTLDropsPermanentFailuresKeepsTransient(t *testing.T) {
-	f, rr := &fakeTelegram{}, &recordingRunner{}
-	b := newTestBot(t, f, rr)
-	b.TTLDir = t.TempDir()
-	ctx := context.Background()
-	write := func(id int64, at time.Time) {
-		raw, _ := json.Marshal(ttlEntry{ChatID: -100123, MessageID: id, DeleteAt: at.Unix()})
-		_ = os.WriteFile(filepath.Join(b.TTLDir, ttlFileName(-100123, id)), raw, 0o600)
-	}
-	write(1, time.Now().Add(-time.Minute))
-	f.deleteErr = "Bad Request: message to delete not found"
-	if _, err := b.ReapOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if names := readQueue(t, b.TTLDir); len(names) != 0 {
-		t.Fatalf("a permanently undeletable message must be dropped, queue = %v", names)
-	}
-
-	write(2, time.Now().Add(-time.Minute))
-	f.deleteErr = "Too Many Requests: retry after 3"
-	if _, err := b.ReapOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if names := readQueue(t, b.TTLDir); len(names) != 1 {
-		t.Fatalf("a transient failure must keep the file for retry, queue = %v", names)
-	}
-
-	write(3, time.Now().Add(-49*time.Hour))
-	if _, err := b.ReapOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if names := readQueue(t, b.TTLDir); len(names) != 1 || names[0] != "-100123_2.json" {
-		t.Fatalf("a message past Telegram's 48h window must be dropped, queue = %v", names)
-	}
-
-	_ = os.WriteFile(filepath.Join(b.TTLDir, "garbage.json"), []byte("{"), 0o600)
-	if _, err := b.ReapOnce(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if names := readQueue(t, b.TTLDir); len(names) != 1 {
-		t.Fatalf("unreadable files must be dropped, queue = %v", names)
-	}
-}
-
-func TestTTLDisabledWithoutDir(t *testing.T) {
+func TestSpoolDisabledWithoutDir(t *testing.T) {
 	f, rr := &fakeTelegram{}, &recordingRunner{}
 	b := newTestBot(t, f, rr)
 	if err := b.Send(context.Background(), "hi", 0); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := b.ReapOnce(context.Background()); n != 0 || err != nil {
-		t.Fatalf("reap without a dir must be a no-op, n=%d err=%v", n, err)
+	// No SpoolDir: nothing written, nothing deleted, no error.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.deleted) != 0 {
+		t.Fatalf("deleted = %v", f.deleted)
+	}
+}
+
+func TestSpoolSurvivesAnUnwritableDir(t *testing.T) {
+	f, rr := &fakeTelegram{}, &recordingRunner{}
+	b := newTestBot(t, f, rr)
+	// A path under a regular file can never be created: the reply must still
+	// be sent, only the hand-off is logged as lost.
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.SpoolDir = filepath.Join(file, "spool")
+	if err := b.Send(context.Background(), "hi", 0); err != nil {
+		t.Fatalf("a broken spool must not fail the send: %v", err)
+	}
+	if texts := f.texts(); len(texts) != 1 {
+		t.Fatalf("texts = %v", texts)
 	}
 }

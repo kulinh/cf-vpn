@@ -10,8 +10,9 @@
 //
 // Both bots live in the same group, so this one answers a strict whitelist and
 // stays silent on everything else (including the Worker bot's commands).
-// Everything it posts is short Telegram HTML (see format.go) and is deleted
-// again after TTL (see ttl.go).
+// Everything it posts is short Telegram HTML (see format.go); keeping the
+// group tidy is the janitor bot's job, this one only notes what it sent (see
+// spool.go).
 package tgbot
 
 import (
@@ -53,12 +54,10 @@ type Bot struct {
 	// for the DERP map to settle and then runs netcheck).
 	CommandTimeout time.Duration
 
-	// TTL is how long a message (the bot's replies and the commands they
-	// answer) stays in the group before the bot deletes it (default 24 h).
-	// TTLDir is the deletion queue directory; empty disables the feature.
-	TTL          time.Duration
-	TTLDir       string
-	ReapInterval time.Duration
+	// SpoolDir is where the janitor bot (@xiaoqie001_bot) reads the messages
+	// it should delete later; empty disables the hand-off. This bot never
+	// deletes anything itself.
+	SpoolDir string
 
 	username string
 	mu       sync.Mutex // one command at a time; two concurrent ACL writes would collide
@@ -130,10 +129,10 @@ func (b *Bot) call(ctx context.Context, method string, form url.Values, out any)
 	return nil
 }
 
-// Send posts an HTML message to the configured chat and queues it for
-// deletion after TTL. replyTo may be 0. Text over Telegram's limit, or HTML
-// Telegram refuses to parse, is sent again as plain text so a reply is never
-// lost to formatting.
+// Send posts an HTML message to the configured chat and hands it to the
+// janitor for later deletion. replyTo may be 0. Text over Telegram's limit,
+// or HTML Telegram refuses to parse, is sent again as plain text so a reply
+// is never lost to formatting.
 func (b *Bot) Send(ctx context.Context, text string, replyTo int64) error {
 	id, err := b.sendMessage(ctx, text, replyTo, true)
 	if err != nil && strings.Contains(strings.ToLower(err.Error()), "can't parse entities") {
@@ -142,7 +141,7 @@ func (b *Bot) Send(ctx context.Context, text string, replyTo int64) error {
 	if err != nil {
 		return err
 	}
-	b.track(b.ChatID, id)
+	b.spool(b.ChatID, id, "reply")
 	return nil
 }
 
@@ -376,9 +375,9 @@ func (b *Bot) handle(ctx context.Context, u tgUpdate) {
 		who = fmt.Sprintf("%d/@%s", m.From.ID, m.From.Username)
 	}
 	b.logf("command %q from %s", m.Text, who)
-	// The command itself goes with the reply after TTL (the bot is a group
-	// admin), so the group stays clean.
-	b.track(m.Chat.ID, m.MessageID)
+	// The command goes the same way as the reply: the janitor deletes both a
+	// day later, so the group stays clean.
+	b.spool(m.Chat.ID, m.MessageID, "command")
 	if err := b.Send(ctx, reply, m.MessageID); err != nil {
 		b.logf("send reply: %v", err)
 	}
@@ -414,7 +413,7 @@ func (b *Bot) skipBacklog(ctx context.Context) (int64, error) {
 	return ups[len(ups)-1].UpdateID + 1, nil
 }
 
-// Run long-polls until ctx is cancelled, deleting expired messages on the side.
+// Run long-polls until ctx is cancelled.
 func (b *Bot) Run(ctx context.Context) error {
 	if b.Token == "" || b.ChatID == 0 {
 		return fmt.Errorf("tgbot: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are required")
@@ -431,9 +430,10 @@ func (b *Bot) Run(ctx context.Context) error {
 		return err
 	}
 	b.logf("tgbot @%s polling chat %d (skipping backlog up to %d)", name, b.ChatID, offset)
-	if b.TTLDir != "" {
-		b.logf("ttl: messages expire after %s, queue in %s", b.ttl(), b.TTLDir)
-		go b.reapLoop(ctx)
+	if b.SpoolDir == "" {
+		b.logf("spool: disabled — messages stay in the group until deleted by hand")
+	} else {
+		b.logf("spool: handing sent messages to the janitor bot via %s", b.SpoolDir)
 	}
 
 	for {

@@ -415,17 +415,10 @@ lần (link không đổi). Ở UAE thêm bước bỏ module `zalo_zalopay`.
 
 ## Bổ sung 11 — tin nhắn bot tự xoá sau 24 h, reply viết gọn
 
-**Tự xoá.** Telegram không có TTL cho tin nhắn bot và chỉ cho xoá tin dưới
-48 h, nên bot tự giữ hàng đợi: mỗi tin gửi ra (và cả lệnh của anh mà nó trả
-lời, vì bot đã là admin) được ghi thành một file JSON trong
-`/var/lib/cfvpn/tg-ttl/` (`{chat_id, message_id, delete_at}`), một vòng
-reaper trong bot xoá các tin đến hạn mỗi phút; file sống qua restart. Một
-file một tin nên không cần lock: `fleet-probe.py` cũng ghi cảnh báo của nó
-vào cùng thư mục để bot xoá luôn. Lỗi vĩnh viễn (tin đã bị xoá tay, quá
-48 h) thì bỏ file; lỗi tạm (rate limit) thì thử lại. Cấu hình:
-`TELEGRAM_TTL_DIR=` (rỗng) để tắt, `TELEGRAM_MESSAGE_TTL_HOURS` đổi thời
-gian; `cfvpn-tgbot --reap` chạy một lượt bằng tay. **Đã kiểm chứng live:**
-simulate `/derp` với TTL 2 giây → file hàng đợi xuất hiện → `--reap` xoá tin
+**Tự xoá (bản đầu, sau đã chuyển sang bot lao công — xem Bổ sung 12).** Mỗi
+tin gửi ra, và cả lệnh của anh mà nó trả lời, được ghi thành một file JSON
+nhỏ; một vòng reaper trong bot xoá các tin đến hạn mỗi phút. **Đã kiểm chứng
+live:** simulate `/derp` với TTL 2 giây → file hàng đợi xuất hiện → xoá tin
 khỏi group, hàng đợi trống. Tin nhắn cũ trước bản này bot không biết để xoá.
 
 **Reply viết gọn.** Bot không còn đổ nguyên output `cfvpnctl` (snapshot
@@ -445,6 +438,45 @@ parse được thì rơi về khối `<pre>` đã lọc noise, HTML hỏng hoặ
 gửi lại dạng text thuần. Cảnh báo UDP bị chặn từ netcheck vẫn được giữ. Test:
 `internal/tgbot` dùng đúng output thật ghi từ VNM-01 ngày 12/09 để kiểm tra
 parser; Go toàn bộ pass, pytest 10 pass.
+
+## Bổ sung 12 — tách việc dọn sang bot lao công @xiaoqie001_bot
+
+Anh muốn một con bot riêng làm lao công cho group, và hai bot kia không còn
+chức năng tự xoá. Có một giới hạn của Telegram định hình toàn bộ thiết kế:
+**Telegram không bao giờ gửi tin nhắn của bot cho bot khác** — `getUpdates`
+của lao công không thấy tin của `@rwl_vpn_bot` hay `@xiaoqie2_bot`, dù nó là
+admin và dù tắt privacy mode. Ngược lại, bot admin có `can_delete_messages`
+thì **xoá được mọi tin**, chỉ là không biết tin nào tồn tại.
+
+Nên chia việc qua một thư mục spool `/var/lib/xiaoqie-janitor/spool`:
+
+| Vai | Ai | Làm gì |
+|---|---|---|
+| Ghi sổ | `@rwl_vpn_bot` (`internal/tgbot/spool.go`), `fleet-probe.py`, `@xiaoqie2_bot` | gửi tin xong ghi một file `<chat>_<msg>.json` (`source`, `kind`, `sent_at`) — không quyết định gì, không gọi `deleteMessage` |
+| Dọn | `@xiaoqie001_bot` (`/opt/xiaoqie_bot`, unit `xiaoqie-janitor`) | quét mỗi 60 s, đến hạn thì xoá tin rồi xoá file |
+
+Chính sách TTL nằm hết ở lao công: mặc định 24 giờ, `kind="otp"` 15 phút (tin
+OTP của sms2tele không nên nằm lâu), `delete_at` tuyệt đối thì thắng TTL (dùng
+khi muốn xoá ngay). An toàn: chỉ xoá trong `ALLOWED_CHAT_IDS`, file trỏ chat
+khác bị chuyển vào `spool/rejected/`; lỗi "tin không còn" thì bỏ file, lỗi tạm
+(429, mạng, mất quyền admin) thì thử lại tới `MAX_ATTEMPTS`; tin quá 48 h
+(Telegram không cho xoá nữa) thì bỏ kèm log.
+
+Gỡ khỏi cf-vpn: `internal/tgbot/ttl.go`, cờ `--reap`, các khoá
+`TELEGRAM_TTL_DIR`/`TELEGRAM_MESSAGE_TTL_HOURS`; thay bằng `spool.go` +
+`TELEGRAM_SPOOL_DIR`. 10 tin đang chờ trong hàng đợi cũ đã chuyển sang spool
+mới (lao công đọc được cả định dạng cũ chỉ có `delete_at`).
+
+**Một lỗi bắt được lúc chạy thật:** log khởi động in `TTL 0.0h` — trong
+`Config.from_env` của lao công, giá trị mặc định không được nhân hệ số đơn vị
+nên 24 *giờ* thành 24 *giây*, tức mọi tin sẽ bị xoá sau 24 giây. Đã sửa và
+thêm test chặn đúng trường hợp thiếu biến môi trường.
+
+**Đã kiểm chứng live:** `janitor.py --selftest` (tự gửi 1 tin rồi tự xoá) OK;
+`cfvpn-tgbot --simulate "/derp"` → tin 677 xuất hiện trong spool với
+`source=rwl_vpn_bot, kind=reply` và bot **không** gọi `deleteMessage` nữa;
+`--status` đọc đúng 11 tin đang chờ. Test: lao công 18, cf-vpn Go toàn bộ pass,
+pytest 10.
 
 ## Kết quả probe cuối (ms, từ VNM-01, tất cả 204)
 

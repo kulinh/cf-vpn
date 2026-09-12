@@ -83,22 +83,28 @@ def test_routes_missing_from_this_run_are_dropped_from_state():
     assert "GONE" not in s
 
 
-def test_record_ttl_writes_one_json_file_per_message(tmp_path):
+def test_record_sent_writes_one_json_file_per_message(tmp_path):
     import json
     import os
-    path = fp.record_ttl(str(tmp_path / "q"), "-1003806233980", 4242, 24, now=1_789_300_800)
+    path = fp.record_sent(str(tmp_path / "q"), "-1003806233980", 4242, now=1_789_300_800)
     assert path == str(tmp_path / "q" / "-1003806233980_4242.json")
-    assert json.load(open(path)) == {"chat_id": -1003806233980, "message_id": 4242, "delete_at": 1_789_300_800 + 24 * 3600}
+    assert json.load(open(path)) == {
+        "chat_id": -1003806233980,
+        "message_id": 4242,
+        "source": "rwl_vpn_bot",
+        "kind": "alert",
+        "sent_at": 1_789_300_800,
+    }
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
     assert not [p for p in os.listdir(tmp_path / "q") if p.endswith(".tmp")]
     # Disabled (empty dir) or no message id: nothing written, no error.
-    assert fp.record_ttl("", "-1", 1, 24) is None
-    assert fp.record_ttl(str(tmp_path / "q"), "-1", None, 24) is None
+    assert fp.record_sent("", "-1", 1) is None
+    assert fp.record_sent(str(tmp_path / "q"), "-1", None) is None
 
 
-def test_configure_ttl_reads_env(monkeypatch):
-    fp.configure_ttl({"TELEGRAM_TTL_DIR": "", "TELEGRAM_MESSAGE_TTL_HOURS": "0.5"})
-    assert fp.TTL == {"dir": "", "hours": 0.5}
-    fp.configure_ttl({"TELEGRAM_TTL_DIR": "/tmp/x", "TELEGRAM_MESSAGE_TTL_HOURS": ""})
-    assert fp.TTL["dir"] == "/tmp/x" and fp.TTL["hours"] == 0.5
-    fp.TTL.update({"dir": "/var/lib/cfvpn/tg-ttl", "hours": 24.0})
+def test_configure_spool_reads_env():
+    fp.configure_spool({"TELEGRAM_SPOOL_DIR": ""})
+    assert fp.SPOOL == {"dir": ""}
+    fp.configure_spool({"TELEGRAM_SPOOL_DIR": "/tmp/x"})
+    assert fp.SPOOL["dir"] == "/tmp/x"
+    fp.SPOOL["dir"] = "/var/lib/xiaoqie-janitor/spool"

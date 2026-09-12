@@ -6,12 +6,13 @@
 //	cfvpn-tgbot                      # long-poll forever (what systemd runs)
 //	cfvpn-tgbot --setup              # register the command menu for the chat, then exit
 //	cfvpn-tgbot --simulate "/derp"   # run one command as if it arrived, reply in the chat, exit
-//	cfvpn-tgbot --reap               # delete the queued messages whose TTL passed, then exit
 //
 // Configuration comes from the process environment (systemd EnvironmentFile):
-// TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID; optional TELEGRAM_TTL_DIR (default
-// /var/lib/cfvpn/tg-ttl, empty string disables auto-delete) and
-// TELEGRAM_MESSAGE_TTL_HOURS (default 24).
+// TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID; optional TELEGRAM_SPOOL_DIR (default
+// /var/lib/xiaoqie-janitor/spool, empty string keeps messages in the group).
+// Deleting them is the janitor bot's job (@xiaoqie001_bot, /opt/xiaoqie_bot):
+// Telegram never shows one bot's messages to another, so this bot only records
+// what it sent and the janitor does the cleaning.
 package main
 
 import (
@@ -25,7 +26,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"github.com/kulinh/cf-vpn/internal/commands"
 	"github.com/kulinh/cf-vpn/internal/state"
@@ -55,7 +55,6 @@ func fromEnvOrFiles(key string) string {
 func main() {
 	setup := flag.Bool("setup", false, "register the bot's command menu for the chat and exit")
 	simulate := flag.String("simulate", "", "run this command text as if it arrived from the chat, then exit (self-test)")
-	reap := flag.Bool("reap", false, "delete queued messages whose TTL has passed, then exit")
 	flag.Parse()
 
 	token := fromEnvOrFiles("TELEGRAM_BOT_TOKEN")
@@ -68,29 +67,19 @@ func main() {
 		log.Fatalf("TELEGRAM_CHAT_ID %q is not a number: %v", chatRaw, err)
 	}
 
-	// Auto-delete: every reply and the command it answers leave the group
-	// after TTL. fleet-probe.py queues its alerts in the same directory.
-	ttlDir := "/var/lib/cfvpn/tg-ttl"
-	if v, ok := os.LookupEnv("TELEGRAM_TTL_DIR"); ok {
-		ttlDir = strings.TrimSpace(v)
-	} else if v := fromEnvOrFiles("TELEGRAM_TTL_DIR"); v != "" {
-		ttlDir = v
-	}
-	ttl := 24 * time.Hour
-	if v := fromEnvOrFiles("TELEGRAM_MESSAGE_TTL_HOURS"); v != "" {
-		h, err := strconv.ParseFloat(v, 64)
-		if err != nil || h <= 0 {
-			log.Fatalf("TELEGRAM_MESSAGE_TTL_HOURS %q is not a positive number", v)
-		}
-		ttl = time.Duration(h * float64(time.Hour))
+	// Hand-off to the janitor bot: where to note the messages we send.
+	spoolDir := tgbot.DefaultSpoolDir
+	if v, ok := os.LookupEnv("TELEGRAM_SPOOL_DIR"); ok {
+		spoolDir = strings.TrimSpace(v)
+	} else if v := fromEnvOrFiles("TELEGRAM_SPOOL_DIR"); v != "" {
+		spoolDir = v
 	}
 
 	bot := &tgbot.Bot{
-		Token:  token,
-		ChatID: chatID,
-		Logf:   log.Printf,
-		TTL:    ttl,
-		TTLDir: ttlDir,
+		Token:    token,
+		ChatID:   chatID,
+		Logf:     log.Printf,
+		SpoolDir: spoolDir,
 		Runner: tgbot.Runner{
 			// Same code path as the CLI: ACL snapshots, dry-run validation,
 			// If-Match write and `tailscale netcheck` all happen in there.
@@ -122,15 +111,6 @@ func main() {
 			log.Fatal(err)
 		}
 		fmt.Println("command menu registered for chat", chatID)
-		return
-	}
-
-	if *reap {
-		n, err := bot.ReapOnce(ctx)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf("deleted %d expired message(s) from chat %d\n", n, chatID)
 		return
 	}
 
