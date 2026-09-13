@@ -63,7 +63,7 @@ describe('subscriptionLinks', () => {
 
   it('builds the Shadowrocket remote-config URL per rule set', () => {
     expect(buildShadowrocketConfUrl('https://panel.example.com/sub/abc123', 'uae')).toBe(
-      'https://panel.example.com/sub/abc123?format=shadowrocket&rules=uae',
+      'https://panel.example.com/sub/abc123/RWL-UAE.conf',
     )
   })
 })

@@ -32,8 +32,10 @@ export function profileName(rules: RuleSet): string {
 // The Shadowrocket .conf (policy groups + rules) is a separate remote config
 // next to the node subscription; Shadowrocket has no deep link for it, so the
 // panel hands out the URL to paste under Config > Add remote.
+// The list rides in the file name (Shadowrocket names the config after it):
+// /sub/<token>/RWL-CN.conf.
 export function buildShadowrocketConfUrl(subUrl: string, rules: RuleSet): string {
-  return `${subUrl}?format=shadowrocket&rules=${rules}`
+  return `${subUrl}/${profileName(rules)}.conf`
 }
 
 // The official sing-box apps (SFI on iOS/macOS, SFA on Android) import a
