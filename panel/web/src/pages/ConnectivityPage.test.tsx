@@ -80,6 +80,8 @@ describe('ConnectivityPage', () => {
     // bg-slate-900 + text-white button renders white-on-white and disappears.
     vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode()])
     render(<ConnectivityPage />)
+    // Wait for the node load to settle so its state update lands inside act.
+    await screen.findByText('SIN-01')
     const button = screen.getByRole('button', { name: /run test/i })
     expect(button.className).not.toMatch(/bg-slate-900/)
     expect(button.className).toMatch(/bg-blue-600/)
