@@ -377,8 +377,6 @@ func Run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 0
 	case "derp":
 		return runDerp(ctx, args[1:], stdout, stderr)
-	case "rules-mode":
-		return runRulesMode(ctx, args[1:], stdout, stderr)
 	case "xhttp-direct":
 		host, path, ok := parseEnableDisableHostPath(args, "xhttp-direct", stderr)
 		if !ok {
@@ -523,43 +521,6 @@ func runDerp(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-}
-
-// runRulesMode handles `cfvpnctl rules-mode show | set cn|uae|none`: the
-// fleet-wide blocked-site module the panel inlines into the Shadowrocket
-// .conf when a subscription link carries no ?rules=. Written straight into
-// D1 (settings.rules_mode) with the CF credentials in /etc/cfvpn/cfvpn.env.
-func runRulesMode(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	usage := "usage: cfvpnctl rules-mode show | rules-mode set cn|uae|none"
-	if len(args) == 0 {
-		fmt.Fprintln(stderr, usage)
-		return 2
-	}
-	deps := commands.RulesModeDeps{}
-	switch args[0] {
-	case "show":
-		if len(args) != 1 {
-			fmt.Fprintln(stderr, usage)
-			return 2
-		}
-		if err := commands.RunRulesModeShow(ctx, deps, stdout); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		return 0
-	case "set":
-		if len(args) != 2 {
-			fmt.Fprintln(stderr, usage)
-			return 2
-		}
-		if err := commands.RunRulesModeSet(ctx, args[1], deps, stdout); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		return 0
-	}
-	fmt.Fprintln(stderr, usage)
-	return 2
 }
 
 // parseEnableDisableHostPath parses the shared "<cmd> enable --host H --path P

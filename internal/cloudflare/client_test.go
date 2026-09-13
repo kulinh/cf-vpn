@@ -166,8 +166,8 @@ func TestDeleteARecordByNameNoopWhenAbsent(t *testing.T) {
 	}
 }
 
-// D1Query is how the node writes fleet settings (cfvpnctl rules-mode, the
-// Telegram bot). Its failure modes were untested: D1 reports a bad statement
+// D1Query is how a node writes fleet settings from Go (the shell twin is
+// scripts/d1-set-node.sh). Its failure modes were untested: D1 reports a bad statement
 // inside a success:true envelope, and a gateway page is not JSON at all.
 func TestD1Query(t *testing.T) {
 	const acct = "8706ce6c15ce482de516ffc045414678"
