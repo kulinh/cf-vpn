@@ -1,6 +1,6 @@
 import type { SubscriptionRow } from "./subscription";
-import { hasHy2, hasNaive, hy2Address, isCloudflareRow, isRealityRow, realityHost } from "./subscription";
-import { httpUpgradeName, hy2Name, naiveName, realityName } from "./clash";
+import { hasHy2, hasIPv6, hasNaive, hy2Address, isCloudflareRow, isRealityRow, realityHost } from "./subscription";
+import { httpUpgradeName, hy2Name, hy2V6Name, naiveName, realityName, realityV6Name } from "./clash";
 import { AUTO_MEMBERS } from "./shadowrocket";
 import type { ModuleRules } from "./cnrules";
 
@@ -36,10 +36,10 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
   const out: Json[] = [];
   for (const r of rows) {
     if (isRealityRow(r)) {
-      out.push({
+      const reality = (tag: string, server: string): Json => ({
         type: "vless",
-        tag: realityName(username, r.node_id),
-        server: realityHost(r),
+        tag,
+        server,
         server_port: 443,
         uuid: r.vless_uuid,
         flow: "xtls-rprx-vision",
@@ -50,6 +50,12 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
           reality: { enabled: true, public_key: r.reality_pubkey, short_id: r.reality_sid }
         }
       });
+      out.push(reality(realityName(username, r.node_id), realityHost(r)));
+      // IPv6 twin: PROXY only (AUTO members are fixed IPv4 names, and the
+      // HY2-BACKUP filter matches "-HY2" at the end, not "-HY2-v6").
+      if (hasIPv6(r)) {
+        out.push(reality(realityV6Name(username, r.node_id), r.public_ipv6!));
+      }
     } else if (isCloudflareRow(r)) {
       out.push({
         type: "vless",
@@ -64,10 +70,10 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
       continue;
     }
     if (hasHy2(r)) {
-      out.push({
+      const hy2 = (tag: string, server: string): Json => ({
         type: "hysteria2",
-        tag: hy2Name(username, r.node_id),
-        server: hy2Address(r),
+        tag,
+        server,
         server_port: r.hy2_port,
         // The server runs hysteria `auth.type: userpass`, whose auth string
         // is "user:pass" (the base64 URI carries the same pair).
@@ -75,6 +81,10 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
         obfs: { type: "salamander", password: r.hy2_obfs_pw },
         tls: { enabled: true, server_name: r.hy2_host }
       });
+      out.push(hy2(hy2Name(username, r.node_id), hy2Address(r)));
+      if (hasIPv6(r)) {
+        out.push(hy2(hy2V6Name(username, r.node_id), r.public_ipv6!));
+      }
     }
     if (hasNaive(r)) {
       out.push({

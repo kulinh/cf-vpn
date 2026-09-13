@@ -1,6 +1,6 @@
 import type { SubscriptionRow } from "./subscription";
-import { realityName, httpUpgradeName, hy2Name, xhttpName, xhttpDirectName, xhttpH3Name, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
-import { hasXHTTP, hasXHTTPDirect, hasXHTTPH3 } from "./subscription";
+import { realityName, realityV6Name, httpUpgradeName, hy2Name, hy2V6Name, xhttpName, xhttpDirectName, xhttpH3Name, hasHy2, isCloudflareRow, isRealityRow } from "./clash";
+import { hasIPv6, hasXHTTP, hasXHTTPDirect, hasXHTTPH3 } from "./subscription";
 import type { ModuleRules } from "./cnrules";
 
 // Shadowrocket ".conf" companion to the base64 subscription. The subscription
@@ -42,6 +42,11 @@ export function availableNames(username: string, rows: SubscriptionRow[]): strin
   for (const r of rows) {
     if (isRealityRow(r)) {
       names.push(realityName(username, r.node_id));
+      // IPv6 twin: PROXY only. It ends in -v6, so the HY2-BACKUP filter below
+      // and AUTO (fixed IPv4 members) never pick it up.
+      if (hasIPv6(r)) {
+        names.push(realityV6Name(username, r.node_id));
+      }
       // Same inbound-level gate as buildSubscriptionURIs: H3 is independent of
       // REALITY and lives on the same direct node.
       if (hasXHTTPH3(r)) {
@@ -61,6 +66,9 @@ export function availableNames(username: string, rows: SubscriptionRow[]): strin
     }
     if (hasHy2(r)) {
       names.push(hy2Name(username, r.node_id));
+      if (hasIPv6(r)) {
+        names.push(hy2V6Name(username, r.node_id));
+      }
     }
   }
   return names;

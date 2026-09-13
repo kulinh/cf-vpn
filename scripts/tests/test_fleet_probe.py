@@ -239,3 +239,18 @@ def test_send_telegram_honours_429_retry_after(monkeypatch):
     monkeypatch.setattr(fp.urllib.request, "urlopen", e400)
     assert fp.send_telegram("tok", "-1", "hi") is False
     assert len(calls) == 1 and slept == []
+
+
+def test_h3_outbound_carries_alpn():
+    text = ("vless://u@quic.example.com:443?encryption=none&security=tls&type=xhttp&host=quic.example.com"
+            "&path=%2Fp&mode=stream-one&alpn=h3&sni=quic.example.com#kulinh%40JPY-03-XHTTP-H3")
+    (r,) = fp.parse_subscription(text)
+    assert fp.xray_outbound(r)["streamSettings"]["tlsSettings"]["alpn"] == ["h3"]
+
+
+def test_ipv6_routes_parse_and_hysteria_server_is_bracketed():
+    text = ("vless://u@[2603:c023::1]:443?security=reality&type=tcp&sni=www.sony.jp&pbk=k&sid=s#a-Reality-v6\n"
+            "hysteria2://kulinh:pw@[2603:c023::1]:32443/?obfs=salamander&obfs-password=o&sni=q.example.com#a-HY2-v6")
+    v, h = fp.parse_subscription(text)
+    assert fp.xray_outbound(v)["settings"]["vnext"][0]["address"] == "2603:c023::1"
+    assert fp.hysteria_config(h, 21001)["server"] == "[2603:c023::1]:32443"
