@@ -67,7 +67,7 @@ export async function publicSubscription(
 
   const rows = await all<SubscriptionRow>(
     env.DB.prepare(
-      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, n.public_ip, un.node_id, n.hy2_host, n.hy2_port, n.hy2_obfs_pw, n.mode, n.reality_pubkey, n.reality_sid, n.reality_sni, n.xhttp_path, n.xhttp_enabled, n.xhttp_direct_host, n.xhttp_direct_path, n.xhttp_h3_host, n.xhttp_h3_path, n.naive_host, n.naive_user, n.naive_pass FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
+      "SELECT un.vless_uuid, un.hy2_pw, n.vpn_host, n.public_ip, n.public_ipv6, un.node_id, n.hy2_host, n.hy2_port, n.hy2_obfs_pw, n.mode, n.reality_pubkey, n.reality_sid, n.reality_sni, n.xhttp_path, n.xhttp_enabled, n.xhttp_direct_host, n.xhttp_direct_path, n.xhttp_h3_host, n.xhttp_h3_path, n.naive_host, n.naive_user, n.naive_pass FROM user_nodes un JOIN nodes n ON n.id=un.node_id WHERE un.user_id=? ORDER BY un.node_id"
     ).bind(user.id)
   );
 

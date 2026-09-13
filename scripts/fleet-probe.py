@@ -110,6 +110,10 @@ def xray_outbound(r: Route) -> dict:
     elif q.get("security") == "tls":
         ss["security"] = "tls"
         ss["tlsSettings"] = {"serverName": q.get("sni", r.host)}
+        # XHTTP-H3 URIs carry alpn=h3; without it xray dials TCP and the route
+        # always reads as down.
+        if q.get("alpn"):
+            ss["tlsSettings"]["alpn"] = q["alpn"].split(",")
     if q.get("type") == "httpupgrade":
         ss["httpupgradeSettings"] = {"path": q.get("path", "/"), "host": q.get("host", r.host)}
     elif q.get("type") == "xhttp":
@@ -124,7 +128,7 @@ def xray_outbound(r: Route) -> dict:
 
 def hysteria_config(r: Route, socks_port: int) -> dict:
     q = r.query
-    cfg = {"server": f"{r.host}:{r.port}",
+    cfg = {"server": (f"[{r.host}]" if ":" in r.host else r.host) + f":{r.port}",
            # server runs auth.type userpass: the client must send user:password
            "auth": f"{r.user}:{r.password}",
            "tls": {"sni": q.get("sni", r.host), "insecure": q.get("insecure") == "1"},

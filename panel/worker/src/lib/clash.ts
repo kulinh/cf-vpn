@@ -1,4 +1,4 @@
-import { hasHy2, hy2Address, isCloudflareRow, isRealityRow, realityHost, type SubscriptionRow } from "./subscription";
+import { V6_SUFFIX, hasHy2, hasIPv6, hy2Address, isCloudflareRow, isRealityRow, realityHost, type SubscriptionRow } from "./subscription";
 
 export { hasHy2, isCloudflareRow, isRealityRow };
 
@@ -65,6 +65,16 @@ export function httpUpgradeName(username: string, nodeId: string): string {
 export function hy2Name(username: string, nodeId: string): string {
   return `${username}@${nodeId}-HY2`;
 }
+// IPv6 twins (public_ipv6 set). Manual picks only: never in an automatic group.
+export function realityV6Name(username: string, nodeId: string): string {
+  return `${realityName(username, nodeId)}${V6_SUFFIX}`;
+}
+export function hy2V6Name(username: string, nodeId: string): string {
+  return `${hy2Name(username, nodeId)}${V6_SUFFIX}`;
+}
+export function isV6Name(name: string): boolean {
+  return name.endsWith(V6_SUFFIX);
+}
 // XHTTP routes exist in the base64 subscription and the Shadowrocket groups
 // only: mihomo has no xhttp transport, so the Clash output omits them.
 export function xhttpName(username: string, nodeId: string): string {
@@ -91,10 +101,10 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
     // Same gating as buildSubscriptionURIs, so the two formats never disagree
     // about which nodes a user has.
     if (isRealityRow(r)) {
-      proxies.push({
-        name: realityName(username, r.node_id),
+      const reality = (name: string, server: string): Node => ({
+        name,
         type: "vless",
-        server: realityHost(r),
+        server,
         port: 443,
         uuid: r.vless_uuid,
         network: "tcp",
@@ -108,6 +118,10 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
           "short-id": r.reality_sid!
         }
       });
+      proxies.push(reality(realityName(username, r.node_id), realityHost(r)));
+      if (hasIPv6(r)) {
+        proxies.push(reality(realityV6Name(username, r.node_id), r.public_ipv6!));
+      }
     } else if (isCloudflareRow(r)) {
       const path = r.xhttp_path ?? "/api/v1/sync";
       proxies.push({
@@ -131,10 +145,10 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
       continue;
     }
     if (hasHy2(r)) {
-      proxies.push({
-        name: hy2Name(username, r.node_id),
+      const hy2 = (name: string, server: string): Node => ({
+        name,
         type: "hysteria2",
-        server: hy2Address(r),
+        server,
         port: r.hy2_port!,
         // Server-side hysteria uses auth.type: userpass.
         password: `${username}:${r.hy2_pw}`,
@@ -142,6 +156,10 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
         obfs: "salamander",
         "obfs-password": r.hy2_obfs_pw!
       });
+      proxies.push(hy2(hy2Name(username, r.node_id), hy2Address(r)));
+      if (hasIPv6(r)) {
+        proxies.push(hy2(hy2V6Name(username, r.node_id), r.public_ipv6!));
+      }
     }
   }
   return proxies;
@@ -178,7 +196,9 @@ export function buildClashConfig(username: string, rows: SubscriptionRow[]): str
       url: "http://www.gstatic.com/generate_204",
       interval: 300,
       tolerance: 100,
-      proxies: names
+      // A client without IPv6 would still see the v6 routes as candidates;
+      // keep them out so the automatic pick is always reachable.
+      proxies: names.filter((n) => !isV6Name(n))
     },
     "  ",
     out

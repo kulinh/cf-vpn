@@ -6,6 +6,8 @@ export interface SubscriptionRow {
   // client never resolves vpn_host (DNS for it is interfered with from China).
   // Optional so older callers/tests that predate the column still type-check.
   public_ip?: string | null;
+  // Public IPv6 (migration 0025). Set = extra -Reality-v6 / -HY2-v6 routes.
+  public_ipv6?: string | null;
   hy2_host: string | null;
   hy2_port: number | null;
   hy2_obfs_pw: string | null;
@@ -43,12 +45,25 @@ export const XHTTP_MODE = "packet-up";
 
 // Server-side hysteria uses `auth.type: userpass`, so the URI must include the
 // username before the password. Without it, the client gets a 404 auth error.
+// suffix is appended to the route name ("-v6" for the IPv6 twin).
 export function buildVLESSRealityURI(
   name: string, uuid: string, host: string,
-  sni: string, pbk: string, sid: string,
+  sni: string, pbk: string, sid: string, suffix = "",
 ): string {
   const enc = encodeURIComponent;
-  return `vless://${uuid}@${host}:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=${enc(sni)}&pbk=${enc(pbk)}&sid=${enc(sid)}&fp=chrome#${enc(name)}-Reality`;
+  return `vless://${uuid}@${uriHost(host)}:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=${enc(sni)}&pbk=${enc(pbk)}&sid=${enc(sid)}&fp=chrome#${enc(name)}-Reality${suffix}`;
+}
+
+// An IPv6 literal must be bracketed in the authority part of a URI.
+export function uriHost(host: string): string {
+  return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+}
+
+// Name suffix of the IPv6 twins of the Reality and HY2 routes.
+export const V6_SUFFIX = "-v6";
+
+export function hasIPv6(r: SubscriptionRow): boolean {
+  return !!r.public_ipv6 && r.public_ipv6.length > 0;
 }
 
 export function buildVLESSHTTPUpgradeURI(
@@ -114,9 +129,9 @@ export function hasNaive(r: SubscriptionRow): boolean {
   return !!r.naive_host && !!r.naive_user && !!r.naive_pass;
 }
 
-export function buildHy2URI(tag: string, username: string, password: string, address: string, sniHost: string, port: number, obfsPw: string): string {
+export function buildHy2URI(tag: string, username: string, password: string, address: string, sniHost: string, port: number, obfsPw: string, suffix = ""): string {
   const enc = encodeURIComponent;
-  return `hysteria2://${enc(username)}:${enc(password)}@${address}:${port}/?obfs=salamander&obfs-password=${enc(obfsPw)}&sni=${enc(sniHost)}&insecure=0#${enc(tag)}-HY2`;
+  return `hysteria2://${enc(username)}:${enc(password)}@${uriHost(address)}:${port}/?obfs=salamander&obfs-password=${enc(obfsPw)}&sni=${enc(sniHost)}&insecure=0#${enc(tag)}-HY2${suffix}`;
 }
 
 // hy2Address is what an HY2 client dials: the node's public IP when D1 has
@@ -177,6 +192,10 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[],
       continue;
     }
     lines.push(uri);
+    if (isRealityRow(r) && hasIPv6(r)) {
+      lines.push(buildVLESSRealityURI(tag, r.vless_uuid, r.public_ipv6!,
+        r.reality_sni!, r.reality_pubkey!, r.reality_sid!, V6_SUFFIX));
+    }
     if (hasXHTTP(r)) {
       lines.push(buildVLESSXHTTPURI(tag, r.vless_uuid, r.vpn_host, XHTTP_PATH, XHTTP_MODE));
     }
@@ -188,6 +207,9 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[],
     }
     if (hasHy2(r)) {
       lines.push(buildHy2URI(tag, username, r.hy2_pw, hy2Address(r), r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!));
+      if (hasIPv6(r)) {
+        lines.push(buildHy2URI(tag, username, r.hy2_pw, r.public_ipv6!, r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!, V6_SUFFIX));
+      }
     } else if (r.hy2_host && r.hy2_port) {
       // The node has a Hysteria2 endpoint but no obfs password, so the line is
       // dropped and the user silently loses HY2 on that node. Output is

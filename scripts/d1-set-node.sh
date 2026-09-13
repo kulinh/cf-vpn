@@ -8,6 +8,7 @@
 #   bash scripts/d1-set-node.sh <NODE_ID> xhttp-direct   # copy XHTTP_DIRECT_HOST/PATH from the node (empty = NULL)
 #   bash scripts/d1-set-node.sh <NODE_ID> xhttp-h3       # copy XHTTP_H3_HOST/PATH from the node (empty = NULL)
 #   bash scripts/d1-set-node.sh <NODE_ID> naive          # copy NAIVE_HOST/USER/PASS from the node (empty = NULL)
+#   bash scripts/d1-set-node.sh <NODE_ID> ipv6           # copy PUBLIC_IPV6 from the node (empty = NULL)
 #
 # Why: the Worker only persists reality_*/hy2_* when the panel itself calls
 # the agent (node status / user sync), both behind Cloudflare Access. After a
@@ -86,11 +87,19 @@ case "$ACTION" in
     payload="$(jq -cn --arg id "$NODE" --arg h "$nh" --arg u "$nu" --arg p "$np" \
       '{sql:"UPDATE nodes SET naive_host=NULLIF(?,\"\"), naive_user=NULLIF(?,\"\"), naive_pass=NULLIF(?,\"\") WHERE id=?", params:[$h,$u,$p,$id]}')"
     ;;
+  ipv6)
+    envtxt="$(node_env)"
+    g() { printf '%s\n' "$envtxt" | awk -F= -v k="$1" '$1==k{print substr($0, length(k)+2); exit}'; }
+    v6="$(g PUBLIC_IPV6)"
+    case "$v6" in ''|*:*) ;; *) echo "$NODE: PUBLIC_IPV6=$v6 is not an IPv6 address; refusing to write" >&2; exit 1 ;; esac
+    payload="$(jq -cn --arg id "$NODE" --arg v "$v6" \
+      '{sql:"UPDATE nodes SET public_ipv6=NULLIF(?,\"\") WHERE id=?", params:[$v,$id]}')"
+    ;;
   xhttp-on|xhttp-off)
     v=0; [ "$ACTION" = "xhttp-on" ] && v=1
     payload="$(jq -cn --arg id "$NODE" --argjson v "$v" '{sql:"UPDATE nodes SET xhttp_enabled=? WHERE id=?", params:[$v,$id]}')"
     ;;
-  *) echo "unknown action: $ACTION (hy2-off|hy2-on|reality|xhttp-on|xhttp-off|xhttp-direct|xhttp-h3|naive)" >&2; exit 2 ;;
+  *) echo "unknown action: $ACTION (hy2-off|hy2-on|reality|xhttp-on|xhttp-off|xhttp-direct|xhttp-h3|naive|ipv6)" >&2; exit 2 ;;
 esac
 
 out="$(d1_query "$payload")"
