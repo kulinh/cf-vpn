@@ -35,7 +35,7 @@ func directEnv() map[string]string {
 const (
 	wantRealityURI = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=d3cbbc0b4c5bc5f9&fp=chrome#SG1-Reality"
 	wantHy2URI     = "hysteria2://alice:Zm9vYmFy_-abc@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#SG1-HY2"
-	wantHTTPUpURI  = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&sni=cdn-a1b2.rwl.one#SG1-HTTPUpgrade"
+	wantHTTPUpURI  = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&alpn=http%2F1.1&sni=cdn-a1b2.rwl.one#SG1-HTTPUpgrade"
 )
 
 const testUUID = "2f8a1c3e-1111-4222-8333-abcdefabcdef"

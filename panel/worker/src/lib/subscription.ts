@@ -75,12 +75,16 @@ export function hasIPv6(r: SubscriptionRow): boolean {
   return ipv6Of(r) !== null;
 }
 
+// alpn=http/1.1 is explicit: behind Cloudflare the Upgrade only works on
+// HTTP/1.1, and a client that offers h2 (Shadowrocket does) gets h2 from the
+// edge and hangs. xray picks http/1.1 by itself, other clients do not.
+// XHTTP is the opposite: h2 (packet-up / stream-one over a CDN or Caddy).
 export function buildVLESSHTTPUpgradeURI(
   name: string, uuid: string, domain: string, path: string,
 ): string {
   const enc = encodeURIComponent;
   const encPath = path.split("/").map(enc).join("%2F");
-  return `vless://${uuid}@${domain}:443?encryption=none&security=tls&type=httpupgrade&host=${enc(domain)}&path=${encPath}&sni=${enc(domain)}#${enc(name)}-HTTPUpgrade`;
+  return `vless://${uuid}@${domain}:443?encryption=none&security=tls&type=httpupgrade&host=${enc(domain)}&path=${encPath}&alpn=http%2F1.1&sni=${enc(domain)}#${enc(name)}-HTTPUpgrade`;
 }
 
 // address is what the client dials (public IP when known), sniHost the
@@ -89,7 +93,7 @@ export function buildVLESSHTTPUpgradeURI(
 export function buildVLESSXHTTPURI(name: string, uuid: string, domain: string, path: string, mode: string): string {
   const enc = encodeURIComponent;
   const encPath = path.split("/").map(enc).join("%2F");
-  return `vless://${uuid}@${domain}:443?encryption=none&security=tls&type=xhttp&host=${enc(domain)}&path=${encPath}&mode=${enc(mode)}&sni=${enc(domain)}#${enc(name)}-XHTTP`;
+  return `vless://${uuid}@${domain}:443?encryption=none&security=tls&type=xhttp&host=${enc(domain)}&path=${encPath}&mode=${enc(mode)}&alpn=h2%2Chttp%2F1.1&sni=${enc(domain)}#${enc(name)}-XHTTP`;
 }
 
 export function hasXHTTP(r: SubscriptionRow): boolean {
@@ -112,7 +116,7 @@ export function hasXHTTPH3(r: SubscriptionRow): boolean {
 export function buildVLESSXHTTPDirectURI(name: string, uuid: string, host: string, path: string, mode: string): string {
   const enc = encodeURIComponent;
   const encPath = path.split("/").map(enc).join("%2F");
-  return `vless://${uuid}@${host}:443?encryption=none&security=tls&type=xhttp&host=${enc(host)}&path=${encPath}&mode=${enc(mode)}&sni=${enc(host)}#${enc(name)}-XHTTP-Direct`;
+  return `vless://${uuid}@${host}:443?encryption=none&security=tls&type=xhttp&host=${enc(host)}&path=${encPath}&mode=${enc(mode)}&alpn=h2%2Chttp%2F1.1&sni=${enc(host)}#${enc(name)}-XHTTP-Direct`;
 }
 
 // Mirrors BuildVLESSXHTTPH3URI in internal/subscription. The address is the
