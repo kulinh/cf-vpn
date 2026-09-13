@@ -85,7 +85,7 @@ test('syncs user with missing node directly without confirm dialog', async () =>
   expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
   expect(syncSpy).toHaveBeenCalledWith('kulinh')
   expect(await screen.findByText(/added 1 nodes/i)).toBeInTheDocument()
-  expect(screen.getByText(/nodes: hk, jp1, jp2, sg, vn/i)).toBeInTheDocument()
+  expect(await screen.findByText('VN')).toBeInTheDocument()
   expect(screen.getByRole('button', { name: /up-to-date/i })).toBeDisabled()
 })
 

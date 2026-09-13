@@ -115,7 +115,7 @@ export function UsersPage() {
   return (
     <>
       <section className="space-y-3">
-        <h1 className="text-xl font-semibold">Users</h1>
+        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Users</h1>
         <ErrorBanner message={loadError} />
         {users.map((user) => {
           const missingCount = missingByUser[user.id] ?? 0
@@ -126,16 +126,28 @@ export function UsersPage() {
           return (
             <article
               key={user.id}
-              className="rounded-lg border border-slate-800 bg-slate-900 p-3"
+              className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm dark:border-slate-800 dark:bg-slate-900/60 dark:shadow-none"
             >
-              <p className="font-medium text-slate-100">{user.name}</p>
-              <p className="mt-1 text-xs text-slate-400">Nodes: {user.nodes.join(', ')}</p>
+              <p className="flex items-center gap-2 font-semibold text-slate-900 dark:text-slate-100">
+                <span className="flex h-7 w-7 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-fuchsia-500 text-xs font-bold uppercase text-white" aria-hidden="true">
+                  {user.name.slice(0, 1)}
+                </span>
+                {user.name}
+              </p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {user.nodes.map((n) => (
+                  <span key={n} className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[11px] text-slate-600 dark:bg-slate-800 dark:text-slate-300">
+                    {n}
+                  </span>
+                ))}
+              </div>
               {sub ? (
-                <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
-                  <ClientBlock title="Shadowrocket" accent="text-sky-400">
+                <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
+                  <ClientBlock title="Shadowrocket" tone="sky">
                     <LinkRow
                       label="Subscription RWL"
                       fullLabel="Shadowrocket subscription RWL"
+                      tone="sky"
                       copyValue={sub.subUrl}
                       openHref={buildShadowrocketDeepLink(sub.subUrl)}
                       qrValue={buildShadowrocketDeepLink(sub.subUrl)}
@@ -148,16 +160,19 @@ export function UsersPage() {
                         key={`sr-${r.key}`}
                         label={`Config ${profileName(r.key)}`}
                         fullLabel={`Shadowrocket config ${profileName(r.key)}`}
+                        tone="sky"
+                        list={r.label}
                         copyValue={buildShadowrocketConfUrl(sub.subUrl, r.key)}
                         onCopy={handleCopy}
                         onShowQr={(value, title) => setQr({ value, title })}
                       />
                     ))}
                   </ClientBlock>
-                  <ClientBlock title="Hiddify" accent="text-emerald-400">
+                  <ClientBlock title="Hiddify" tone="emerald">
                     <LinkRow
                       label="Import"
                       fullLabel="Hiddify import"
+                      tone="emerald"
                       copyValue={buildHiddifyDeepLink(sub.subUrl)}
                       openHref={buildHiddifyDeepLink(sub.subUrl)}
                       onOpen={openDeepLink}
@@ -165,12 +180,14 @@ export function UsersPage() {
                       onShowQr={(value, title) => setQr({ value, title })}
                     />
                   </ClientBlock>
-                  <ClientBlock title="sing-box" accent="text-violet-400">
+                  <ClientBlock title="sing-box" tone="violet">
                     {RULE_SETS.map((r) => (
                       <LinkRow
                         key={`sb-${r.key}`}
                         label={profileName(r.key)}
                         fullLabel={`sing-box ${profileName(r.key)}`}
+                        tone="violet"
+                        list={r.label}
                         copyValue={buildSingboxDeepLink(sub.subUrl, r.key)}
                         openHref={buildSingboxDeepLink(sub.subUrl, r.key)}
                         onOpen={openDeepLink}
@@ -181,14 +198,14 @@ export function UsersPage() {
                   </ClientBlock>
                 </div>
               ) : (
-                <p className="mt-2 text-xs text-slate-500">Subscription not ready yet, please retry</p>
+                <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">Subscription not ready yet, please retry</p>
               )}
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
                   disabled={isSyncing || isUpToDate}
                   onClick={() => void handleSync(user.id)}
-                  className="rounded bg-indigo-500 px-3 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
+                  className="rounded-md bg-indigo-600 px-3 py-1 text-xs font-semibold text-white hover:bg-indigo-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-500 dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:disabled:bg-slate-800 dark:disabled:text-slate-500"
                 >
                   {isSyncing ? 'Syncing...' : isUpToDate ? 'Up-to-date' : `Sync (+${missingCount})`}
                 </button>
