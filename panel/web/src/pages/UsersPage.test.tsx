@@ -402,5 +402,5 @@ test('Copy conf UAE puts the Shadowrocket RWL-UAE config URL on the clipboard', 
   fireEvent.click(await screen.findByRole('button', { name: /copy conf UAE/i }))
 
   expect(await screen.findByText(/RWL-UAE config URL copied/i)).toBeInTheDocument()
-  expect(writeText).toHaveBeenCalledWith(`${testSubscription.subUrl}?format=shadowrocket&rules=uae`)
+  expect(writeText).toHaveBeenCalledWith(`${testSubscription.subUrl}/RWL-UAE.conf`)
 })

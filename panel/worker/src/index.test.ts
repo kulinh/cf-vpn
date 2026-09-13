@@ -125,6 +125,31 @@ describe("fetch router hardening", () => {
   });
 });
 
+describe("/sub/<token>/RWL-<LIST>.conf", () => {
+  it("serves the Shadowrocket config for the named list, so the app names it RWL-CN / RWL-UAE", async () => {
+    vi.stubGlobal("fetch", async () => new Response("[Rule]\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n"));
+    try {
+      const token = "b".repeat(32);
+      const stmt = { bind() { return stmt; }, async first() { return { id: "kulinh" }; }, async all() { return { results: [] }; }, async run() { return { success: true }; } };
+      const env = { DB: { prepare() { return stmt; } } } as unknown as Env;
+      for (const [file, disp, needle] of [
+        ["RWL-CN.conf", 'attachment; filename="RWL-CN.conf"', "sr_proxy_list_CN"],
+        ["RWL-UAE.conf", 'attachment; filename="RWL-UAE.conf"', "sr_proxy_list_UAE"],
+        ["RWL-FULL.conf", 'attachment; filename="RWL-FULL.conf"', "FINAL,PROXY"]
+      ]) {
+        const res = await worker.fetch(new Request(`https://panel.example/sub/${token}/${file}`), env, ctx);
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-disposition")).toBe(disp);
+        expect(await res.text()).toContain(needle);
+      }
+      expect((await worker.fetch(new Request(`https://panel.example/sub/${token}/RWL-MARS.conf`), env, ctx)).status).toBe(400);
+      expect((await worker.fetch(new Request(`https://panel.example/sub/${token}/other.conf`), env, ctx)).status).toBe(404);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
 describe("scheduled cron dispatch", () => {
   beforeEach(() => {
     sweepMock.mockClear();

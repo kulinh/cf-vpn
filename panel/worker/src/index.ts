@@ -66,6 +66,17 @@ function parseSubToken(pathname: string): string {
   return m ? safeDecode(m[1]) : "";
 }
 
+// /sub/<token>/RWL-<LIST>.conf: the Shadowrocket remote config under a file
+// name. Shadowrocket names a remote config after the last path segment of
+// its URL, so the query-string form showed up as the bare token. RWL-CN.conf
+// = ?format=shadowrocket&rules=cn, RWL-FULL.conf = &final=proxy.
+function parseSubConf(pathname: string): { token: string; rules: string | null; final: string | null } | null {
+  const m = pathname.match(/^\/sub\/([^/]+)\/RWL-([A-Za-z]+)\.conf$/);
+  if (!m) return null;
+  const list = m[2].toLowerCase();
+  return { token: safeDecode(m[1]), rules: list === "full" ? null : list, final: list === "full" ? "proxy" : null };
+}
+
 async function route(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const { pathname } = url;
@@ -77,6 +88,13 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     // attacker can't reach /api/* or /sub/* with spoofed Access headers.
     if (url.hostname.endsWith(".workers.dev") && pathname !== "/telegram/webhook") {
       return notFound(pathname);
+    }
+
+    const conf = parseSubConf(pathname);
+    if (conf && request.method === "GET") {
+      const ipLimited = enforceRateLimit(`sub:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`);
+      if (ipLimited) return ipLimited;
+      return publicSubscription(env, conf.token, "shadowrocket", conf.final, conf.rules, request.headers.get("user-agent"));
     }
 
     const subToken = parseSubToken(pathname);
