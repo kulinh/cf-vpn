@@ -20,10 +20,11 @@ export function buildHiddifyDeepLink(subUrl: string): string {
 }
 
 // One profile per trip: the blocked-site list is chosen by the link.
-export type RuleSet = 'cn' | 'uae'
+export type RuleSet = 'cn' | 'uae' | 'ru'
 export const RULE_SETS: ReadonlyArray<{ key: RuleSet; label: string; hint: string }> = [
   { key: 'cn', label: 'CN', hint: 'China: sites behind the GFW go through the proxy, the rest direct' },
   { key: 'uae', label: 'UAE', hint: 'UAE: OTT calls (WhatsApp, FaceTime…) and TDRA-blocked sites go through the proxy' },
+  { key: 'ru', label: 'RU', hint: 'Russia: RKN-blocked apps/sites go through the proxy; AUTO uses REALITY on VN/SG/JP/HK only (UDP and Cloudflare are throttled there)' },
 ]
 export function profileName(rules: RuleSet): string {
   return `RWL-${rules.toUpperCase()}`

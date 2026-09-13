@@ -65,7 +65,7 @@ export async function publicSubscription(
   // ?rules=uae the UAE one; ?rules=none leaves the [Rule] section bare for
   // users who load a module themselves.
   if (rules != null && rules !== "" && rules !== "none" && !isRuleSetKey(rules)) {
-    return error(400, { error: "invalid_rules", detail: "supported: cn (default, inline sr_proxy_list_CN), uae (inline sr_proxy_list_UAE) or none" });
+    return error(400, { error: "invalid_rules", detail: "supported: cn (default, inline sr_proxy_list_CN), uae (inline sr_proxy_list_UAE), ru (inline sr_proxy_list_RU) or none" });
   }
 
   const user = await one<{ id: string }>(
@@ -116,6 +116,7 @@ export async function publicSubscription(
     }
     const config = buildSingboxConfig(user.id, rows, {
       final: final === "proxy" ? "proxy" : "direct",
+      rules: effectiveRules,
       alwaysProxyHosts,
       moduleRules
     });
@@ -136,6 +137,7 @@ export async function publicSubscription(
     const { wantsRules, source, moduleRules } = await resolveRules();
     const conf = buildShadowrocketConfig(user.id, rows, {
       final: final === "proxy" ? "proxy" : "direct",
+      rules: effectiveRules,
       alwaysProxyHosts,
       moduleRules,
       // The RULE-SET fallback wants a plain rule list, which the module repo

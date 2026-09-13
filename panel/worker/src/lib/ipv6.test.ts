@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildSubscriptionURIs, type SubscriptionRow } from "./subscription";
-import { buildShadowrocketConfig } from "./shadowrocket";
+import { AUTO_URL_TEST_OPTS, buildShadowrocketConfig } from "./shadowrocket";
 import { buildClashConfig } from "./clash";
 import { buildSingboxConfig } from "./singbox";
 
@@ -150,5 +150,24 @@ describe("public_ipv6 must be a real IPv6 literal (review L1, same rule as Go pu
     expect(lines[1]).toContain(`@[${V6}]:443?`);
     const cfg = buildSingboxConfig("kulinh", [{ ...jpy03, public_ipv6: `  ${V6}\n` }], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
     expect(cfg.outbounds.find((o) => o.tag === "JPY-03-Reality-v6")!.server).toBe(V6);
+  });
+});
+
+describe("RU profile AUTO (rules=ru)", () => {
+  const han = { ...jpy03, node_id: "HAN-01", vless_uuid: "u-han" };
+  const naiveJpy01 = { ...jpy01, naive_host: "cdn.example.com", naive_user: "u", naive_pass: "p" };
+  it("Shadowrocket: AUTO is REALITY on the RU list only — no HY2, H3, or Cloudflare routes", () => {
+    const rows = [han, jpy01, { ...jpy03, xhttp_h3_host: "q.example.com", xhttp_h3_path: "/p" }];
+    const ru = buildShadowrocketConfig("kulinh", rows, { rules: "ru" }).split("\n").find((l) => l.startsWith("AUTO = "))!;
+    expect(ru).toBe("AUTO = url-test, HAN-01-Reality, " + AUTO_URL_TEST_OPTS);
+    const cn = buildShadowrocketConfig("kulinh", rows, { rules: "cn" }).split("\n").find((l) => l.startsWith("AUTO = "))!;
+    expect(cn).toContain("JPY-03-XHTTP-H3");
+    expect(cn).toContain("JPY-01-HY2");
+  });
+  it("sing-box: RU AUTO adds JPY-01-Naive after the REALITY members", () => {
+    const cfg = buildSingboxConfig("kulinh", [han, naiveJpy01], { final: "proxy", rules: "ru" }) as { outbounds: Array<Record<string, unknown>> };
+    expect(cfg.outbounds.find((o) => o.tag === "AUTO")!.outbounds).toEqual(["HAN-01-Reality", "JPY-01-Naive"]);
+    const cn = buildSingboxConfig("kulinh", [han, naiveJpy01], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
+    expect(cn.outbounds.find((o) => o.tag === "AUTO")!.outbounds).toEqual(["JPY-01-HY2"]);
   });
 });

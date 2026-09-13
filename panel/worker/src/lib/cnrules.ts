@@ -12,7 +12,8 @@ export const DEFAULT_RULES_BASE_URL = "https://raw.githubusercontent.com/kulinh/
 // ?rules= value → module file. Keep in sync with the repo.
 export const RULE_SETS = {
   cn: "sr_proxy_list_CN.module",
-  uae: "sr_proxy_list_UAE.module"
+  uae: "sr_proxy_list_UAE.module",
+  ru: "sr_proxy_list_RU.module"
 } as const;
 export type RuleSetKey = keyof typeof RULE_SETS;
 

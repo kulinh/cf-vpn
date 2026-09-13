@@ -506,6 +506,9 @@ describe("?format=shadowrocket&rules=", () => {
       expect(sbFull.headers.get("profile-title")).toBe(`base64:${btoa("RWL-FULL")}`);
       const none = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "none");
       expect(none.headers.get("content-disposition")).toBe('attachment; filename="RWL-NONE.conf"');
+      const ru = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "ru");
+      expect(calls.at(-1)).toContain("sr_proxy_list_RU.module");
+      expect(ru.headers.get("content-disposition")).toBe('attachment; filename="RWL-RU.conf"');
       // The node list itself is not tied to a rule set.
       const nodes = await publicSubscription(makeEnv(db()), token, null, null, "uae");
       expect(nodes.headers.get("profile-title")).toBe(`base64:${btoa("RWL")}`);

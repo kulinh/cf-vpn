@@ -32,6 +32,26 @@ export const AUTO_MEMBERS: ReadonlyArray<readonly [string, (n: string) => string
   ["OR-001", httpUpgradeName]
 ];
 
+// Russia (2026): TSPU throttles QUIC/UDP on most mobile networks and freezes
+// TLS to Cloudflare and western hosting after ~16 KB, so the RU profile's
+// AUTO is REALITY on the Vietnamese / Singapore / Japan / HK nodes only —
+// no HY2, no H3, no Cloudflare-fronted route. Everything else stays a manual
+// pick in PROXY. Evidence: ntc.party 16061/20340, Cloudflare blog 2026-07,
+// globalping from 7 RU networks 2026-09-13 (TCP 443 to every node fine).
+export const AUTO_MEMBERS_RU: ReadonlyArray<readonly [string, (n: string) => string]> = [
+  ["HAN-01", realityName],
+  ["VNM-02", realityName],
+  ["SIN-01", realityName],
+  ["JPY-02", realityName],
+  ["HKG-01", realityName]
+];
+
+// autoMembers picks the AUTO list for a rule set: RU has its own, everything
+// else shares AUTO_MEMBERS.
+export function autoMembers(rules?: string): ReadonlyArray<readonly [string, (n: string) => string]> {
+  return rules === "ru" ? AUTO_MEMBERS_RU : AUTO_MEMBERS;
+}
+
 export const AUTO_URL_TEST_OPTS =
   "url = http://cp.cloudflare.com/generate_204, interval = 600, tolerance = 500, timeout = 8";
 
@@ -83,6 +103,9 @@ export type ShadowrocketFinal = "direct" | "proxy";
 
 export interface ShadowrocketOptions {
   final?: ShadowrocketFinal;
+  // Which blocked-site list the config is built for (cn | uae | ru | none);
+  // only "ru" changes the AUTO membership.
+  rules?: string;
   // Hostnames of our own control plane that must ride the proxy from China
   // (the panel behind Cloudflare Access, its login page). Emitted as DOMAIN /
   // DOMAIN-SUFFIX rules ahead of FINAL.
@@ -101,7 +124,7 @@ export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[
   const final: ShadowrocketFinal = opts.final ?? "direct";
   const all = availableNames(username, rows);
   const have = new Set(all);
-  const members = AUTO_MEMBERS.map(([id, name]) => name(id)).filter((n) => have.has(n));
+  const members = autoMembers(opts.rules).map(([id, name]) => name(id)).filter((n) => have.has(n));
 
   const out: string[] = [
     "[General]",
