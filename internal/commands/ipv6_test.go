@@ -101,3 +101,12 @@ func TestBuildUserURIsNoTwinsForMalformedIPv6(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildUserURIsUpperCasesNodeID(t *testing.T) {
+	env := jpy03V6Env()
+	env[state.KeyNodeID] = "jpy-03"
+	got := buildUserURIs("kulinh", "2f8a1c3e-1111-4222-8333-abcdefabcdef", "edge-64b43148.dongnat247.com", "Zm9vYmFy_-abc", env, nil)
+	if !reflect.DeepEqual(got, goldenV6Lines) {
+		t.Fatalf("lowercase NODE_ID must still name routes like the panel (JPY-03-…):\n%s", strings.Join(got, "\n"))
+	}
+}
