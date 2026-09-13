@@ -788,6 +788,144 @@ is "$(rank 0 2 1)" "1" "rank: order does not matter — drift still wins"
 is "$(rank 0 2 2)" "2" "rank: only an incomplete check exits 2"
 is "$(rank 0 1 0)" "1" "rank: a later clean comparison does not erase drift"
 
+# ---------------------------------------------------------------------------
+section "d1-set-node.sh — SQL per action, guards, exit codes (writes prod D1)"
+# The REAL script runs in a child bash. Seams: CFVPN_ENV_FILE (CF credentials
+# fixture) and CFVPN_FLEET_HOSTS; `ssh` and `curl` are fake executables first on
+# PATH, so the real d1_query builds the request and the fake curl captures the
+# JSON payload it would have POSTed. Nothing reaches a node or Cloudflare.
+D1S="$TMPROOT/d1set"; D1S_BIN="$D1S/bin"; mkdir -p "$D1S_BIN"
+printf 'CF_API_TOKEN=tok\nCF_ACCOUNT_ID=acct\n' >"$D1S/creds.env"
+printf 'JPY-03 root@jpy-03\n' >"$D1S/fleet-hosts"
+D1S_SSH_LOG="$D1S/ssh.log"; D1S_NODE_ENV="$D1S/node.env"; D1S_CAP="$D1S/payload.json"
+D1S_RESP='{"success":true,"result":[{"meta":{"changes":1}}]}'
+cat >"$D1S_BIN/ssh" <<'SSHEOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$D1S_SSH_LOG"
+cat "$D1S_NODE_ENV"
+SSHEOF
+cat >"$D1S_BIN/curl" <<'CURLEOF'
+#!/usr/bin/env bash
+for a in "$@"; do [ "$a" = "--version" ] && exit 0; done
+f="$(sed -n 's/^data-binary = "@\(.*\)"$/\1/p')"   # the --config arrives on stdin
+cp "$f" "$D1S_CAP"
+printf '%s' "$D1S_RESP"
+CURLEOF
+chmod +x "$D1S_BIN/ssh" "$D1S_BIN/curl"
+export D1S_SSH_LOG D1S_NODE_ENV D1S_CAP
+node_env_fixture() {
+  cat >"$D1S_NODE_ENV" <<'NEOF'
+HY2_HOST=hy-c36ca6bd.dongnat247.com
+HY2_PORT=31300
+HY2_OBFS_PW=obfs=pw
+REALITY_PUBLIC_KEY=pbk
+REALITY_SHORT_ID=4a2739d7
+REALITY_SNI=www.sony.jp
+REALITY_DEST=www.sony.jp:443
+PUBLIC_IP=203.0.113.9
+XHTTP_DIRECT_HOST=static-df60bd79.duylinh.org
+XHTTP_DIRECT_PATH=
+XHTTP_H3_HOST=quic-b55170f3.dongnat247.com
+XHTTP_H3_PATH=/h3path
+NAIVE_HOST=naive.example.com
+NAIVE_USER=kulinh
+NAIVE_PASS=npw
+PUBLIC_IPV6=2603:c023:1::9
+NEOF
+}
+run_set() { # run_set <action> — sets out/rc; the payload lands in $D1S_CAP
+  : >"$D1S_SSH_LOG"; rm -f "$D1S_CAP"
+  out="$(PATH="$D1S_BIN:$PATH" D1S_RESP="$D1S_RESP" CFVPN_ENV_FILE="$D1S/creds.env" \
+    CFVPN_FLEET_HOSTS="$D1S/fleet-hosts" CFVPN_LOCAL_TARGET=root@nowhere \
+    bash "$ROOT/scripts/d1-set-node.sh" JPY-03 "$1" 2>&1)"; rc=$?
+}
+sql_of()    { jq -r '.sql' "$D1S_CAP" 2>/dev/null; }
+params_of() { jq -c '.params' "$D1S_CAP" 2>/dev/null; }
+ssh_calls() { grep -c . "$D1S_SSH_LOG"; }
+
+node_env_fixture
+run_set hy2-off
+is "$rc" "0" "hy2-off exits 0"
+is "$(sql_of)" "UPDATE nodes SET hy2_host=NULL, hy2_port=NULL, hy2_obfs_pw=NULL WHERE id=?" "hy2-off SQL"
+is "$(params_of)" '["JPY-03"]' "hy2-off params"
+is "$(ssh_calls)" "0" "hy2-off never reaches the node"
+
+run_set hy2-on
+is "$rc" "0" "hy2-on exits 0"
+is "$(sql_of)" "UPDATE nodes SET hy2_host=?, hy2_port=?, hy2_obfs_pw=? WHERE id=?" "hy2-on SQL"
+is "$(params_of)" '["hy-c36ca6bd.dongnat247.com",31300,"obfs=pw","JPY-03"]' \
+   "hy2-on params (port is an integer; a value holding '=' survives)"
+is "$(ssh_calls)" "1" "hy2-on reads the node env once over ssh"
+contains "$(cat "$D1S_SSH_LOG")" "root@jpy-03 cat /etc/cfvpn/cfvpn.env" "…from the target named in the hosts file"
+
+run_set reality
+is "$rc" "0" "reality exits 0"
+is "$(sql_of)" "UPDATE nodes SET reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, public_ip=? WHERE id=?" "reality SQL"
+is "$(params_of)" '["pbk","4a2739d7","www.sony.jp","www.sony.jp:443","203.0.113.9","JPY-03"]' "reality params"
+
+run_set xhttp-on
+is "$(sql_of)|$(params_of)|$(ssh_calls)" 'UPDATE nodes SET xhttp_enabled=? WHERE id=?|[1,"JPY-03"]|0' \
+   "xhttp-on SQL + params, no ssh"
+run_set xhttp-off
+is "$(params_of)|$(ssh_calls)" '[0,"JPY-03"]|0' "xhttp-off params, no ssh"
+
+run_set xhttp-direct
+is "$(sql_of)" 'UPDATE nodes SET xhttp_direct_host=NULLIF(?,""), xhttp_direct_path=NULLIF(?,"") WHERE id=?' "xhttp-direct SQL"
+is "$(params_of)" '["static-df60bd79.duylinh.org","","JPY-03"]' "xhttp-direct params (empty path -> NULLIF)"
+
+run_set xhttp-h3
+is "$(sql_of)" 'UPDATE nodes SET xhttp_h3_host=NULLIF(?,""), xhttp_h3_path=NULLIF(?,"") WHERE id=?' "xhttp-h3 SQL"
+is "$(params_of)" '["quic-b55170f3.dongnat247.com","/h3path","JPY-03"]' "xhttp-h3 params"
+
+run_set naive
+is "$(sql_of)" 'UPDATE nodes SET naive_host=NULLIF(?,""), naive_user=NULLIF(?,""), naive_pass=NULLIF(?,"") WHERE id=?' "naive SQL"
+is "$(params_of)" '["naive.example.com","kulinh","npw","JPY-03"]' "naive params"
+
+run_set ipv6
+is "$rc" "0" "ipv6 exits 0 for a plain address"
+is "$(sql_of)" 'UPDATE nodes SET public_ipv6=NULLIF(?,"") WHERE id=?' "ipv6 SQL"
+is "$(params_of)" '["2603:c023:1::9","JPY-03"]' "ipv6 params"
+
+# PUBLIC_IPV6 validation (L1): only a plain IPv6 address, or empty (= NULL).
+set_v6() { node_env_fixture; sed -i '/^PUBLIC_IPV6=/d' "$D1S_NODE_ENV"; printf 'PUBLIC_IPV6=%s\n' "$1" >>"$D1S_NODE_ENV"; }
+for good in "::1" "2001:db8::1" "2603:c023:1:5e00:abcd:ef01:2345:6789" ""; do
+  set_v6 "$good"; run_set ipv6
+  is "$rc|$(params_of)" "0|[\"$good\",\"JPY-03\"]" "ipv6 accepts [$good]"
+done
+for evil in "fe80::1%eth0" "[2001:db8::1]" "::ffff:192.0.2.1" "1.2.3.4" "2001:db8::zz" ":" "2001:db8::1 ; x"; do
+  set_v6 "$evil"; run_set ipv6
+  is "$rc" "1" "ipv6 rejects [$evil]"
+  is "$([ -e "$D1S_CAP" ] && echo written || echo none)" "none" "…and nothing is sent to D1 for [$evil]"
+done
+contains "$out" "refusing to write" "ipv6 rejection says it refused"
+
+# reality refuses an incomplete env (a half-written row breaks every client).
+for k in REALITY_PUBLIC_KEY REALITY_SHORT_ID REALITY_SNI REALITY_DEST PUBLIC_IP; do
+  node_env_fixture; sed -i "/^$k=/d" "$D1S_NODE_ENV"
+  run_set reality
+  is "$rc|$([ -e "$D1S_CAP" ] && echo written || echo none)" "1|none" "reality without $k exits 1 and writes nothing"
+done
+contains "$out" "incomplete in cfvpn.env; refusing to write" "reality refusal names the problem"
+node_env_fixture
+
+run_set bogus-action
+is "$rc" "2" "unknown action exits 2"
+contains "$out" "unknown action: bogus-action" "unknown action is named"
+is "$(ssh_calls)|$([ -e "$D1S_CAP" ] && echo written || echo none)" "0|none" "unknown action: no ssh, no D1"
+
+D1S_RESP='{"success":true,"result":[{"meta":{"changes":0}}]}'
+run_set xhttp-on
+is "$rc" "1" "changes=0 (no such node row) exits 1"
+contains "$out" "D1 updated 0 rows for JPY-03 (expected 1)" "changes mismatch is reported"
+D1S_RESP='{"success":true,"result":[{"meta":{"changes":2}}]}'
+run_set xhttp-on
+is "$rc" "1" "changes=2 exits 1"
+D1S_RESP='{"success":false,"errors":[{"message":"no such column"}]}'
+run_set xhttp-on
+is "$rc" "1" "success:false exits 1"
+contains "$out" "D1 update failed" "D1 failure is reported"
+D1S_RESP='{"success":true,"result":[{"meta":{"changes":1}}]}'
+
 
 printf '\n--------------------------------------------\n'
 printf 'scripts/tests: pass=%d fail=%d\n' "$PASS" "$FAIL"
