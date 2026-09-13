@@ -50,16 +50,16 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
           reality: { enabled: true, public_key: r.reality_pubkey, short_id: r.reality_sid }
         }
       });
-      out.push(reality(realityName(username, r.node_id), realityHost(r)));
+      out.push(reality(realityName(r.node_id), realityHost(r)));
       // IPv6 twin: PROXY only (AUTO members are fixed IPv4 names, and the
       // HY2-BACKUP filter matches "-HY2" at the end, not "-HY2-v6").
       if (hasIPv6(r)) {
-        out.push(reality(realityV6Name(username, r.node_id), ipv6Of(r)!));
+        out.push(reality(realityV6Name(r.node_id), ipv6Of(r)!));
       }
     } else if (isCloudflareRow(r)) {
       out.push({
         type: "vless",
-        tag: httpUpgradeName(username, r.node_id),
+        tag: httpUpgradeName(r.node_id),
         server: r.vpn_host,
         server_port: 443,
         uuid: r.vless_uuid,
@@ -81,15 +81,15 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
         obfs: { type: "salamander", password: r.hy2_obfs_pw },
         tls: { enabled: true, server_name: r.hy2_host }
       });
-      out.push(hy2(hy2Name(username, r.node_id), hy2Address(r)));
+      out.push(hy2(hy2Name(r.node_id), hy2Address(r)));
       if (hasIPv6(r)) {
-        out.push(hy2(hy2V6Name(username, r.node_id), ipv6Of(r)!));
+        out.push(hy2(hy2V6Name(r.node_id), ipv6Of(r)!));
       }
     }
     if (hasNaive(r)) {
       out.push({
         type: "naive",
-        tag: naiveName(username, r.node_id),
+        tag: naiveName(r.node_id),
         server: r.naive_host,
         server_port: 443,
         username: r.naive_user,
@@ -150,7 +150,7 @@ export function buildSingboxConfig(username: string, rows: SubscriptionRow[], op
   // H3 from the home line (2026-09-13, VNM-01 -> JPY-03: ~10 MB/s for both,
   // REALITY ~3.5). Shadowrocket keeps H3.
   const auto = [...new Set(AUTO_MEMBERS.map(([id, name]) =>
-    name === xhttpH3Name && !have.has(name(username, id)) ? hy2Name(username, id) : name(username, id)
+    name === xhttpH3Name && !have.has(name(id)) ? hy2Name(id) : name(id)
   ))].filter((n) => have.has(n));
   const hy2 = tags.filter((t) => t.endsWith("-HY2"));
 

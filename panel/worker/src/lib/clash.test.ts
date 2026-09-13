@@ -57,7 +57,7 @@ describe("yamlString", () => {
 describe("buildClashConfig", () => {
   it("renders a Reality + HY2 node", () => {
     expect(buildClashConfig("kulinh", [realityRow])).toBe(`proxies:
-  - name: "kulinh@SIN-01-Reality"
+  - name: "SIN-01-Reality"
     type: "vless"
     server: "sg.example.com"
     port: 443
@@ -71,7 +71,7 @@ describe("buildClashConfig", () => {
     reality-opts:
       public-key: "pubkey-x25519"
       short-id: "abcd1234"
-  - name: "kulinh@SIN-01-HY2"
+  - name: "SIN-01-HY2"
     type: "hysteria2"
     server: "udp-sg.example.com"
     port: 30000
@@ -86,14 +86,14 @@ proxy-groups:
     interval: 300
     tolerance: 100
     proxies:
-      - "kulinh@SIN-01-Reality"
-      - "kulinh@SIN-01-HY2"
+      - "SIN-01-Reality"
+      - "SIN-01-HY2"
   - name: "Proxy"
     type: "select"
     proxies:
       - "Auto"
-      - "kulinh@SIN-01-Reality"
-      - "kulinh@SIN-01-HY2"
+      - "SIN-01-Reality"
+      - "SIN-01-HY2"
 rules:
   - "MATCH,Proxy"
 `);
@@ -101,7 +101,7 @@ rules:
 
   it("renders an HTTPUpgrade (cloudflare mode) node", () => {
     expect(buildClashConfig("kulinh", [cloudflareRow])).toBe(`proxies:
-  - name: "kulinh@CHN-01-HTTPUpgrade"
+  - name: "CHN-01-HTTPUpgrade"
     type: "vless"
     server: "cf.example.com"
     port: 443
@@ -122,12 +122,12 @@ proxy-groups:
     interval: 300
     tolerance: 100
     proxies:
-      - "kulinh@CHN-01-HTTPUpgrade"
+      - "CHN-01-HTTPUpgrade"
   - name: "Proxy"
     type: "select"
     proxies:
       - "Auto"
-      - "kulinh@CHN-01-HTTPUpgrade"
+      - "CHN-01-HTTPUpgrade"
 rules:
   - "MATCH,Proxy"
 `);
@@ -140,9 +140,9 @@ rules:
       .map((uri) => decodeURIComponent(uri.slice(uri.indexOf("#") + 1)));
 
     expect(fragments).toEqual([
-      "kulinh@SIN-01-Reality",
-      "kulinh@SIN-01-HY2",
-      "kulinh@CHN-01-HTTPUpgrade"
+      "SIN-01-Reality",
+      "SIN-01-HY2",
+      "CHN-01-HTTPUpgrade"
     ]);
     for (const name of fragments) {
       expect(yaml).toContain(`name: ${JSON.stringify(name)}`);

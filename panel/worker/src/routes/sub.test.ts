@@ -326,7 +326,7 @@ describe("buildSubscriptionURIs mode branching", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("security=reality");
     expect(lines[0]).toContain("sni=discord.com");
-    expect(lines[0]).toContain("#kulinh%40SG-Reality");
+    expect(lines[0]).toContain("#SG-Reality");
   });
 
   it("emits HTTPUpgrade URI when mode=cloudflare", () => {
@@ -340,7 +340,7 @@ describe("buildSubscriptionURIs mode branching", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("type=httpupgrade");
     expect(lines[0]).toContain("path=%2Fapi%2Fv1%2Fsync");
-    expect(lines[0]).toContain("#kulinh%40CF-HTTPUpgrade");
+    expect(lines[0]).toContain("#CF-HTTPUpgrade");
   });
 
   it("skips nodes with no mode (legacy WS+TLS no longer supported)", () => {
@@ -383,7 +383,7 @@ describe("HY2 URIs dial the public IP and keep the hostname as sni", () => {
   };
   it("uses public_ip in the authority and the hostname in sni", () => {
     const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: "96.9.228.81" }]).split("\n");
-    expect(lines[1]).toBe("hysteria2://kulinh:p1@96.9.228.81:31300/?obfs=salamander&obfs-password=obfs&sni=hy-c36ca6bd.dongnat247.com&insecure=0#kulinh%40HKG-01-HY2");
+    expect(lines[1]).toBe("hysteria2://kulinh:p1@96.9.228.81:31300/?obfs=salamander&obfs-password=obfs&sni=hy-c36ca6bd.dongnat247.com&insecure=0#HKG-01-HY2");
   });
   it("falls back to the hostname without public_ip", () => {
     const lines = buildSubscriptionURIs("kulinh", [{ ...base, public_ip: null }]).split("\n");
@@ -400,7 +400,7 @@ describe("XHTTP line for cloudflare nodes with xhttp_enabled", () => {
   it("matches the Go golden string byte for byte", () => {
     const lines = buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 1 }]).split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#alice%40or-001-XHTTP");
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#or-001-XHTTP");
   });
   it("emits nothing extra when disabled or for direct nodes", () => {
     expect(buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 0 }]).split("\n")).toHaveLength(1);
@@ -417,7 +417,7 @@ describe("XHTTP-Direct line", () => {
   it("matches the Go golden string and uses the hostname, not the IP", () => {
     const lines = buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn-82169439.duylinh.net", xhttp_direct_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10" }]).split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#kulinh%40JPY-01-XHTTP-Direct");
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct");
   });
   it("needs both host and path", () => {
     expect(buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn.example.com", xhttp_direct_path: null }]).split("\n")).toHaveLength(1);
@@ -570,14 +570,14 @@ describe("NaiveProxy and ?format=singbox", () => {
     const plain = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, "Shadowrocket/2070")).text());
     expect(plain).not.toContain("naive://");
     const hiddify = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, "HiddifyNext/4.1.1 (android) like ClashMeta v2ray sing-box")).text());
-    expect(hiddify.split("\n")).toContain("naive://u1:p%40ss@cdn-82169439.duylinh.net:443?security=tls&sni=cdn-82169439.duylinh.net&uot=false#kulinh%40JPY-01-Naive");
+    expect(hiddify.split("\n")).toContain("naive://u1:p%40ss@cdn-82169439.duylinh.net:443?security=tls&sni=cdn-82169439.duylinh.net&uot=false#JPY-01-Naive");
   });
 
   it("leaves naive:// out for Hiddify on iOS, where a naive outbound kills the core", async () => {
     for (const ua of ["HiddifyNext/4.0.0 (ios) like ClashMeta v2ray sing-box", "HiddifyNextX/4.0.0 (iOS) like ClashMeta v2ray sing-box"]) {
       const body = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, ua)).text());
       expect(body).not.toContain("naive://");
-      expect(body).toContain("kulinh%40JPY-01-HY2");
+      expect(body).toContain("JPY-01-HY2");
     }
     const mac = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, "HiddifyNext/4.1.1 (macos) like ClashMeta v2ray sing-box")).text());
     expect(mac).toContain("naive://");
@@ -591,10 +591,10 @@ describe("NaiveProxy and ?format=singbox", () => {
       expect(res.headers.get("content-type")).toContain("application/json");
       const cfg = await res.json() as { outbounds: Array<Record<string, unknown>>; route: Record<string, unknown>; dns: Record<string, unknown> };
       const byTag = Object.fromEntries(cfg.outbounds.map((o) => [o.tag, o]));
-      expect(byTag["kulinh@JPY-01-Naive"]).toMatchObject({ type: "naive", server: "cdn-82169439.duylinh.net", server_port: 443, username: "u1", password: "p@ss" });
-      expect(byTag["kulinh@JPY-01-HY2"]).toMatchObject({ type: "hysteria2", server: "45.143.131.36", password: "kulinh:p1", obfs: { type: "salamander", password: "obfs" } });
-      expect(byTag["kulinh@JPY-02-Reality"]).toMatchObject({ type: "vless", server: "96.9.228.81", flow: "xtls-rprx-vision" });
-      expect(byTag["AUTO"]).toMatchObject({ type: "urltest", outbounds: ["kulinh@JPY-02-Reality", "kulinh@JPY-01-HY2"] });
+      expect(byTag["JPY-01-Naive"]).toMatchObject({ type: "naive", server: "cdn-82169439.duylinh.net", server_port: 443, username: "u1", password: "p@ss" });
+      expect(byTag["JPY-01-HY2"]).toMatchObject({ type: "hysteria2", server: "45.143.131.36", password: "kulinh:p1", obfs: { type: "salamander", password: "obfs" } });
+      expect(byTag["JPY-02-Reality"]).toMatchObject({ type: "vless", server: "96.9.228.81", flow: "xtls-rprx-vision" });
+      expect(byTag["AUTO"]).toMatchObject({ type: "urltest", outbounds: ["JPY-02-Reality", "JPY-01-HY2"] });
       expect((byTag["PROXY"].outbounds as string[]).slice(0, 2)).toEqual(["AUTO", "HY2-BACKUP"]);
       expect(cfg.route.final).toBe("DIRECT");
       expect(cfg.route.rule_set).toEqual([

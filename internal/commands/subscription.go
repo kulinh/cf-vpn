@@ -34,16 +34,17 @@ import (
 func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn io.Writer) []string {
 	var lines []string
 
-	// The fragment tag must match what the Worker produces for the same user
-	// on this node — `${username}@${node_id}` in
-	// panel/worker/src/lib/subscription.ts — so a client that sees links from
-	// both sources (panel sync + `cfvpnctl gen-sub`) doesn't get duplicate,
-	// differently-named entries for the same endpoint. Fall back to the bare
-	// name if NODE_ID isn't set (e.g. a node that predates the env var, or a
-	// test harness) rather than emitting a tag ending in "@".
-	tag := name
-	if nodeID := strings.TrimSpace(env[state.KeyNodeID]); nodeID != "" {
-		tag = name + "@" + nodeID
+	// The fragment tag must match what the Worker produces for the same node
+	// — the bare NODE_ID in panel/worker/src/lib/subscription.ts (no user
+	// prefix since 2026-09-13: each user has their own subscription, so the
+	// prefix only made names long) — so a client that sees links from both
+	// sources (panel sync + `cfvpnctl gen-sub`) doesn't get duplicate,
+	// differently-named entries for the same endpoint. Fall back to the user
+	// name if NODE_ID isn't set (a node that predates the env var, or a test
+	// harness) rather than emitting an empty tag.
+	tag := strings.TrimSpace(env[state.KeyNodeID])
+	if tag == "" {
+		tag = name
 	}
 
 	// Three-way, exactly like the Worker: direct ⇒ Reality or nothing,

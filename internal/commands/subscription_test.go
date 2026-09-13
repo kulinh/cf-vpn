@@ -33,9 +33,9 @@ func directEnv() map[string]string {
 // the Worker's buildSubscriptionURIs() — so a user provisioned from the panel
 // and one provisioned by `cfvpnctl` get identically-named entries.
 const (
-	wantRealityURI = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=d3cbbc0b4c5bc5f9&fp=chrome#alice%40SG1-Reality"
-	wantHy2URI     = "hysteria2://alice:Zm9vYmFy_-abc@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40SG1-HY2"
-	wantHTTPUpURI  = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&sni=cdn-a1b2.rwl.one#alice%40SG1-HTTPUpgrade"
+	wantRealityURI = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.apple.com&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=d3cbbc0b4c5bc5f9&fp=chrome#SG1-Reality"
+	wantHy2URI     = "hysteria2://alice:Zm9vYmFy_-abc@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#SG1-HY2"
+	wantHTTPUpURI  = "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&sni=cdn-a1b2.rwl.one#SG1-HTTPUpgrade"
 )
 
 const testUUID = "2f8a1c3e-1111-4222-8333-abcdefabcdef"
@@ -280,7 +280,7 @@ func TestRunGenSubDirectEmitsRealityAndHy2(t *testing.T) {
 	if lines[0] != wantRealityURI {
 		t.Errorf("VLESS line drifted\n got: %s\nwant: %s", lines[0], wantRealityURI)
 	}
-	wantHy2 := "hysteria2://alice:alice-hy2pw@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#alice%40SG1-HY2"
+	wantHy2 := "hysteria2://alice:alice-hy2pw@hy2-c3d4.rwl.one:24430/?obfs=salamander&obfs-password=kQ3x&sni=hy2-c3d4.rwl.one&insecure=0#SG1-HY2"
 	if lines[1] != wantHy2 {
 		t.Errorf("HY2 line drifted\n got: %s\nwant: %s", lines[1], wantHy2)
 	}
@@ -324,7 +324,7 @@ func TestBuildUserURIsDirectEmitsH3WhenConfigured(t *testing.T) {
 	var warn bytes.Buffer
 	got := buildUserURIs("alice", testUUID, "cdn-a1b2.rwl.one", "Zm9vYmFy_-abc", env, &warn)
 
-	wantH3 := "vless://" + testUUID + "@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#alice%40SG1-XHTTP-H3"
+	wantH3 := "vless://" + testUUID + "@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#SG1-XHTTP-H3"
 	want := []string{wantRealityURI, wantH3, wantHy2URI}
 	if len(got) != len(want) {
 		t.Fatalf("got %d lines, want %d:\n%s", len(got), len(want), strings.Join(got, "\n"))

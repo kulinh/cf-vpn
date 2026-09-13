@@ -43,10 +43,10 @@ describe("IPv6 routes in the base64 list", () => {
   it("adds a bracketed -Reality-v6 after Reality and -HY2-v6 after HY2", () => {
     const lines = buildSubscriptionURIs("kulinh", [jpy03]).split("\n");
     expect(lines.map((l) => decodeURIComponent(l.split("#")[1]))).toEqual([
-      "kulinh@JPY-03-Reality",
-      "kulinh@JPY-03-Reality-v6",
-      "kulinh@JPY-03-HY2",
-      "kulinh@JPY-03-HY2-v6"
+      "JPY-03-Reality",
+      "JPY-03-Reality-v6",
+      "JPY-03-HY2",
+      "JPY-03-HY2-v6"
     ]);
     expect(lines[1]).toMatch(new RegExp(`^vless://uuid-jpy03@\\[${V6}\\]:443\\?`));
     expect(lines[1]).toContain("sni=www.sony.jp");
@@ -67,7 +67,7 @@ describe("IPv6 routes in the base64 list", () => {
 
   it("gives a cloudflare node only an HY2 twin", () => {
     const names = buildSubscriptionURIs("kulinh", [jpy01]).split("\n").map((l) => decodeURIComponent(l.split("#")[1]));
-    expect(names).toEqual(["kulinh@JPY-01-HTTPUpgrade", "kulinh@JPY-01-HY2", "kulinh@JPY-01-HY2-v6"]);
+    expect(names).toEqual(["JPY-01-HTTPUpgrade", "JPY-01-HY2", "JPY-01-HY2-v6"]);
   });
 });
 
@@ -75,30 +75,30 @@ describe("IPv6 routes in the grouped formats", () => {
   it("Shadowrocket: PROXY lists the twins, AUTO and HY2-BACKUP do not", () => {
     const conf = buildShadowrocketConfig("kulinh", [jpy01, jpy03]).split("\n");
     const line = (p: string) => conf.find((l) => l.startsWith(p))!;
-    expect(line("PROXY = ")).toContain("kulinh@JPY-03-Reality-v6");
-    expect(line("PROXY = ")).toContain("kulinh@JPY-01-HY2-v6");
+    expect(line("PROXY = ")).toContain("JPY-03-Reality-v6");
+    expect(line("PROXY = ")).toContain("JPY-01-HY2-v6");
     expect(line("AUTO = ")).not.toContain("-v6");
-    expect(line("HY2-BACKUP = ")).toBe("HY2-BACKUP = select, kulinh@JPY-01-HY2, kulinh@JPY-03-HY2");
+    expect(line("HY2-BACKUP = ")).toBe("HY2-BACKUP = select, JPY-01-HY2, JPY-03-HY2");
   });
 
   it("Clash: the twins dial the bare address and stay out of Auto", () => {
     const yaml = buildClashConfig("kulinh", [jpy03]);
-    expect(yaml).toContain(`"kulinh@JPY-03-Reality-v6"`);
+    expect(yaml).toContain(`"JPY-03-Reality-v6"`);
     expect(yaml).toContain(`server: "${V6}"`);
     const auto = yaml.slice(yaml.indexOf("proxy-groups:"), yaml.indexOf(`name: "Proxy"`));
     expect(auto).not.toContain("-v6");
     const select = yaml.slice(yaml.indexOf(`name: "Proxy"`));
-    expect(select).toContain("kulinh@JPY-03-HY2-v6");
+    expect(select).toContain("JPY-03-HY2-v6");
   });
 
   it("sing-box: outbounds for both twins, PROXY only", () => {
     const cfg = buildSingboxConfig("kulinh", [jpy01, jpy03], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
     const byTag = (t: string) => cfg.outbounds.find((o) => o.tag === t)!;
-    expect(byTag("kulinh@JPY-03-Reality-v6").server).toBe(V6);
-    expect(byTag("kulinh@JPY-03-HY2-v6").server).toBe(V6);
-    expect(byTag("PROXY").outbounds).toContain("kulinh@JPY-01-HY2-v6");
-    expect(byTag("HY2-BACKUP").outbounds).toEqual(["kulinh@JPY-01-HY2", "kulinh@JPY-03-HY2"]);
-    expect(byTag("AUTO").outbounds as string[]).not.toContain("kulinh@JPY-03-Reality-v6");
+    expect(byTag("JPY-03-Reality-v6").server).toBe(V6);
+    expect(byTag("JPY-03-HY2-v6").server).toBe(V6);
+    expect(byTag("PROXY").outbounds).toContain("JPY-01-HY2-v6");
+    expect(byTag("HY2-BACKUP").outbounds).toEqual(["JPY-01-HY2", "JPY-03-HY2"]);
+    expect(byTag("AUTO").outbounds as string[]).not.toContain("JPY-03-Reality-v6");
   });
 });
 
@@ -114,11 +114,11 @@ describe("IPv6 twins match the Go builder", () => {
       xhttp_path: null, xhttp_h3_host: "quic-b55170f3.dongnat247.com", xhttp_h3_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10"
     };
     expect(buildSubscriptionURIs("kulinh", [row]).split("\n")).toEqual([
-      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@129.225.185.197:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.sony.jp&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=2441ae2d78da98bb&fp=chrome#kulinh%40JPY-03-Reality",
-      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@[2603:c023:19:9800:0:f882:7490:be7a]:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.sony.jp&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=2441ae2d78da98bb&fp=chrome#kulinh%40JPY-03-Reality-v6",
-      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#kulinh%40JPY-03-XHTTP-H3",
-      "hysteria2://kulinh:Zm9vYmFy_-abc@129.225.185.197:32443/?obfs=salamander&obfs-password=kQ3x&sni=quic-b55170f3.dongnat247.com&insecure=0#kulinh%40JPY-03-HY2",
-      "hysteria2://kulinh:Zm9vYmFy_-abc@[2603:c023:19:9800:0:f882:7490:be7a]:32443/?obfs=salamander&obfs-password=kQ3x&sni=quic-b55170f3.dongnat247.com&insecure=0#kulinh%40JPY-03-HY2-v6",
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@129.225.185.197:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.sony.jp&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=2441ae2d78da98bb&fp=chrome#JPY-03-Reality",
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@[2603:c023:19:9800:0:f882:7490:be7a]:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.sony.jp&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=2441ae2d78da98bb&fp=chrome#JPY-03-Reality-v6",
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#JPY-03-XHTTP-H3",
+      "hysteria2://kulinh:Zm9vYmFy_-abc@129.225.185.197:32443/?obfs=salamander&obfs-password=kQ3x&sni=quic-b55170f3.dongnat247.com&insecure=0#JPY-03-HY2",
+      "hysteria2://kulinh:Zm9vYmFy_-abc@[2603:c023:19:9800:0:f882:7490:be7a]:32443/?obfs=salamander&obfs-password=kQ3x&sni=quic-b55170f3.dongnat247.com&insecure=0#JPY-03-HY2-v6",
     ]);
   });
 });
@@ -127,16 +127,16 @@ describe("sing-box AUTO without xhttp", () => {
   it("puts JPY-03-HY2 where Shadowrocket has JPY-03-XHTTP-H3", () => {
     const h3 = { ...jpy03, xhttp_h3_host: "quic.example.com", xhttp_h3_path: "/p" };
     const sr = buildShadowrocketConfig("kulinh", [h3]).split("\n").find((l) => l.startsWith("AUTO = "))!;
-    expect(sr).toContain("AUTO = url-test, kulinh@JPY-03-XHTTP-H3, kulinh@JPY-03-Reality,");
+    expect(sr).toContain("AUTO = url-test, JPY-03-XHTTP-H3, JPY-03-Reality,");
     const cfg = buildSingboxConfig("kulinh", [h3], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
     const auto = cfg.outbounds.find((o) => o.tag === "AUTO")!;
-    expect(auto.outbounds).toEqual(["kulinh@JPY-03-HY2", "kulinh@JPY-03-Reality"]);
+    expect(auto.outbounds).toEqual(["JPY-03-HY2", "JPY-03-Reality"]);
   });
 
   it("does not add the HY2 fallback when the node has no HY2", () => {
     const noHy2 = { ...jpy03, hy2_host: null, hy2_port: null, hy2_obfs_pw: null, xhttp_h3_host: "q", xhttp_h3_path: "/p" };
     const cfg = buildSingboxConfig("kulinh", [noHy2], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
-    expect(cfg.outbounds.find((o) => o.tag === "AUTO")!.outbounds).toEqual(["kulinh@JPY-03-Reality"]);
+    expect(cfg.outbounds.find((o) => o.tag === "AUTO")!.outbounds).toEqual(["JPY-03-Reality"]);
   });
 });
 
@@ -149,6 +149,6 @@ describe("public_ipv6 must be a real IPv6 literal (review L1, same rule as Go pu
     const lines = buildSubscriptionURIs("kulinh", [{ ...jpy03, public_ipv6: `  ${V6}  ` }]).split("\n");
     expect(lines[1]).toContain(`@[${V6}]:443?`);
     const cfg = buildSingboxConfig("kulinh", [{ ...jpy03, public_ipv6: `  ${V6}\n` }], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
-    expect(cfg.outbounds.find((o) => o.tag === "kulinh@JPY-03-Reality-v6")!.server).toBe(V6);
+    expect(cfg.outbounds.find((o) => o.tag === "JPY-03-Reality-v6")!.server).toBe(V6);
   });
 });

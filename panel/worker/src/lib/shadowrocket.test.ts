@@ -37,7 +37,7 @@ describe("buildShadowrocketConfig", () => {
   it("emits AUTO with the fixed members in the fixed order and the operator's url-test options", () => {
     const conf = buildShadowrocketConfig("kulinh", fleet);
     expect(conf).toContain(
-      "[Proxy Group]\nAUTO = url-test, kulinh@JPY-02-Reality, kulinh@SIN-01-Reality, kulinh@JPY-03-Reality, kulinh@JPY-01-HY2, kulinh@HKG-01-HY2, kulinh@OR-001-HTTPUpgrade, url = http://cp.cloudflare.com/generate_204, interval = 600, tolerance = 500, timeout = 8\n"
+      "[Proxy Group]\nAUTO = url-test, JPY-02-Reality, SIN-01-Reality, JPY-03-Reality, JPY-01-HY2, HKG-01-HY2, OR-001-HTTPUpgrade, url = http://cp.cloudflare.com/generate_204, interval = 600, tolerance = 500, timeout = 8\n"
     );
     expect(conf).toMatch(/\[Rule\]\n(#.*\n)*FINAL,DIRECT\n$/);
     expect(conf).toMatch(/^\[General\]\n/);
@@ -47,27 +47,27 @@ describe("buildShadowrocketConfig", () => {
     const conf = buildShadowrocketConfig("kulinh", fleet);
     const proxyLine = conf.split("\n").find((l) => l.startsWith("PROXY = select, "));
     expect(proxyLine).toBe(
-      "PROXY = select, AUTO, HY2-BACKUP, kulinh@HAN-01-Reality, kulinh@HKG-01-Reality, kulinh@HKG-01-HY2, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-HY2, kulinh@JPY-02-Reality, kulinh@JPY-03-Reality, kulinh@JPY-03-HY2, kulinh@OR-001-HTTPUpgrade, kulinh@SIN-01-Reality, kulinh@USA-01-Reality"
+      "PROXY = select, AUTO, HY2-BACKUP, HAN-01-Reality, HKG-01-Reality, HKG-01-HY2, JPY-01-HTTPUpgrade, JPY-01-HY2, JPY-02-Reality, JPY-03-Reality, JPY-03-HY2, OR-001-HTTPUpgrade, SIN-01-Reality, USA-01-Reality"
     );
   });
 
   it("emits HY2-BACKUP as a select over every HY2 route, and omits it when there is none", () => {
     const conf = buildShadowrocketConfig("kulinh", fleet);
-    expect(conf).toContain("\nHY2-BACKUP = select, kulinh@HKG-01-HY2, kulinh@JPY-01-HY2, kulinh@JPY-03-HY2\n");
+    expect(conf).toContain("\nHY2-BACKUP = select, HKG-01-HY2, JPY-01-HY2, JPY-03-HY2\n");
     const none = buildShadowrocketConfig("kulinh", [row("SIN-01", "direct", false)]);
     expect(none).not.toContain("HY2-BACKUP");
-    expect(none).toContain("PROXY = select, AUTO, kulinh@SIN-01-Reality");
+    expect(none).toContain("PROXY = select, AUTO, SIN-01-Reality");
   });
 
   it("skips AUTO members the user does not have", () => {
     const conf = buildShadowrocketConfig("kulinh", [row("SIN-01", "direct", false), row("USA-01", "direct", false)]);
-    expect(conf).toContain("AUTO = url-test, kulinh@SIN-01-Reality, url = ");
+    expect(conf).toContain("AUTO = url-test, SIN-01-Reality, url = ");
   });
 
   it("falls back to a select-only group when no AUTO member exists", () => {
     const conf = buildShadowrocketConfig("kulinh", [row("USA-01", "direct", false)]);
     expect(conf).not.toContain("AUTO");
-    expect(conf).toContain("PROXY = select, kulinh@USA-01-Reality");
+    expect(conf).toContain("PROXY = select, USA-01-Reality");
     expect(conf).toMatch(/FINAL,DIRECT\n$/);
   });
 
@@ -86,16 +86,16 @@ describe("buildShadowrocketConfig", () => {
 describe("XHTTP names", () => {
   it("adds <node>-XHTTP to PROXY for cloudflare rows with xhttp_enabled, never to AUTO", () => {
     const conf = buildShadowrocketConfig("kulinh", [{ ...row("OR-001", "cloudflare", false), xhttp_enabled: 1 }, row("SIN-01", "direct", false)]);
-    expect(conf).toContain("PROXY = select, AUTO, kulinh@OR-001-HTTPUpgrade, kulinh@OR-001-XHTTP, kulinh@SIN-01-Reality");
-    expect(conf).toContain("AUTO = url-test, kulinh@SIN-01-Reality, kulinh@OR-001-HTTPUpgrade, url = ");
+    expect(conf).toContain("PROXY = select, AUTO, OR-001-HTTPUpgrade, OR-001-XHTTP, SIN-01-Reality");
+    expect(conf).toContain("AUTO = url-test, SIN-01-Reality, OR-001-HTTPUpgrade, url = ");
   });
 });
 
 describe("XHTTP-Direct names", () => {
   it("adds <node>-XHTTP-Direct to PROXY only, never to AUTO", () => {
     const conf = buildShadowrocketConfig("kulinh", [{ ...row("JPY-01", "cloudflare", true), xhttp_direct_host: "cdn.example.com", xhttp_direct_path: "/abc" }, row("SIN-01", "direct", false)]);
-    expect(conf).toContain("PROXY = select, AUTO, HY2-BACKUP, kulinh@JPY-01-HTTPUpgrade, kulinh@JPY-01-XHTTP-Direct, kulinh@JPY-01-HY2, kulinh@SIN-01-Reality");
-    expect(conf).toContain("AUTO = url-test, kulinh@SIN-01-Reality, kulinh@JPY-01-HY2, url = ");
+    expect(conf).toContain("PROXY = select, AUTO, HY2-BACKUP, JPY-01-HTTPUpgrade, JPY-01-XHTTP-Direct, JPY-01-HY2, SIN-01-Reality");
+    expect(conf).toContain("AUTO = url-test, SIN-01-Reality, JPY-01-HY2, url = ");
   });
 });
 
@@ -173,25 +173,25 @@ const fleetWithH3: SubscriptionRow[] = fleet.map((r) => (r.node_id === "JPY-03" 
 
 describe("XHTTP-H3 in the Shadowrocket config", () => {
   it("lists the H3 route among the user's nodes", () => {
-    expect(availableNames("kulinh", fleetWithH3)).toContain("kulinh@JPY-03-XHTTP-H3");
+    expect(availableNames("kulinh", fleetWithH3)).toContain("JPY-03-XHTTP-H3");
   });
 
   it("puts H3 in AUTO ahead of the same node's REALITY entry", () => {
     const conf = buildShadowrocketConfig("kulinh", fleetWithH3);
     const auto = conf.split("\n").find((l) => l.startsWith("AUTO = "))!;
-    expect(auto).toContain("kulinh@JPY-03-XHTTP-H3");
-    expect(auto.indexOf("kulinh@JPY-03-XHTTP-H3")).toBeLessThan(auto.indexOf("kulinh@JPY-03-Reality"));
+    expect(auto).toContain("JPY-03-XHTTP-H3");
+    expect(auto.indexOf("JPY-03-XHTTP-H3")).toBeLessThan(auto.indexOf("JPY-03-Reality"));
   });
 
   it("keeps JPY-03 REALITY in AUTO as the fallback when UDP is throttled", () => {
     const auto = buildShadowrocketConfig("kulinh", fleetWithH3).split("\n").find((l) => l.startsWith("AUTO = "))!;
-    expect(auto).toContain("kulinh@JPY-03-Reality");
+    expect(auto).toContain("JPY-03-Reality");
   });
 
   // The group must never name a node the subscription does not contain.
   it("omits the H3 member for a user whose JPY-03 row has no H3 route", () => {
     const auto = buildShadowrocketConfig("kulinh", fleet).split("\n").find((l) => l.startsWith("AUTO = "))!;
     expect(auto).not.toContain("XHTTP-H3");
-    expect(auto).toContain("kulinh@JPY-03-Reality");
+    expect(auto).toContain("JPY-03-Reality");
   });
 });

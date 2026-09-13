@@ -58,8 +58,8 @@ describe("Worker builders match the Go goldens byte for byte", () => {
   });
 
   it("TestGoldenXHTTPDirectURIMatchesWorker", () => {
-    expect(buildVLESSXHTTPDirectURI("kulinh@JPY-01", UUID, "cdn-82169439.duylinh.net", "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10", "stream-one")).toBe(
-      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#kulinh%40JPY-01-XHTTP-Direct"
+    expect(buildVLESSXHTTPDirectURI("JPY-01", UUID, "cdn-82169439.duylinh.net", "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10", "stream-one")).toBe(
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct"
     );
   });
 });
