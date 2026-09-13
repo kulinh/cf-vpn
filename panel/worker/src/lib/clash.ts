@@ -77,6 +77,11 @@ export function xhttpH3Name(username: string, nodeId: string): string {
   return `${username}@${nodeId}-XHTTP-H3`;
 }
 
+// sing-box and Hiddify only.
+export function naiveName(username: string, nodeId: string): string {
+  return `${username}@${nodeId}-Naive`;
+}
+
 const AUTO_GROUP = "Auto";
 const SELECT_GROUP = "Proxy";
 

@@ -41,6 +41,15 @@ const (
 	KeyXHTTPH3Host = "XHTTP_H3_HOST"
 	KeyXHTTPH3Path = "XHTTP_H3_PATH"
 
+	// NaiveProxy route: a Caddy forward_proxy (probe_resistance) on TCP 443
+	// under the real certificate for NAIVE_HOST, with one shared basic-auth
+	// pair. Caddy is configured by hand on the node (JPY-01, 2026-09-13) and
+	// reads NAIVE_USER/NAIVE_PASS from this file; cf-vpn only reports them so
+	// the panel can hand out the route. All three set = route on.
+	KeyNaiveHost = "NAIVE_HOST"
+	KeyNaiveUser = "NAIVE_USER"
+	KeyNaivePass = "NAIVE_PASS"
+
 	// Hysteria2 on/off. Absent = on. "0"/"false"/"no"/"off" = the node runs no
 	// HY2 (unit disabled, no HY2 line in subscriptions, no HY2 cert renewal).
 	KeyHy2Enabled = "HY2_ENABLED"

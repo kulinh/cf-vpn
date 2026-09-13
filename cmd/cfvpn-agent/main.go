@@ -71,6 +71,10 @@ type statusResponse struct {
 	// as "cleared", and `cfvpnctl xhttp-h3 disable` writes empty strings.
 	XHTTPH3Host string `json:"xhttp_h3_host,omitempty"`
 	XHTTPH3Path string `json:"xhttp_h3_path,omitempty"`
+	// NaiveProxy route (any mode). Same omitempty contract as the H3 pair.
+	NaiveHost string `json:"naive_host,omitempty"`
+	NaiveUser string `json:"naive_user,omitempty"`
+	NaivePass string `json:"naive_pass,omitempty"`
 }
 
 // hy2Field blanks an HY2 value on a node whose HY2 is disabled, so the panel
@@ -250,6 +254,9 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 		XHTTPDirectPath: env[state.KeyXHTTPDirectPath],
 		XHTTPH3Host:     env[state.KeyXHTTPH3Host],
 		XHTTPH3Path:     env[state.KeyXHTTPH3Path],
+		NaiveHost:       env[state.KeyNaiveHost],
+		NaiveUser:       env[state.KeyNaiveUser],
+		NaivePass:       env[state.KeyNaivePass],
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

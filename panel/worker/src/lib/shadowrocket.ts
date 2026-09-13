@@ -13,7 +13,7 @@ import type { ModuleRules } from "./cnrules";
 // Reality nodes, the two nodes that keep Hysteria2, and the one cloudflare
 // route that stayed stable from China. Members the user does not have are
 // skipped so the group is always valid.
-const AUTO_MEMBERS: ReadonlyArray<readonly [string, (u: string, n: string) => string]> = [
+export const AUTO_MEMBERS: ReadonlyArray<readonly [string, (u: string, n: string) => string]> = [
   ["JPY-02", realityName],
   ["SIN-01", realityName],
   // JPY-03 (Oracle Osaka, added 2026-09-12): a Japan route on a different

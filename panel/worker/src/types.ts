@@ -84,6 +84,10 @@ export interface AgentStatusResponse {
   // Direct-mode only; omitted when the node has no H3 route.
   xhttp_h3_host?: string;
   xhttp_h3_path?: string;
+  // NaiveProxy route, any mode; omitted when the node has none.
+  naive_host?: string;
+  naive_user?: string;
+  naive_pass?: string;
 }
 
 export interface AgentHealthcheckResponse {
@@ -121,6 +125,9 @@ export interface AgentSyncResponse {
   xhttp_direct_path?: string;
   xhttp_h3_host?: string;
   xhttp_h3_path?: string;
+  naive_host?: string;
+  naive_user?: string;
+  naive_pass?: string;
 }
 
 export interface NodeRow {
@@ -148,6 +155,9 @@ export interface NodeRow {
   xhttp_direct_path: string | null;
   xhttp_h3_host: string | null;
   xhttp_h3_path: string | null;
+  naive_host: string | null;
+  naive_user: string | null;
+  naive_pass: string | null;
   agent_secret: string | null;
   tunnel_uuid: string | null;
 }

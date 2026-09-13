@@ -25,6 +25,11 @@ export interface SubscriptionRow {
   // real certificate, next to REALITY on TCP 443. Both set = on.
   xhttp_h3_host?: string | null;
   xhttp_h3_path?: string | null;
+  // NaiveProxy route (Caddy forward_proxy, one shared basic-auth pair per
+  // node). All three set = on. Only Hiddify and sing-box clients can use it.
+  naive_host?: string | null;
+  naive_user?: string | null;
+  naive_pass?: string | null;
 }
 
 export const XHTTP_DIRECT_MODE = "stream-one";
@@ -95,6 +100,20 @@ export function buildVLESSXHTTPH3URI(name: string, uuid: string, host: string, p
   return `vless://${uuid}@${host}:443?encryption=none&security=tls&type=xhttp&host=${enc(host)}&path=${encPath}&mode=${enc(mode)}&alpn=h3&sni=${enc(host)}#${enc(name)}-XHTTP-H3`;
 }
 
+// Hiddify's parser (ray2sing) reads naive://user:pass@host:port with
+// security/sni. UDP-over-TCP is on unless uot=false, and Caddy's forward_proxy
+// does not speak it, so it is switched off explicitly. The address is the
+// hostname: the node may be cloudflare-mode, where D1's public_ip is not kept
+// current, and the certificate is for that name anyway.
+export function buildNaiveURI(tag: string, user: string, pass: string, host: string): string {
+  const enc = encodeURIComponent;
+  return `naive://${enc(user)}:${enc(pass)}@${host}:443?security=tls&sni=${enc(host)}&uot=false#${enc(tag)}-Naive`;
+}
+
+export function hasNaive(r: SubscriptionRow): boolean {
+  return !!r.naive_host && !!r.naive_user && !!r.naive_pass;
+}
+
 export function buildHy2URI(tag: string, username: string, password: string, address: string, sniHost: string, port: number, obfsPw: string): string {
   const enc = encodeURIComponent;
   return `hysteria2://${enc(username)}:${enc(password)}@${address}:${port}/?obfs=salamander&obfs-password=${enc(obfsPw)}&sni=${enc(sniHost)}&insecure=0#${enc(tag)}-HY2`;
@@ -135,7 +154,13 @@ function warnMissingObfs(nodeId: string): void {
   console.warn("hy2 line dropped: node has hy2_host/hy2_port but no hy2_obfs_pw:", nodeId);
 }
 
-export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[]): string {
+export interface SubscriptionURIOptions {
+  // Emit naive:// lines. Only for clients known to parse them (Hiddify):
+  // Shadowrocket and v2rayN would show a broken entry or reject the list.
+  naive?: boolean;
+}
+
+export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[], opts: SubscriptionURIOptions = {}): string {
   const lines: string[] = [];
   for (const r of rows) {
     const tag = `${username}@${r.node_id}`;
@@ -169,6 +194,9 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[])
       // unchanged — this only makes the drop visible in the logs, once per node
       // per isolate.
       warnMissingObfs(r.node_id);
+    }
+    if (opts.naive && hasNaive(r)) {
+      lines.push(buildNaiveURI(tag, r.naive_user!, r.naive_pass!, r.naive_host!));
     }
   }
   return lines.join("\n");

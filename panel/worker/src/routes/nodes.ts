@@ -414,7 +414,7 @@ async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
     // The runtime columns must be read here: persistNodeRuntime falls back to
     // `row.<col>` for whatever the agent did not report, and a column missing
     // from this SELECT would be written back as NULL/undefined.
-    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid,reality_pubkey,reality_sid,reality_sni,reality_dest,xhttp_path,xhttp_enabled,xhttp_direct_host,xhttp_direct_path,xhttp_h3_host,xhttp_h3_path FROM nodes WHERE id = ?").bind(id)
+    env.DB.prepare("SELECT id,label,admin_host,vpn_host,hy2_host,hy2_port,hy2_obfs_pw,public_ip,zone,mode,status,last_seen_at,latency_ms,created_at,agent_secret,tunnel_uuid,reality_pubkey,reality_sid,reality_sni,reality_dest,xhttp_path,xhttp_enabled,xhttp_direct_host,xhttp_direct_path,xhttp_h3_host,xhttp_h3_path,naive_host,naive_user,naive_pass FROM nodes WHERE id = ?").bind(id)
   );
   if (!row) {
     return error(404, { error: "node_not_found", detail: id });
@@ -506,6 +506,28 @@ function mergeH3Runtime(
   };
 }
 
+interface NaiveRuntime {
+  naive_host: string | null;
+  naive_user: string | null;
+  naive_pass: string | null;
+}
+
+// NaiveProxy is a Caddy forward_proxy that can sit on a node of either mode
+// (JPY-01 is cloudflare-mode: Caddy already owns its TCP 443), so this merge
+// has no mode gate. Same keep-on-absent / clear-on-"" contract as the H3 pair.
+function mergeNaiveRuntime(
+  row: NodeRow,
+  agent: { naive_host?: string; naive_user?: string; naive_pass?: string }
+): NaiveRuntime {
+  const textOrKeep = (v: string | undefined, keep: string | null | undefined): string | null =>
+    v === undefined ? keep ?? null : v || null;
+  return {
+    naive_host: textOrKeep(agent.naive_host, row.naive_host),
+    naive_user: textOrKeep(agent.naive_user, row.naive_user),
+    naive_pass: textOrKeep(agent.naive_pass, row.naive_pass)
+  };
+}
+
 async function persistNodeRuntime(
   env: Env,
   id: string,
@@ -523,11 +545,12 @@ async function persistNodeRuntime(
     reality_dest: string | null;
     xhttp: XhttpRuntime;
     h3: H3Runtime;
+    naive: NaiveRuntime;
     tunnel_uuid: string | null;
   }
 ): Promise<void> {
   await env.DB.prepare(
-    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, xhttp_enabled=?, xhttp_direct_host=?, xhttp_direct_path=?, xhttp_h3_host=?, xhttp_h3_path=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
+    "UPDATE nodes SET status='active', vpn_host=?, zone=?, public_ip=?, mode=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, last_seen_at=?, latency_ms=?, reality_pubkey=?, reality_sid=?, reality_sni=?, reality_dest=?, xhttp_path=?, xhttp_enabled=?, xhttp_direct_host=?, xhttp_direct_path=?, xhttp_h3_host=?, xhttp_h3_path=?, naive_host=?, naive_user=?, naive_pass=?, tunnel_uuid=? WHERE id=? AND status != 'disabled'"
   )
     .bind(
       fields.vpn_host,
@@ -549,6 +572,9 @@ async function persistNodeRuntime(
       fields.xhttp.xhttp_direct_path,
       fields.h3.xhttp_h3_host,
       fields.h3.xhttp_h3_path,
+      fields.naive.naive_host,
+      fields.naive.naive_user,
+      fields.naive.naive_pass,
       fields.tunnel_uuid,
       id
     )
@@ -581,6 +607,7 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
       reality_dest: syncRuntimeFields ? status.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp: mergeXhttpRuntime(row, status, syncCloudflareFields),
       h3: mergeH3Runtime(row, status, syncRuntimeFields),
+      naive: mergeNaiveRuntime(row, status),
       // The agent is only as trustworthy as the VPS it runs on: a compromised
       // node could report a tunnel_uuid crafted to escape the Cloudflare API
       // path template on the next deleteNode. Persist it only if it looks like
@@ -987,6 +1014,7 @@ export async function nodeSyncCore(
       reality_dest: syncRuntimeFields ? out.reality_dest ?? row.reality_dest : row.reality_dest,
       xhttp: mergeXhttpRuntime(row, out, syncCloudflareFields),
       h3: mergeH3Runtime(row, out, syncRuntimeFields),
+      naive: mergeNaiveRuntime(row, out),
       tunnel_uuid: row.tunnel_uuid, // sync response carries no tunnel_uuid; preserve persisted value
     });
     // Log a safe projection — never the full AgentSyncResponse, which carries
