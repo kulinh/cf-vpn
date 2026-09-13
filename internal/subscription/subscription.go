@@ -70,11 +70,30 @@ func encodeVLESSPath(path string) string {
 	return strings.Join(segments, "%2F")
 }
 
+// V6Suffix names the IPv6 twin of a Reality or HY2 route. Mirrors V6_SUFFIX
+// in panel/worker/src/lib/subscription.ts.
+const V6Suffix = "-v6"
+
+// URIHost brackets an IPv6 literal for the authority part of a URI; hostnames
+// and IPv4 pass through. Mirrors uriHost() in the Worker.
+func URIHost(host string) string {
+	if strings.Contains(host, ":") && !strings.HasPrefix(host, "[") {
+		return "[" + host + "]"
+	}
+	return host
+}
+
 func BuildVLESSRealityURI(name, uuid, host, sni, pbk, sid string) string {
+	return BuildVLESSRealityURISuffix(name, uuid, host, sni, pbk, sid, "")
+}
+
+// BuildVLESSRealityURISuffix is BuildVLESSRealityURI with suffix appended to
+// the route name (V6Suffix for the IPv6 twin).
+func BuildVLESSRealityURISuffix(name, uuid, host, sni, pbk, sid, suffix string) string {
 	enc := EncodeURIComponent
 	return fmt.Sprintf(
-		"vless://%s@%s:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=%s&pbk=%s&sid=%s&fp=chrome#%s-Reality",
-		uuid, host, enc(sni), enc(pbk), enc(sid), enc(name),
+		"vless://%s@%s:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=%s&pbk=%s&sid=%s&fp=chrome#%s-Reality%s",
+		uuid, URIHost(host), enc(sni), enc(pbk), enc(sid), enc(name), suffix,
 	)
 }
 
@@ -136,10 +155,16 @@ func BuildVLESSXHTTPH3URI(name, uuid, host, path, mode string) string {
 // is deliberately NOT escaped (an IP or hostname; the Worker leaves it raw);
 // sniHost IS escaped in the sni= parameter.
 func BuildHy2URI(tag, username, password, address, sniHost string, port int, obfsPw string) string {
+	return BuildHy2URISuffix(tag, username, password, address, sniHost, port, obfsPw, "")
+}
+
+// BuildHy2URISuffix is BuildHy2URI with suffix appended to the route name
+// (V6Suffix for the IPv6 twin). An IPv6 address is bracketed.
+func BuildHy2URISuffix(tag, username, password, address, sniHost string, port int, obfsPw, suffix string) string {
 	enc := EncodeURIComponent
-	return "hysteria2://" + enc(username) + ":" + enc(password) + "@" + address + ":" + strconv.Itoa(port) +
+	return "hysteria2://" + enc(username) + ":" + enc(password) + "@" + URIHost(address) + ":" + strconv.Itoa(port) +
 		"/?obfs=salamander&obfs-password=" + enc(obfsPw) +
-		"&sni=" + enc(sniHost) + "&insecure=0#" + enc(tag) + "-HY2"
+		"&sni=" + enc(sniHost) + "&insecure=0#" + enc(tag) + "-HY2" + suffix
 }
 
 func BuildSubscriptionB64(uris ...string) string {
