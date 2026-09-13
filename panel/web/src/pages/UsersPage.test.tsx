@@ -209,7 +209,7 @@ test('Shadowrocket button opens a shadowrocket sub:// deep link via a synthetic 
   }
 })
 
-test('V2rayNG button opens a v2rayng deep link with a name query param via a synthetic anchor click', async () => {
+test('Hiddify button opens a hiddify import link via a synthetic anchor click', async () => {
   vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
   vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
   const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
@@ -237,14 +237,13 @@ test('V2rayNG button opens a v2rayng deep link with a name query param via a syn
     await screen.findByText('kulinh')
     await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
 
-    fireEvent.click(screen.getByRole('button', { name: /v2rayng/i }))
+    expect(screen.queryByRole('button', { name: /v2rayng/i })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /hiddify/i }))
 
     expect(hrefSetter).not.toHaveBeenCalled()
     expect(anchorClickSpy).toHaveBeenCalledTimes(1)
     const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
-    expect(anchor.href).toBe(
-      `v2rayng://install-sub?url=${encodeURIComponent(testSubscription.subUrl)}&name=${encodeURIComponent('RWL8899')}`,
-    )
+    expect(anchor.href).toBe(`hiddify://import/${testSubscription.subUrl}`)
   } finally {
     anchorClickSpy.mockRestore()
     Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })

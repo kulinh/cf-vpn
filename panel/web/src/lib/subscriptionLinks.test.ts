@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   buildPublicSubscriptionUrl,
   buildShadowrocketDeepLink,
-  buildV2rayNgDeepLink,
+  buildHiddifyDeepLink,
 } from './subscriptionLinks'
 
 describe('subscriptionLinks', () => {
@@ -39,10 +39,13 @@ describe('subscriptionLinks', () => {
     )
   })
 
-  it('builds v2rayng deep link with encoded subscription url and a name query param (not a fragment)', () => {
+  it('builds hiddify import link with the raw subscription url as the path and no #name', () => {
     const subUrl = 'https://panel.example.com/sub/abc123'
-    expect(buildV2rayNgDeepLink(subUrl, 'RWL8899')).toBe(
-      `v2rayng://install-sub?url=${encodeURIComponent(subUrl)}&name=${encodeURIComponent('RWL8899')}`,
-    )
+    expect(buildHiddifyDeepLink(subUrl)).toBe('hiddify://import/https://panel.example.com/sub/abc123')
+  })
+
+  it('falls back to the ?url= form when the subscription url carries a query string', () => {
+    const subUrl = 'https://panel.example.com/sub/abc123?rules=uae'
+    expect(buildHiddifyDeepLink(subUrl)).toBe(`hiddify://import/?url=${encodeURIComponent(subUrl)}`)
   })
 })
