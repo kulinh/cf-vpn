@@ -808,9 +808,10 @@ describe("sweepNodesHealth", () => {
 
     expect(env.writes).toHaveLength(1);
     expect(env.writes[0].sql).toBe(
-      "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+      "UPDATE nodes SET consecutive_failures=COALESCE(consecutive_failures, 0) + 1, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
     );
-    expect(env.writes[0].args).toEqual([1, "a"]);
+    // Incremented in SQL so overlapping sweeps cannot lose a failure (review L6).
+    expect(env.writes[0].args).toEqual(["a"]);
     expect(eventInserts(env.writes)).toHaveLength(0);
   });
 
@@ -823,8 +824,8 @@ describe("sweepNodesHealth", () => {
     await sweepNodesHealth(env.env);
 
     const update = env.writes.find((w) => /UPDATE nodes/.test(w.sql))!;
-    expect(update.sql).toContain("status='unreachable', consecutive_failures=?, last_sweep_outcome='transport'");
-    expect(update.args).toEqual([2, "a"]);
+    expect(update.sql).toContain("status='unreachable', consecutive_failures=COALESCE(consecutive_failures, 0) + 1, last_sweep_outcome='transport'");
+    expect(update.args).toEqual(["a"]);
     const events = eventInserts(env.writes);
     expect(events).toHaveLength(1);
     expect(eventAction(events[0])).toBe("node.healthcheck");
@@ -840,7 +841,7 @@ describe("sweepNodesHealth", () => {
 
     expect(env.writes).toHaveLength(1);
     expect(env.writes[0].sql).toBe(
-      "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+      "UPDATE nodes SET consecutive_failures=COALESCE(consecutive_failures, 0) + 1, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
     );
     expect(eventInserts(env.writes)).toHaveLength(0);
   });
@@ -1662,5 +1663,128 @@ describe("nodeStatus naive runtime", () => {
     await nodeStatus(makeEnv({ node: stored, zones: [], writes }), "JPY-01", "operator@example.com");
     expect(persistedByName(writes, "naive_host")).toBeNull();
     expect(persistedByName(writes, "naive_pass")).toBeNull();
+  });
+});
+
+describe("agent-reported hosts and IPs are validated before they reach D1 (review M2)", () => {
+  beforeEach(() => {
+    vi.mocked(callAgent).mockReset();
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+
+  const stored: NodeRow = {
+    ...reviewRow,
+    id: "m2-01",
+    admin_host: "m2-01.rwl247.dev",
+    vpn_host: "edge.example.com",
+    zone: "example.com",
+    mode: "direct",
+    public_ip: "203.0.113.10",
+    hy2_host: "hy.example.com",
+    hy2_port: 32443,
+    hy2_obfs_pw: "obfs",
+    xhttp_h3_host: "quic.example.com",
+    xhttp_h3_path: "/p",
+    naive_host: "naive.example.com",
+    naive_user: "u",
+    naive_pass: "p"
+  };
+
+  it("nodeStatus keeps the stored values when the agent reports garbage", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      mode: "direct",
+      vpn_host: "evil.example.com#x",
+      zone: "example.com",
+      public_ip: "1.2.3.4#x",
+      hy2_host: "hy.example.com/../x",
+      xhttp_h3_host: "quic.example.com:443",
+      naive_host: "user@naive.example.com",
+      tunnel_uuid: ""
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: stored, zones: [{ name: "example.com", cf_zone_id: "z" }], writes });
+    expect((await nodeStatus(env, "m2-01", "op")).status).toBe(200);
+    const p = persistedRuntime(writes);
+    expect(p.vpn_host).toBe("edge.example.com");
+    expect(p.public_ip).toBe("203.0.113.10");
+    expect(p.hy2_host).toBe("hy.example.com");
+    expect(p.xhttp_h3_host).toBe("quic.example.com");
+    expect(p.naive_host).toBe("naive.example.com");
+  });
+
+  it("nodeStatus still accepts well-formed values and an explicit clear", async () => {
+    vi.mocked(callAgent).mockResolvedValue({
+      mode: "direct",
+      vpn_host: "edge2.example.com",
+      zone: "example.com",
+      public_ip: "198.51.100.7",
+      hy2_host: "hy2.example.com",
+      xhttp_h3_host: "",
+      naive_host: "naive2.example.com",
+      tunnel_uuid: ""
+    } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: stored, zones: [{ name: "example.com", cf_zone_id: "z" }], writes });
+    await nodeStatus(env, "m2-01", "op");
+    const p = persistedRuntime(writes);
+    expect(p.vpn_host).toBe("edge2.example.com");
+    expect(p.public_ip).toBe("198.51.100.7");
+    expect(p.hy2_host).toBe("hy2.example.com");
+    expect(p.xhttp_h3_host).toBeNull();
+    expect(p.naive_host).toBe("naive2.example.com");
+  });
+
+  it("nodeSyncCore ignores a malformed public_ip and vpn_host", async () => {
+    vi.mocked(callAgent).mockResolvedValue({ ok: true, vpn_host: "a b", public_ip: "not-an-ip", hy2_host: "", users: 1 } as never);
+    const writes: RunWrite[] = [];
+    const env = makeEnv({ node: stored, zones: [{ name: "example.com", cf_zone_id: "z" }], writes });
+    expect((await nodeSyncCore(env, "m2-01", [{ name: "a", vless_uuid: "u", hy2_pw: "p" }], "op")).status).toBe(200);
+    const p = persistedRuntime(writes);
+    expect(p.vpn_host).toBe("edge.example.com");
+    expect(p.public_ip).toBe("203.0.113.10");
+  });
+});
+
+describe("operator-supplied hosts are validated (review M3) and label cannot be blanked (review L8)", () => {
+  beforeEach(() => {
+    vi.mocked(logEvent).mockReset();
+    vi.mocked(logEvent).mockResolvedValue(undefined);
+  });
+  const req = (method: string, url: string, body: unknown) =>
+    new Request(url, { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const errorOf = async (res: Response) => (await res.json() as { error: string }).error;
+
+  it("createNode rejects a vpn_host or hy2_host that is not a plain hostname", async () => {
+    for (const host of ["a b.example.com", "x@y.example.com", "example", "host.example.com/path", "1.2.3.4:443"]) {
+      const env = makeEnv({ node: { ...reviewRow, id: "OTHER" }, zones: [{ name: "example.com", cf_zone_id: "z", enabled: 1 }] });
+      const res = await createNode(env, req("POST", "https://panel.test/api/nodes", { id: "NEW-01", label: "n", host, zone: "example.com" }), "op");
+      expect(res.status).toBe(400);
+      expect(await errorOf(res)).toBe("invalid_vpn_host");
+    }
+    const env = makeEnv({ node: { ...reviewRow, id: "OTHER" }, zones: [{ name: "example.com", cf_zone_id: "z", enabled: 1 }] });
+    const res = await createNode(env, req("POST", "https://panel.test/api/nodes", { id: "NEW-01", label: "n", hy2_host: "bad host" }), "op");
+    expect(await errorOf(res)).toBe("invalid_hy2_host");
+  });
+
+  it("patchNode rejects a malformed vpn_host and an empty label", async () => {
+    const env = () => makeEnv({ node: { ...reviewRow }, zones: [] });
+    const url = `https://panel.test/api/nodes/${reviewRow.id}`;
+    let res = await patchNode(env(), reviewRow.id, req("PATCH", url, { vpn_host: "x#y.example.com" }), "op");
+    expect(await errorOf(res)).toBe("invalid_vpn_host");
+    for (const label of ["", "   ", 5]) {
+      res = await patchNode(env(), reviewRow.id, req("PATCH", url, { label }), "op");
+      expect(res.status).toBe(400);
+    }
+    res = await patchNode(env(), reviewRow.id, req("PATCH", url, { label: "Renamed", vpn_host: "edge9.example.com" }), "op");
+    expect(res.status).toBe(200);
+  });
+
+  it("nodeRotate rejects a malformed host override before calling the agent", async () => {
+    vi.mocked(callAgent).mockReset();
+    const env = makeEnv({ node: { ...reviewRow }, zones: [{ name: "example.com", cf_zone_id: "z", enabled: 1 }] });
+    const res = await nodeRotate(env, reviewRow.id, req("POST", "https://panel.test/x", { host: "bad host", zone: "example.com" }), "op");
+    expect(res.status).toBe(400);
+    expect(callAgent).not.toHaveBeenCalled();
   });
 });

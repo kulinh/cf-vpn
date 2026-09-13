@@ -1,5 +1,5 @@
 import type { SubscriptionRow } from "./subscription";
-import { hasHy2, hasIPv6, hasNaive, hy2Address, isCloudflareRow, isRealityRow, realityHost } from "./subscription";
+import { hasHy2, hasIPv6, hasNaive, ipv6Of, hy2Address, isCloudflareRow, isRealityRow, realityHost } from "./subscription";
 import { httpUpgradeName, hy2Name, hy2V6Name, naiveName, realityName, realityV6Name, xhttpH3Name } from "./clash";
 import { AUTO_MEMBERS } from "./shadowrocket";
 import type { ModuleRules } from "./cnrules";
@@ -54,7 +54,7 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
       // IPv6 twin: PROXY only (AUTO members are fixed IPv4 names, and the
       // HY2-BACKUP filter matches "-HY2" at the end, not "-HY2-v6").
       if (hasIPv6(r)) {
-        out.push(reality(realityV6Name(username, r.node_id), r.public_ipv6!));
+        out.push(reality(realityV6Name(username, r.node_id), ipv6Of(r)!));
       }
     } else if (isCloudflareRow(r)) {
       out.push({
@@ -83,7 +83,7 @@ function nodeOutbounds(username: string, rows: SubscriptionRow[]): Json[] {
       });
       out.push(hy2(hy2Name(username, r.node_id), hy2Address(r)));
       if (hasIPv6(r)) {
-        out.push(hy2(hy2V6Name(username, r.node_id), r.public_ipv6!));
+        out.push(hy2(hy2V6Name(username, r.node_id), ipv6Of(r)!));
       }
     }
     if (hasNaive(r)) {

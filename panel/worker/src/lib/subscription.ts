@@ -1,3 +1,4 @@
+import { isIPv6Literal } from "./hosts";
 export interface SubscriptionRow {
   vless_uuid: string;
   hy2_pw: string;
@@ -62,8 +63,16 @@ export function uriHost(host: string): string {
 // Name suffix of the IPv6 twins of the Reality and HY2 routes.
 export const V6_SUFFIX = "-v6";
 
+// The row's IPv6 when it is a real bare literal (trimmed), else null — same
+// rule as publicIPv6() on the Go side, so a bracketed, zoned or IPv4-mapped
+// value never produces a twin in either builder.
+export function ipv6Of(r: SubscriptionRow): string | null {
+  const v = r.public_ipv6?.trim();
+  return v && isIPv6Literal(v) && v.replace(/[^:]/g, "").length >= 2 ? v : null;
+}
+
 export function hasIPv6(r: SubscriptionRow): boolean {
-  return !!r.public_ipv6 && r.public_ipv6.length > 0;
+  return ipv6Of(r) !== null;
 }
 
 export function buildVLESSHTTPUpgradeURI(
@@ -193,7 +202,7 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[],
     }
     lines.push(uri);
     if (isRealityRow(r) && hasIPv6(r)) {
-      lines.push(buildVLESSRealityURI(tag, r.vless_uuid, r.public_ipv6!,
+      lines.push(buildVLESSRealityURI(tag, r.vless_uuid, ipv6Of(r)!,
         r.reality_sni!, r.reality_pubkey!, r.reality_sid!, V6_SUFFIX));
     }
     if (hasXHTTP(r)) {
@@ -208,7 +217,7 @@ export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[],
     if (hasHy2(r)) {
       lines.push(buildHy2URI(tag, username, r.hy2_pw, hy2Address(r), r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!));
       if (hasIPv6(r)) {
-        lines.push(buildHy2URI(tag, username, r.hy2_pw, r.public_ipv6!, r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!, V6_SUFFIX));
+        lines.push(buildHy2URI(tag, username, r.hy2_pw, ipv6Of(r)!, r.hy2_host!, r.hy2_port!, r.hy2_obfs_pw!, V6_SUFFIX));
       }
     } else if (r.hy2_host && r.hy2_port) {
       // The node has a Hysteria2 endpoint but no obfs password, so the line is

@@ -15,7 +15,29 @@ export function generateAdminHost(nodeID: string): string | null {
   return normalized ? `${normalized}.${ADMIN_HOST_ZONE}` : null;
 }
 
-function isIPv4(hostname: string): boolean {
+// A plain DNS name as it may appear in the authority of a client URI: at least
+// two labels, [a-z0-9-] only, no leading/trailing hyphen, no trailing dot, no
+// port/path/userinfo. Anything else reported by an agent or typed into the
+// panel would be concatenated raw into subscription URIs and DNS calls.
+export function isDnsHostname(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 253) return false;
+  const labels = value.split(".");
+  if (labels.length < 2) return false;
+  return labels.every((l) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(l));
+}
+
+// A bare IPv6 literal: no brackets, no zone id, not IPv4-mapped/dotted.
+export function isIPv6Literal(value: unknown): value is string {
+  if (typeof value !== "string" || !value.includes(":") || /[^0-9A-Fa-f:]/.test(value)) return false;
+  if (value.length > 39 || (value.match(/::/g) ?? []).length > 1 || /:::/.test(value)) return false;
+  if ((value.startsWith(":") && !value.startsWith("::")) || (value.endsWith(":") && !value.endsWith("::"))) return false;
+  const groups = value.split(":");
+  if (groups.some((g) => g.length > 4)) return false;
+  return value.includes("::") ? groups.length <= 8 : groups.length === 8;
+}
+
+export function isIPv4(hostname: unknown): boolean {
+  if (typeof hostname !== "string") return false;
   if (!/^\d+\.\d+\.\d+\.\d+$/.test(hostname)) {
     return false;
   }
