@@ -1,7 +1,5 @@
 export type NodeStatus = 'active' | 'degraded' | 'down' | 'unreachable' | 'disabled' | 'unknown'
 
-export type NodeFilter = 'all' | 'active' | 'degraded' | 'down'
-
 export type Node = {
   id: string
   label: string

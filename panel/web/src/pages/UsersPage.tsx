@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { QrModal } from '../components/users/QrModal'
 import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
@@ -115,24 +115,41 @@ export function UsersPage() {
     }
   }
 
+  // Each Show QR click (and each close) bumps this id; a subscription fetch
+  // only applies its result if it is still the latest request. Without it, a
+  // slow response for user A landing after a click on user B would render B's
+  // name next to A's QR / sub token.
+  const qrRequestIdRef = useRef(0)
+
   const handleShowQr = async (userId: string) => {
+    const requestId = ++qrRequestIdRef.current
     setQrUserId(userId)
     setQrSubscriptionUrl(null)
     const cached = subs[userId]
     if (cached) {
+      setQrLoading(false)
       setQrSubscriptionUrl(cached.subUrl)
       return
     }
     setQrLoading(true)
     try {
       const sub = await getUserSubscription(userId)
+      if (requestId !== qrRequestIdRef.current) return
       setQrSubscriptionUrl(sub.subUrl)
     } catch {
+      if (requestId !== qrRequestIdRef.current) return
       setToastMessage('Failed to load subscription')
       setQrUserId(null)
     } finally {
-      setQrLoading(false)
+      if (requestId === qrRequestIdRef.current) setQrLoading(false)
     }
+  }
+
+  const handleCloseQr = () => {
+    qrRequestIdRef.current += 1
+    setQrUserId(null)
+    setQrSubscriptionUrl(null)
+    setQrLoading(false)
   }
 
   const handleShadowrocket = (userId: string) => {
@@ -241,7 +258,7 @@ export function UsersPage() {
           open={qrUserId != null}
           userId={qrUserId}
           subscriptionUrl={qrSubscriptionUrl}
-          onClose={() => setQrUserId(null)}
+          onClose={handleCloseQr}
         />
       )}
     </>

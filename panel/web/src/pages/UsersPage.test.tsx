@@ -1,7 +1,14 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import QRCode from 'qrcode'
 import { UsersPage } from './UsersPage'
 import * as api from '../lib/api'
 import type { Node } from '../lib/types'
+
+vi.mock('qrcode', () => ({
+  default: {
+    toCanvas: vi.fn().mockResolvedValue(undefined),
+  },
+}))
 
 const testSubscription: api.UserSubscription = {
   urls: 'vless://u1@hk.example.com:443\nhysteria2://p1@hy2.example.com:21000',
@@ -327,4 +334,59 @@ test('shows Syncing... while request is pending', async () => {
   })
 
   expect(await screen.findByText(/added 1 nodes/i)).toBeInTheDocument()
+})
+
+test('Show QR ignores a stale response so one user\'s token never renders under another user\'s name', async () => {
+  vi.spyOn(api, 'listUsers').mockResolvedValue([
+    { id: 'alice', name: 'alice', nodes: ['HK'] },
+    { id: 'bob', name: 'bob', nodes: ['HK'] },
+  ])
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
+
+  const subFor = (userId: string): api.UserSubscription => ({
+    urls: `vless://${userId}@hk.example.com:443`,
+    token: userId.padEnd(32, '0'),
+    subUrl: `http://localhost:3000/sub/${userId.padEnd(32, '0')}`,
+  })
+  const pending: Record<string, (value: api.UserSubscription) => void> = {}
+  let initialLoadDone = false
+  const subSpy = vi.spyOn(api, 'getUserSubscription').mockImplementation((userId: string) => {
+    // The page prefetches every user's subscription on mount; fail those so
+    // Show QR has no cache and must fetch, then hold each fetch open.
+    if (!initialLoadDone) return Promise.reject(new Error('not cached'))
+    return new Promise((resolve) => {
+      pending[userId] = resolve
+    })
+  })
+  const toCanvas = vi.mocked(QRCode.toCanvas)
+  toCanvas.mockClear()
+
+  render(<UsersPage />)
+
+  await screen.findByText('alice')
+  await vi.waitFor(() => expect(subSpy).toHaveBeenCalledTimes(2))
+  initialLoadDone = true
+
+  const [showAlice, showBob] = screen.getAllByRole('button', { name: /show qr/i })
+  fireEvent.click(showAlice)
+  fireEvent.click(showBob)
+  expect(pending.alice).toBeDefined()
+  expect(pending.bob).toBeDefined()
+
+  // alice's (older) request resolves after bob was clicked.
+  await act(async () => {
+    pending.alice(subFor('alice'))
+  })
+
+  expect(screen.queryByText('User: bob')).not.toBeInTheDocument()
+  expect(screen.getByText('Loading...')).toBeInTheDocument()
+  expect(toCanvas).not.toHaveBeenCalledWith(expect.anything(), subFor('alice').subUrl, expect.anything())
+
+  await act(async () => {
+    pending.bob(subFor('bob'))
+  })
+
+  expect(within(document.body).getByText('User: bob')).toBeInTheDocument()
+  expect(toCanvas).toHaveBeenCalledWith(expect.anything(), subFor('bob').subUrl, expect.anything())
+  expect(toCanvas).not.toHaveBeenCalledWith(expect.anything(), subFor('alice').subUrl, expect.anything())
 })

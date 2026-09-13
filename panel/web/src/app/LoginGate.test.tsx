@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { vi } from 'vitest'
 import { LoginGate } from './LoginGate'
 import * as api from '../lib/api'
@@ -95,7 +95,9 @@ describe('LoginGate', () => {
       </LoginGate>,
     )
     expect(screen.getByText('panel')).toBeTruthy()
-    window.dispatchEvent(new Event('panel-unauthorized'))
+    act(() => {
+      window.dispatchEvent(new Event('panel-unauthorized'))
+    })
     await waitFor(() => expect(screen.queryByText('panel')).toBeNull())
     expect(screen.getByRole('button', { name: /sign in/i })).toBeTruthy()
   })

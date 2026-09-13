@@ -18,13 +18,8 @@ function randomHex(bytes: number): string {
     .join('')
 }
 
-function generateRandomVpnHost(): string {
-  const hex = randomHex(4)
-  const suffix = ADMIN_HOST_SUFFIXES[Math.floor(Math.random() * ADMIN_HOST_SUFFIXES.length)]
-  return `${hex}.${suffix}`
-}
-
-function generateRandomAdminHost(): string {
+// Used for both the admin and the VPN host fields: 8 hex chars under a random suffix.
+function generateRandomHost(): string {
   const hex = randomHex(4)
   const suffix = ADMIN_HOST_SUFFIXES[Math.floor(Math.random() * ADMIN_HOST_SUFFIXES.length)]
   return `${hex}.${suffix}`
@@ -128,7 +123,7 @@ export function QuickAddPage() {
                   />
                   <button
                     type="button"
-                    onClick={() => setNodeAdminHost(generateRandomAdminHost())}
+                    onClick={() => setNodeAdminHost(generateRandomHost())}
                     className="rounded bg-slate-700 px-3 py-2 text-xs text-slate-100"
                   >
                     Random
@@ -147,7 +142,7 @@ export function QuickAddPage() {
                   />
                   <button
                     type="button"
-                    onClick={() => setNodeVpnHost(generateRandomVpnHost())}
+                    onClick={() => setNodeVpnHost(generateRandomHost())}
                     className="rounded bg-slate-700 px-3 py-2 text-xs text-slate-100"
                   >
                     Random
