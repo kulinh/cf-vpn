@@ -122,3 +122,20 @@ describe("IPv6 twins match the Go builder", () => {
     ]);
   });
 });
+
+describe("sing-box AUTO without xhttp", () => {
+  it("puts JPY-03-HY2 where Shadowrocket has JPY-03-XHTTP-H3", () => {
+    const h3 = { ...jpy03, xhttp_h3_host: "quic.example.com", xhttp_h3_path: "/p" };
+    const sr = buildShadowrocketConfig("kulinh", [h3]).split("\n").find((l) => l.startsWith("AUTO = "))!;
+    expect(sr).toContain("AUTO = url-test, kulinh@JPY-03-XHTTP-H3, kulinh@JPY-03-Reality,");
+    const cfg = buildSingboxConfig("kulinh", [h3], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
+    const auto = cfg.outbounds.find((o) => o.tag === "AUTO")!;
+    expect(auto.outbounds).toEqual(["kulinh@JPY-03-HY2", "kulinh@JPY-03-Reality"]);
+  });
+
+  it("does not add the HY2 fallback when the node has no HY2", () => {
+    const noHy2 = { ...jpy03, hy2_host: null, hy2_port: null, hy2_obfs_pw: null, xhttp_h3_host: "q", xhttp_h3_path: "/p" };
+    const cfg = buildSingboxConfig("kulinh", [noHy2], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
+    expect(cfg.outbounds.find((o) => o.tag === "AUTO")!.outbounds).toEqual(["kulinh@JPY-03-Reality"]);
+  });
+});
