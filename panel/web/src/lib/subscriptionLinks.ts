@@ -2,7 +2,7 @@ export function buildPublicSubscriptionUrl(origin: string, token: string): strin
   return `${origin}/sub/${token}`
 }
 
-export function buildShadowrocketDeepLink(subUrl: string, remark = 'RWL8899'): string {
+export function buildShadowrocketDeepLink(subUrl: string, remark = 'RWL'): string {
   return `shadowrocket://add/sub://${btoa(subUrl)}?remark=${encodeURIComponent(remark)}`
 }
 
@@ -19,12 +19,28 @@ export function buildHiddifyDeepLink(subUrl: string): string {
     : `hiddify://import/${subUrl}`
 }
 
+// One profile per trip: the blocked-site list is chosen by the link.
+export type RuleSet = 'cn' | 'uae'
+export const RULE_SETS: ReadonlyArray<{ key: RuleSet; label: string; hint: string }> = [
+  { key: 'cn', label: 'CN', hint: 'China: sites behind the GFW go through the proxy, the rest direct' },
+  { key: 'uae', label: 'UAE', hint: 'UAE: OTT calls (WhatsApp, FaceTime…) and TDRA-blocked sites go through the proxy' },
+]
+export function profileName(rules: RuleSet): string {
+  return `RWL-${rules.toUpperCase()}`
+}
+
+// The Shadowrocket .conf (policy groups + rules) is a separate remote config
+// next to the node subscription; Shadowrocket has no deep link for it, so the
+// panel hands out the URL to paste under Config > Add remote.
+export function buildShadowrocketConfUrl(subUrl: string, rules: RuleSet): string {
+  return `${subUrl}?format=shadowrocket&rules=${rules}`
+}
+
 // The official sing-box apps (SFI on iOS/macOS, SFA on Android) import a
 // remote profile from this link (libbox GenerateRemoteProfileImportLink). It
-// points at ?format=singbox, the complete config that carries the
-// blocked-site rules, so only listed sites ride the proxy. No ?rules= is
-// added: the config then follows the operator's travel mode (Telegram /mode).
-// sing-box ignores the profile-title header, hence the #name.
-export function buildSingboxDeepLink(subUrl: string, name = 'RWL8899'): string {
-  return `sing-box://import-remote-profile?url=${encodeURIComponent(`${subUrl}?format=singbox`)}#${encodeURIComponent(name)}`
+// points at ?format=singbox&rules=…, the complete config that carries the
+// blocked-site rules, so only listed sites ride the proxy. sing-box ignores
+// the profile-title header, hence the #name.
+export function buildSingboxDeepLink(subUrl: string, rules: RuleSet = 'cn'): string {
+  return `sing-box://import-remote-profile?url=${encodeURIComponent(`${subUrl}?format=singbox&rules=${rules}`)}#${encodeURIComponent(profileName(rules))}`
 }

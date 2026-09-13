@@ -10,8 +10,6 @@ type AllResult = unknown[];
 type StubSpec = {
   userByToken?: Record<string, FirstResult>;
   nodesByUser?: Record<string, AllResult>;
-  settings?: Record<string, string>;
-  settingsThrow?: boolean;
 };
 
 function makeDB(spec: StubSpec): D1Database {
@@ -26,11 +24,6 @@ function makeDB(spec: StubSpec): D1Database {
         if (/FROM users WHERE sub_token=\?/.test(sql)) {
           const token = state.args[0] as string;
           return (spec.userByToken?.[token] ?? null) as never;
-        }
-        if (/FROM settings WHERE key=\?/.test(sql)) {
-          if (spec.settingsThrow) throw new Error("no such table: settings");
-          const v = spec.settings?.[state.args[0] as string];
-          return (v == null ? null : { value: v }) as never;
         }
         return null as never;
       },
@@ -116,13 +109,13 @@ describe("publicSubscription", () => {
         { vless_uuid: "u1", hy2_pw: "p1", vpn_host: "sg.example.com", node_id: "SG", hy2_host: "udp-sg.example.com", hy2_port: 30000, hy2_obfs_pw: "obfs1", ...realityFields },
         { vless_uuid: "u2", hy2_pw: "p2", vpn_host: "jp.example.com", node_id: "JP1", hy2_host: null, hy2_port: null, hy2_obfs_pw: null, ...realityFields }
       ]),
-      "RWL8899"
+      "RWL"
     );
     expect(body).toBe(expected);
 
     const decoded = atob(body).split("\n");
     expect(decoded).toHaveLength(4);
-    expect(decoded[0]).toBe("REMARKS=RWL8899");
+    expect(decoded[0]).toBe("REMARKS=RWL");
     expect(decoded[1]).toMatch(/^vless:\/\/u1@sg\.example\.com:443/);
     expect(decoded[2]).toMatch(/^hysteria2:\/\/kulinh:p1@udp-sg\.example\.com:30000/);
     expect(decoded[3]).toMatch(/^vless:\/\/u2@jp\.example\.com:443/);
@@ -141,7 +134,7 @@ describe("publicSubscription", () => {
     // "0 B of 0 B" — and some clients treat that as an exhausted quota and stop
     // auto-updating. Absent is correct; empty is worse than nothing.
     expect(res.headers.get("subscription-userinfo")).toBeNull();
-    expect(res.headers.get("profile-title")).toBe(`base64:${btoa("RWL8899")}`);
+    expect(res.headers.get("profile-title")).toBe(`base64:${btoa("RWL")}`);
     expect(res.headers.get("profile-update-interval")).toBe("24");
   });
 
@@ -237,7 +230,7 @@ describe("publicSubscription", () => {
     const bare = await publicSubscription(makeEnv(makeDB(spec)), token);
     const empty = await publicSubscription(makeEnv(makeDB(spec)), token, "");
     const nulled = await publicSubscription(makeEnv(makeDB(spec)), token, null);
-    const expected = encodeSubscriptionBody(buildSubscriptionURIs("kulinh", rows), "RWL8899");
+    const expected = encodeSubscriptionBody(buildSubscriptionURIs("kulinh", rows), "RWL");
 
     expect(await bare.text()).toBe(expected);
     expect(await empty.text()).toBe(expected);
@@ -254,7 +247,7 @@ describe("publicSubscription", () => {
     );
     const res = await publicSubscription(env, token);
     expect(res.status).toBe(200);
-    expect(atob(await res.text())).toBe("REMARKS=RWL8899");
+    expect(atob(await res.text())).toBe("REMARKS=RWL");
   });
 });
 
@@ -265,17 +258,17 @@ describe("encodeSubscriptionBody", () => {
   });
 
   it("prepends REMARKS= line when remarks is provided", () => {
-    const out = encodeSubscriptionBody(["a", "b"], "RWL8899");
-    expect(atob(out)).toBe("REMARKS=RWL8899\na\nb");
+    const out = encodeSubscriptionBody(["a", "b"], "RWL");
+    expect(atob(out)).toBe("REMARKS=RWL\na\nb");
   });
 
   it("encodes large subscription payloads without throwing", () => {
     const chunk = "x".repeat(200000);
     const uris = [`vless://${chunk}`, `hysteria2://${chunk}`];
 
-    const out = encodeSubscriptionBody(uris, "RWL8899");
+    const out = encodeSubscriptionBody(uris, "RWL");
 
-    expect(atob(out)).toBe(`REMARKS=RWL8899\n${uris.join("\n")}`);
+    expect(atob(out)).toBe(`REMARKS=RWL\n${uris.join("\n")}`);
   });
 });
 
@@ -495,37 +488,27 @@ describe("?format=shadowrocket&rules=", () => {
     }
   });
 
-  it("follows the stored rules_mode setting when the link carries no ?rules=", async () => {
+  it("defaults to the CN list when the link carries no ?rules=, and names the profile after the list", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (input: string) => {
       calls.push(input);
       return new Response("[Rule]\nDOMAIN-SUFFIX,whatsapp.net,PROXY\n");
     });
     try {
-      const uaeDB = makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "uae" } });
-      const body = await (await publicSubscription(makeEnv(uaeDB), token, "shadowrocket", null, null)).text();
-      expect(calls.at(-1)).toContain("sr_proxy_list_UAE.module");
-      expect(body).toContain("# sr_proxy_list_UAE from ");
-
-      // An explicit ?rules= on the link still wins over the stored mode.
-      await publicSubscription(makeEnv(uaeDB), token, "shadowrocket", null, "cn");
+      const cn = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, null);
       expect(calls.at(-1)).toContain("sr_proxy_list_CN.module");
-
-      // rules_mode=none: bare tail, nothing fetched.
-      const n = calls.length;
-      const noneDB = makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "none" } });
-      const bare = await (await publicSubscription(makeEnv(noneDB), token, "shadowrocket", null, null)).text();
-      expect(bare).toContain("load the sr_proxy_list_CN (or _UAE) module");
-      expect(calls.length).toBe(n);
-
-      // Garbage or a missing settings table fall back to CN.
-      for (const db2 of [
-        makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settings: { rules_mode: "mars" } }),
-        makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] }, settingsThrow: true })
-      ]) {
-        await publicSubscription(makeEnv(db2), token, "shadowrocket", null, null);
-        expect(calls.at(-1)).toContain("sr_proxy_list_CN.module");
-      }
+      expect(cn.headers.get("content-disposition")).toBe('attachment; filename="RWL-CN.conf"');
+      const uae = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "uae");
+      expect(uae.headers.get("content-disposition")).toBe('attachment; filename="RWL-UAE.conf"');
+      const sbUae = await publicSubscription(makeEnv(db()), token, "singbox", null, "uae");
+      expect(sbUae.headers.get("profile-title")).toBe(`base64:${btoa("RWL-UAE")}`);
+      const sbFull = await publicSubscription(makeEnv(db()), token, "singbox", "proxy", null);
+      expect(sbFull.headers.get("profile-title")).toBe(`base64:${btoa("RWL-FULL")}`);
+      const none = await publicSubscription(makeEnv(db()), token, "shadowrocket", null, "none");
+      expect(none.headers.get("content-disposition")).toBe('attachment; filename="RWL-NONE.conf"');
+      // The node list itself is not tied to a rule set.
+      const nodes = await publicSubscription(makeEnv(db()), token, null, null, "uae");
+      expect(nodes.headers.get("profile-title")).toBe(`base64:${btoa("RWL")}`);
     } finally {
       vi.unstubAllGlobals();
     }
