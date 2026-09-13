@@ -289,8 +289,7 @@ func handleRotateDomain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req rotateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	// H7/H8: the hostnames in this request are written into cfvpn.env, into
@@ -458,8 +457,13 @@ func handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req syncRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+	if !decodeJSONBody(w, r, &req) {
+		return
+	}
+	// L4: the CLI refuses a sixth user (commands.AddUser); the agent applied
+	// whatever list it was handed. Checked before the lock: it needs no state.
+	if reason := userLimitRefusal(len(req.Users)); reason != "" {
+		writeError(w, http.StatusBadRequest, "user_limit_exceeded", reason)
 		return
 	}
 	unlock, err := acquireLockOrFail(w, r)
@@ -501,8 +505,7 @@ func handleUsers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req addUserRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+	if !decodeJSONBody(w, r, &req) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -529,6 +532,12 @@ func handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, addUserResponse{Name: u.Name, VlessUUID: u.VlessUUID, Hy2PW: u.Hy2PW})
 			return
 		}
+	}
+	// Re-adding an existing user (above) is idempotent and never refused, so a
+	// node already over the limit can still converge; only a NEW user counts.
+	if reason := userLimitRefusal(len(records) + 1); reason != "" {
+		writeError(w, http.StatusBadRequest, "user_limit_exceeded", reason)
+		return
 	}
 	uuid, err := commands.GenerateUUIDv4()
 	if err != nil {
@@ -889,6 +898,16 @@ func emptySyncRefusal(req syncRequest, existingUsers int) string {
 	return fmt.Sprintf("refusing to remove all %d user(s) on this node; resend with confirm_empty=true if that is intended", existingUsers)
 }
 
+// userLimitRefusal returns the reason to refuse a user set of n users, or "" to
+// proceed. The limit is commands.MaxUsers, the same one `cfvpnctl user add`
+// enforces.
+func userLimitRefusal(n int) string {
+	if n <= commands.MaxUsers {
+		return ""
+	}
+	return fmt.Sprintf("user limit exceeded: %d user(s) requested, max %d per node", n, commands.MaxUsers)
+}
+
 func parsePortOrWarn(key, s string) int {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -906,6 +925,29 @@ func parseInt64(s string) int64 {
 	var out int64
 	_, _ = fmt.Sscanf(strings.TrimSpace(s), "%d", &out)
 	return out
+}
+
+// maxRequestBody caps every JSON request body. The largest legitimate one is a
+// sync of commands.MaxUsers users, a few hundred bytes; the cap only exists so
+// a caller cannot make the agent buffer an unbounded body.
+const maxRequestBody = 1 << 20
+
+// decodeJSONBody decodes the request body into v, reading at most
+// maxRequestBody bytes. On failure it writes the response itself (413 for an
+// oversized body, 400 for anything else) and returns false.
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, v any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
+	if err := json.NewDecoder(r.Body).Decode(v); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "body_too_large",
+				fmt.Sprintf("request body exceeds %d bytes", maxRequestBody))
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
+		return false
+	}
+	return true
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
