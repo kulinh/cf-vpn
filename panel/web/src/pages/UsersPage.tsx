@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { QrModal } from '../components/users/QrModal'
+import { useEffect, useMemo, useState } from 'react'
+import { ClientBlock, LinkRow } from '../components/users/LinkRow'
 import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { getUserSubscription, listNodes, listUsers, upgradeUserNodes } from '../lib/api'
 import { describeLoadError } from '../lib/errors'
-import { RULE_SETS, buildHiddifyDeepLink, buildShadowrocketConfUrl, buildShadowrocketDeepLink, buildSingboxDeepLink, profileName, type RuleSet } from '../lib/subscriptionLinks'
+import { RULE_SETS, buildHiddifyDeepLink, buildShadowrocketConfUrl, buildShadowrocketDeepLink, buildSingboxDeepLink, profileName } from '../lib/subscriptionLinks'
 import type { UserSubscription } from '../lib/api'
 import type { Node, User } from '../lib/types'
 
@@ -29,9 +29,6 @@ export function UsersPage() {
   const [nodes, setNodes] = useState<Node[]>([])
   const [subs, setSubs] = useState<Record<string, UserSubscription>>({})
   const [syncingUserId, setSyncingUserId] = useState<string | null>(null)
-  const [qrUserId, setQrUserId] = useState<string | null>(null)
-  const [qrSubscriptionUrl, setQrSubscriptionUrl] = useState<string | null>(null)
-  const [qrLoading, setQrLoading] = useState(false)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
@@ -105,87 +102,12 @@ export function UsersPage() {
     }
   }
 
-  const handleCopySubscription = async (userId: string) => {
+  const handleCopy = async (value: string, label: string) => {
     try {
-      const sub = subs[userId] ?? (await getUserSubscription(userId))
-      await navigator.clipboard.writeText(sub.subUrl)
-      setToastMessage('Subscription URL copied!')
+      await navigator.clipboard.writeText(value)
+      setToastMessage(`${label} link copied`)
     } catch {
-      setToastMessage('Failed to copy subscription')
-    }
-  }
-
-  // Each Show QR click (and each close) bumps this id; a subscription fetch
-  // only applies its result if it is still the latest request. Without it, a
-  // slow response for user A landing after a click on user B would render B's
-  // name next to A's QR / sub token.
-  const qrRequestIdRef = useRef(0)
-
-  const handleShowQr = async (userId: string) => {
-    const requestId = ++qrRequestIdRef.current
-    setQrUserId(userId)
-    setQrSubscriptionUrl(null)
-    const cached = subs[userId]
-    if (cached) {
-      setQrLoading(false)
-      setQrSubscriptionUrl(cached.subUrl)
-      return
-    }
-    setQrLoading(true)
-    try {
-      const sub = await getUserSubscription(userId)
-      if (requestId !== qrRequestIdRef.current) return
-      setQrSubscriptionUrl(sub.subUrl)
-    } catch {
-      if (requestId !== qrRequestIdRef.current) return
-      setToastMessage('Failed to load subscription')
-      setQrUserId(null)
-    } finally {
-      if (requestId === qrRequestIdRef.current) setQrLoading(false)
-    }
-  }
-
-  const handleCloseQr = () => {
-    qrRequestIdRef.current += 1
-    setQrUserId(null)
-    setQrSubscriptionUrl(null)
-    setQrLoading(false)
-  }
-
-  const handleShadowrocket = (userId: string) => {
-    const sub = subs[userId]
-    if (!sub) {
-      setToastMessage('Subscription not ready yet, please retry')
-      return
-    }
-    openDeepLink(buildShadowrocketDeepLink(sub.subUrl))
-  }
-
-  const handleHiddify = (userId: string) => {
-    const sub = subs[userId]
-    if (!sub) {
-      setToastMessage('Subscription not ready yet, please retry')
-      return
-    }
-    openDeepLink(buildHiddifyDeepLink(sub.subUrl))
-  }
-
-  const handleSingbox = (userId: string, rules: RuleSet) => {
-    const sub = subs[userId]
-    if (!sub) {
-      setToastMessage('Subscription not ready yet, please retry')
-      return
-    }
-    openDeepLink(buildSingboxDeepLink(sub.subUrl, rules))
-  }
-
-  const handleCopyShadowrocketConf = async (userId: string, rules: RuleSet) => {
-    try {
-      const sub = subs[userId] ?? (await getUserSubscription(userId))
-      await navigator.clipboard.writeText(buildShadowrocketConfUrl(sub.subUrl, rules))
-      setToastMessage(`${profileName(rules)} config URL copied — Shadowrocket > Config > Add remote`)
-    } catch {
-      setToastMessage('Failed to copy config URL')
+      setToastMessage('Failed to copy')
     }
   }
 
@@ -198,6 +120,7 @@ export function UsersPage() {
           const missingCount = missingByUser[user.id] ?? 0
           const isSyncing = syncingUserId === user.id
           const isUpToDate = missingCount === 0
+          const sub = subs[user.id]
 
           return (
             <article
@@ -206,58 +129,56 @@ export function UsersPage() {
             >
               <p className="font-medium text-slate-100">{user.name}</p>
               <p className="mt-1 text-xs text-slate-400">Nodes: {user.nodes.join(', ')}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void handleCopySubscription(user.id)}
-                  className="rounded bg-slate-700 px-3 py-1 text-xs text-slate-100"
-                >
-                  Copy subscription
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleShowQr(user.id)}
-                  className="rounded bg-slate-700 px-3 py-1 text-xs text-slate-100"
-                >
-                  Show QR
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void handleShadowrocket(user.id)}
-                  title="Add the node list to Shadowrocket; then add a RWL-CN / RWL-UAE config for the rules"
-                  className="rounded bg-sky-600 px-3 py-1 text-xs text-white"
-                >
-                  Shadowrocket
-                </button>
-                {RULE_SETS.map((r) => (
-                  <button
-                    key={`sr-${r.key}`}
-                    type="button"
-                    onClick={() => void handleCopyShadowrocketConf(user.id, r.key)}
-                    title={`Copy the ${profileName(r.key)} Shadowrocket config URL. ${r.hint}`}
-                    className="rounded bg-sky-800 px-3 py-1 text-xs text-white"
-                  >
-                    Copy conf {r.label}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => void handleHiddify(user.id)}
-                  className="rounded bg-emerald-600 px-3 py-1 text-xs text-white"
-                >
-                  Hiddify
-                </button>
-                {RULE_SETS.map((r) => (
-                  <button
-                    key={`sb-${r.key}`}
-                    type="button"
-                    onClick={() => void handleSingbox(user.id, r.key)}
-                    title={`sing-box profile ${profileName(r.key)}. ${r.hint}`}
-                    className="rounded bg-violet-600 px-3 py-1 text-xs text-white"
-                  >
-                    sing-box {r.label}
-                  </button>
-                ))}
+              {sub ? (
+                <>
+                  <ClientBlock title="Shadowrocket" accent="text-sky-400">
+                    <LinkRow
+                      label="Shadowrocket subscription RWL"
+                      hint="Node list. Scan or Open to add it; then add one config below for the rules."
+                      copyValue={sub.subUrl}
+                      openHref={buildShadowrocketDeepLink(sub.subUrl)}
+                      qrValue={buildShadowrocketDeepLink(sub.subUrl)}
+                      onOpen={openDeepLink}
+                      onCopy={handleCopy}
+                    />
+                    {RULE_SETS.map((r) => (
+                      <LinkRow
+                        key={`sr-${r.key}`}
+                        label={`Shadowrocket config ${profileName(r.key)}`}
+                        hint={`${r.hint}. Shadowrocket > Config > Add remote.`}
+                        copyValue={buildShadowrocketConfUrl(sub.subUrl, r.key)}
+                        onCopy={handleCopy}
+                      />
+                    ))}
+                  </ClientBlock>
+                  <ClientBlock title="Hiddify" accent="text-emerald-400">
+                    <LinkRow
+                      label="Hiddify import"
+                      hint="Node list only (Hiddify keeps no rules)."
+                      copyValue={buildHiddifyDeepLink(sub.subUrl)}
+                      openHref={buildHiddifyDeepLink(sub.subUrl)}
+                      onOpen={openDeepLink}
+                      onCopy={handleCopy}
+                    />
+                  </ClientBlock>
+                  <ClientBlock title="sing-box" accent="text-violet-400">
+                    {RULE_SETS.map((r) => (
+                      <LinkRow
+                        key={`sb-${r.key}`}
+                        label={`sing-box ${profileName(r.key)}`}
+                        hint={`${r.hint}. Full profile: nodes + rules.`}
+                        copyValue={buildSingboxDeepLink(sub.subUrl, r.key)}
+                        openHref={buildSingboxDeepLink(sub.subUrl, r.key)}
+                        onOpen={openDeepLink}
+                        onCopy={handleCopy}
+                      />
+                    ))}
+                  </ClientBlock>
+                </>
+              ) : (
+                <p className="mt-2 text-xs text-slate-500">Subscription not ready yet, please retry</p>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   type="button"
                   disabled={isSyncing || isUpToDate}
@@ -274,18 +195,6 @@ export function UsersPage() {
 
       <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
 
-      {qrLoading ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="rounded-xl border border-slate-700 bg-slate-900 p-6 text-slate-100">Loading...</div>
-        </div>
-      ) : (
-        <QrModal
-          open={qrUserId != null}
-          userId={qrUserId}
-          subscriptionUrl={qrSubscriptionUrl}
-          onClose={handleCloseQr}
-        />
-      )}
     </>
   )
 }

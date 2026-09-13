@@ -30,17 +30,6 @@ function makeNode(id: string): Node {
   }
 }
 
-test('renders users with copy and qr actions', async () => {
-  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK', 'JP1'] }])
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK'), makeNode('JP1')])
-
-  render(<UsersPage />)
-
-  expect(await screen.findByText('kulinh')).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /copy subscription/i })).toBeInTheDocument()
-  expect(screen.getByRole('button', { name: /show qr/i })).toBeInTheDocument()
-})
-
 test('shows a load-failure banner instead of a silently empty list when the initial load rejects', async () => {
   vi.spyOn(api, 'listUsers').mockRejectedValue(new Error('users failed'))
   vi.spyOn(api, 'listNodes').mockResolvedValue([])
@@ -158,147 +147,6 @@ test('matches node ids case-insensitively for sync eligibility', async () => {
   expect(await screen.findByRole('button', { name: /sync \(\+1\)/i })).toBeInTheDocument()
 })
 
-test('copy subscription writes sub URL to clipboard', async () => {
-  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
-  vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
-
-  const writeText = vi.fn().mockResolvedValue(undefined)
-  Object.assign(navigator, { clipboard: { writeText } })
-
-  render(<UsersPage />)
-
-  fireEvent.click(await screen.findByRole('button', { name: /copy subscription/i }))
-
-  expect(await screen.findByText(/subscription url copied/i)).toBeInTheDocument()
-  expect(writeText).toHaveBeenCalledWith(testSubscription.subUrl)
-})
-
-test('Shadowrocket button opens a shadowrocket sub:// deep link via a synthetic anchor click, not location.href', async () => {
-  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
-  const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
-
-  const hrefSetter = vi.fn()
-  const originalLocation = window.location
-  Object.defineProperty(window, 'location', {
-    configurable: true,
-    value: {
-      ...originalLocation,
-      get href() {
-        return originalLocation.href
-      },
-      set href(value: string) {
-        hrefSetter(value)
-      },
-    },
-  })
-
-  const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-
-  try {
-    render(<UsersPage />)
-
-    await screen.findByText('kulinh')
-    await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
-
-    fireEvent.click(screen.getByRole('button', { name: /shadowrocket/i }))
-
-    expect(hrefSetter).not.toHaveBeenCalled()
-    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
-    const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
-    expect(anchor.href).toBe(
-      `shadowrocket://add/sub://${btoa(testSubscription.subUrl)}?remark=${encodeURIComponent('RWL')}`,
-    )
-  } finally {
-    anchorClickSpy.mockRestore()
-    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
-  }
-})
-
-test('Hiddify button opens a hiddify import link via a synthetic anchor click', async () => {
-  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
-  const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
-
-  const hrefSetter = vi.fn()
-  const originalLocation = window.location
-  Object.defineProperty(window, 'location', {
-    configurable: true,
-    value: {
-      ...originalLocation,
-      get href() {
-        return originalLocation.href
-      },
-      set href(value: string) {
-        hrefSetter(value)
-      },
-    },
-  })
-
-  const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-
-  try {
-    render(<UsersPage />)
-
-    await screen.findByText('kulinh')
-    await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
-
-    expect(screen.queryByRole('button', { name: /v2rayng/i })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /hiddify/i }))
-
-    expect(hrefSetter).not.toHaveBeenCalled()
-    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
-    const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
-    expect(anchor.href).toBe(`hiddify://import/${testSubscription.subUrl}`)
-  } finally {
-    anchorClickSpy.mockRestore()
-    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
-  }
-})
-
-test('sing-box button opens a remote-profile link to the split-routing config', async () => {
-  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
-  const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
-
-  const hrefSetter = vi.fn()
-  const originalLocation = window.location
-  Object.defineProperty(window, 'location', {
-    configurable: true,
-    value: {
-      ...originalLocation,
-      get href() {
-        return originalLocation.href
-      },
-      set href(value: string) {
-        hrefSetter(value)
-      },
-    },
-  })
-
-  const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-
-  try {
-    render(<UsersPage />)
-
-    await screen.findByText('kulinh')
-    await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
-
-    fireEvent.click(screen.getByRole('button', { name: /sing-box UAE/i }))
-
-    expect(hrefSetter).not.toHaveBeenCalled()
-    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
-    const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
-    expect(anchor.href).toBe(
-      `sing-box://import-remote-profile?url=${encodeURIComponent(`${testSubscription.subUrl}?format=singbox&rules=uae`)}#RWL-UAE`,
-    )
-  } finally {
-    anchorClickSpy.mockRestore()
-    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
-  }
-})
-
 test('shows Syncing... while request is pending', async () => {
   vi.spyOn(api, 'listUsers').mockResolvedValue([
     { id: 'kulinh', name: 'kulinh', nodes: ['HK', 'JP1', 'JP2', 'SG'] },
@@ -336,71 +184,69 @@ test('shows Syncing... while request is pending', async () => {
   expect(await screen.findByText(/added 1 nodes/i)).toBeInTheDocument()
 })
 
-test('Show QR ignores a stale response so one user\'s token never renders under another user\'s name', async () => {
-  vi.spyOn(api, 'listUsers').mockResolvedValue([
-    { id: 'alice', name: 'alice', nodes: ['HK'] },
-    { id: 'bob', name: 'bob', nodes: ['HK'] },
-  ])
-  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
+const anchorSpy = () => vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
 
-  const subFor = (userId: string): api.UserSubscription => ({
-    urls: `vless://${userId}@hk.example.com:443`,
-    token: userId.padEnd(32, '0'),
-    subUrl: `http://localhost:3000/sub/${userId.padEnd(32, '0')}`,
-  })
-  const pending: Record<string, (value: api.UserSubscription) => void> = {}
-  let initialLoadDone = false
-  const subSpy = vi.spyOn(api, 'getUserSubscription').mockImplementation((userId: string) => {
-    // The page prefetches every user's subscription on mount; fail those so
-    // Show QR has no cache and must fetch, then hold each fetch open.
-    if (!initialLoadDone) return Promise.reject(new Error('not cached'))
-    return new Promise((resolve) => {
-      pending[userId] = resolve
-    })
-  })
-  const toCanvas = vi.mocked(QRCode.toCanvas)
-  toCanvas.mockClear()
-
-  render(<UsersPage />)
-
-  await screen.findByText('alice')
-  await vi.waitFor(() => expect(subSpy).toHaveBeenCalledTimes(2))
-  initialLoadDone = true
-
-  const [showAlice, showBob] = screen.getAllByRole('button', { name: /show qr/i })
-  fireEvent.click(showAlice)
-  fireEvent.click(showBob)
-  expect(pending.alice).toBeDefined()
-  expect(pending.bob).toBeDefined()
-
-  // alice's (older) request resolves after bob was clicked.
-  await act(async () => {
-    pending.alice(subFor('alice'))
-  })
-
-  expect(screen.queryByText('User: bob')).not.toBeInTheDocument()
-  expect(screen.getByText('Loading...')).toBeInTheDocument()
-  expect(toCanvas).not.toHaveBeenCalledWith(expect.anything(), subFor('alice').subUrl, expect.anything())
-
-  await act(async () => {
-    pending.bob(subFor('bob'))
-  })
-
-  expect(within(document.body).getByText('User: bob')).toBeInTheDocument()
-  expect(toCanvas).toHaveBeenCalledWith(expect.anything(), subFor('bob').subUrl, expect.anything())
-  expect(toCanvas).not.toHaveBeenCalledWith(expect.anything(), subFor('alice').subUrl, expect.anything())
-})
-
-test('Copy conf UAE puts the Shadowrocket RWL-UAE config URL on the clipboard', async () => {
+async function renderWithSub() {
   vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
   vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
-  vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
+  const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
+  render(<UsersPage />)
+  await screen.findByText('kulinh')
+  await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
+}
+
+test('renders one block per client with a QR next to every link, and no generic copy / QR buttons', async () => {
+  await renderWithSub()
+  expect(await screen.findByText('Shadowrocket')).toBeInTheDocument()
+  expect(screen.getByText('Hiddify')).toBeInTheDocument()
+  expect(screen.getByText('sing-box')).toBeInTheDocument()
+  // 1 sub + 3 confs, 1 hiddify, 3 sing-box profiles = 8 rows, each with its QR.
+  expect(screen.getAllByRole('button', { name: /^Copy / })).toHaveLength(8)
+  expect(screen.getAllByLabelText(/^QR /)).toHaveLength(8)
+  expect(screen.queryByRole('button', { name: /copy subscription/i })).toBeNull()
+  expect(screen.queryByRole('button', { name: /show qr/i })).toBeNull()
+  expect(vi.mocked(QRCode.toCanvas)).toHaveBeenCalled()
+})
+
+test('Shadowrocket subscription: Open hands a sub:// deep link to a synthetic anchor, Copy puts the plain URL on the clipboard', async () => {
   const writeText = vi.fn().mockResolvedValue(undefined)
   Object.assign(navigator, { clipboard: { writeText } })
+  const clickSpy = anchorSpy()
+  try {
+    await renderWithSub()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Shadowrocket subscription RWL' }))
+    const anchor = clickSpy.mock.instances[0] as unknown as HTMLAnchorElement
+    expect(anchor.href).toBe(`shadowrocket://add/sub://${btoa(testSubscription.subUrl)}?remark=RWL`)
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Shadowrocket subscription RWL' }))
+    expect(writeText).toHaveBeenCalledWith(testSubscription.subUrl)
+    expect(await screen.findByText(/link copied/i)).toBeInTheDocument()
+  } finally {
+    clickSpy.mockRestore()
+  }
+})
 
-  render(<UsersPage />)
-  fireEvent.click(await screen.findByRole('button', { name: /copy conf UAE/i }))
-
-  expect(await screen.findByText(/RWL-UAE config URL copied/i)).toBeInTheDocument()
+test('Shadowrocket config rows copy the named .conf URL and have no Open button', async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.assign(navigator, { clipboard: { writeText } })
+  await renderWithSub()
+  fireEvent.click(screen.getByRole('button', { name: 'Copy Shadowrocket config RWL-UAE' }))
   expect(writeText).toHaveBeenCalledWith(`${testSubscription.subUrl}/RWL-UAE.conf`)
+  expect(screen.queryByRole('button', { name: 'Open Shadowrocket config RWL-UAE' })).toBeNull()
+  expect(screen.getByLabelText(`QR ${testSubscription.subUrl}/RWL-RU.conf`)).toBeInTheDocument()
+})
+
+test('Hiddify and sing-box rows open their deep links', async () => {
+  const clickSpy = anchorSpy()
+  try {
+    await renderWithSub()
+    fireEvent.click(screen.getByRole('button', { name: 'Open Hiddify import' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Open sing-box RWL-UAE' }))
+    const hrefs = clickSpy.mock.instances.map((a) => (a as unknown as HTMLAnchorElement).href)
+    expect(hrefs[0]).toBe(`hiddify://import/${testSubscription.subUrl}`)
+    expect(hrefs[1]).toBe(
+      `sing-box://import-remote-profile?url=${encodeURIComponent(`${testSubscription.subUrl}?format=singbox&rules=uae`)}#RWL-UAE`,
+    )
+  } finally {
+    clickSpy.mockRestore()
+  }
 })
