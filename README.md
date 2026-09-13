@@ -296,7 +296,7 @@ The same token serves two formats; both list exactly the same nodes with the sam
 |---|---|---|
 | `https://<panel-host>/sub/<token>` | base64 URI list (default) | Shadowrocket, Hiddify (`hiddify://import/<sub-url>`), v2rayN, v2rayNG, Nekobox |
 | `https://<panel-host>/sub/<token>?format=clash` | mihomo/Clash YAML | Clash Verge (Rev), mihomo, Stash, Shadowrocket's Clash import |
-| `https://<panel-host>/sub/<token>?format=singbox` | full sing-box JSON (1.13+) | official sing-box apps (SFI/SFA) — panel button **sing-box (rules)** opens `sing-box://import-remote-profile?url=<enc sub?format=singbox>#RWL8899`; Hiddify also imports it but keeps only the outbounds |
+| `https://<panel-host>/sub/<token>?format=singbox` | full sing-box JSON (1.13+) | official sing-box apps (SFI/SFA) — panel buttons **sing-box CN / UAE** open `sing-box://import-remote-profile?url=<enc sub?format=singbox&rules=cn|uae>#RWL-CN|RWL-UAE`; Hiddify also imports it but keeps only the outbounds |
 
 Any other `?format=` value returns `400 invalid_format` rather than silently serving base64.
 
@@ -309,7 +309,7 @@ with its names resolved through the tunnel, and `final: DIRECT`.
 edge the endpoint answers `503` rather than a config that proxies nothing.
 XHTTP routes are omitted (upstream sing-box has no xhttp transport).
 
-**NaiveProxy** (`<user>@<NODE>-Naive`): a Caddy `forward_proxy` on the node's
+**NaiveProxy** (`<NODE>-Naive`): a Caddy `forward_proxy` on the node's
 TCP 443, configured by hand, with `NAIVE_HOST`/`NAIVE_USER`/`NAIVE_PASS` in
 `cfvpn.env` (one shared pair per node; Caddy reads them as `{$NAIVE_USER}` —
 `{env.X}` is a runtime placeholder that `basic_auth` does not expand). The
@@ -323,7 +323,7 @@ The Clash config ships two proxy groups:
 - **`Auto`** — `url-test` against `http://www.gstatic.com/generate_204` every 300s with a 100ms tolerance, so it **picks the lowest-latency node automatically** and re-picks as latency changes.
 - **`Proxy`** — a `select` group listing `Auto` first, then every node, for pinning one node by hand.
 
-The single rule is `MATCH,Proxy`, i.e. all traffic goes through the `Proxy` group (which defaults to `Auto`). Proxy names match the fragment of the corresponding base64 URI: `<user>@<NODE>-Reality`, `<user>@<NODE>-HTTPUpgrade`, `<user>@<NODE>-HY2`.
+The single rule is `MATCH,Proxy`, i.e. all traffic goes through the `Proxy` group (which defaults to `Auto`). Proxy names match the fragment of the corresponding base64 URI: `<NODE>-Reality`, `<NODE>-HTTPUpgrade`, `<NODE>-HY2`.
 
 ## Telegram bot
 
