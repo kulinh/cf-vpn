@@ -290,9 +290,9 @@ func (c Client) deleteRecordsByName(ctx context.Context, zoneID, recordType, nam
 
 // D1Query runs one parameterised SQL statement against a D1 database through
 // the REST API and returns the rows of its result as raw JSON (an array of
-// objects; empty for writes). Used from VNM-01 for the few settings the
-// operator flips by hand (cfvpnctl rules-mode, the Telegram bot), the same
-// path scripts/d1-set-node.sh takes in shell.
+// objects; empty for writes). The Go counterpart of the path
+// scripts/d1-set-node.sh takes in shell, for the few settings an operator
+// flips by hand from a node.
 func (c Client) D1Query(ctx context.Context, databaseID, sql string, params []any) (json.RawMessage, error) {
 	if err := validate.UUID(databaseID); err != nil {
 		return nil, fmt.Errorf("cloudflare: d1 database id: %w", err)
