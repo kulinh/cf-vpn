@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ClientBlock, LinkRow } from '../components/users/LinkRow'
+import { ClientBlock, LinkRow, QrPopup } from '../components/users/LinkRow'
 import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { getUserSubscription, listNodes, listUsers, upgradeUserNodes } from '../lib/api'
@@ -30,6 +30,7 @@ export function UsersPage() {
   const [subs, setSubs] = useState<Record<string, UserSubscription>>({})
   const [syncingUserId, setSyncingUserId] = useState<string | null>(null)
   const [toastMessage, setToastMessage] = useState<string | null>(null)
+  const [qr, setQr] = useState<{ value: string; title: string } | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
 
   useEffect(() => {
@@ -133,44 +134,48 @@ export function UsersPage() {
                 <>
                   <ClientBlock title="Shadowrocket" accent="text-sky-400">
                     <LinkRow
-                      label="Shadowrocket subscription RWL"
-                      hint="Node list. Scan or Open to add it; then add one config below for the rules."
+                      label="Subscription RWL"
+                      fullLabel="Shadowrocket subscription RWL"
                       copyValue={sub.subUrl}
                       openHref={buildShadowrocketDeepLink(sub.subUrl)}
                       qrValue={buildShadowrocketDeepLink(sub.subUrl)}
                       onOpen={openDeepLink}
                       onCopy={handleCopy}
+                      onShowQr={(value, title) => setQr({ value, title })}
                     />
                     {RULE_SETS.map((r) => (
                       <LinkRow
                         key={`sr-${r.key}`}
-                        label={`Shadowrocket config ${profileName(r.key)}`}
-                        hint={`${r.hint}. Shadowrocket > Config > Add remote.`}
+                        label={`Config ${profileName(r.key)}`}
+                        fullLabel={`Shadowrocket config ${profileName(r.key)}`}
                         copyValue={buildShadowrocketConfUrl(sub.subUrl, r.key)}
                         onCopy={handleCopy}
+                        onShowQr={(value, title) => setQr({ value, title })}
                       />
                     ))}
                   </ClientBlock>
                   <ClientBlock title="Hiddify" accent="text-emerald-400">
                     <LinkRow
-                      label="Hiddify import"
-                      hint="Node list only (Hiddify keeps no rules)."
+                      label="Import"
+                      fullLabel="Hiddify import"
                       copyValue={buildHiddifyDeepLink(sub.subUrl)}
                       openHref={buildHiddifyDeepLink(sub.subUrl)}
                       onOpen={openDeepLink}
                       onCopy={handleCopy}
+                      onShowQr={(value, title) => setQr({ value, title })}
                     />
                   </ClientBlock>
                   <ClientBlock title="sing-box" accent="text-violet-400">
                     {RULE_SETS.map((r) => (
                       <LinkRow
                         key={`sb-${r.key}`}
-                        label={`sing-box ${profileName(r.key)}`}
-                        hint={`${r.hint}. Full profile: nodes + rules.`}
+                        label={profileName(r.key)}
+                        fullLabel={`sing-box ${profileName(r.key)}`}
                         copyValue={buildSingboxDeepLink(sub.subUrl, r.key)}
                         openHref={buildSingboxDeepLink(sub.subUrl, r.key)}
                         onOpen={openDeepLink}
                         onCopy={handleCopy}
+                        onShowQr={(value, title) => setQr({ value, title })}
                       />
                     ))}
                   </ClientBlock>
@@ -194,6 +199,7 @@ export function UsersPage() {
       </section>
 
       <Toast message={toastMessage} onClose={() => setToastMessage(null)} />
+      <QrPopup value={qr?.value ?? null} title={qr?.title ?? ''} onClose={() => setQr(null)} />
 
     </>
   )
