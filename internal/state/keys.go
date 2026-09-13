@@ -3,9 +3,12 @@ package state
 // Keys persisted in /etc/cfvpn/cfvpn.env. Adding a key here does NOT migrate
 // existing files; callers must default-on-missing.
 const (
-	KeyMode            = "MODE"
-	KeyDomain          = "DOMAIN"
-	KeyPublicIP        = "PUBLIC_IP"
+	KeyMode     = "MODE"
+	KeyDomain   = "DOMAIN"
+	KeyPublicIP = "PUBLIC_IP"
+	// Public IPv6. Set = the subscription also gets -Reality-v6 / -HY2-v6
+	// routes (panel: nodes.public_ipv6, via scripts/d1-set-node.sh ipv6).
+	KeyPublicIPv6      = "PUBLIC_IPV6"
 	KeyAdminHost       = "ADMIN_HOST"
 	KeyAdminTunnelUUID = "ADMIN_TUNNEL_UUID"
 	KeyNodeID          = "NODE_ID"

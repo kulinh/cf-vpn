@@ -68,6 +68,10 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 				host = domain
 			}
 			lines = append(lines, subscription.BuildVLESSRealityURI(tag, uuid, host, sni, pub, sid))
+			// IPv6 twin right after it, same keys and SNI (Worker: V6_SUFFIX).
+			if v6 := publicIPv6(env); v6 != "" {
+				lines = append(lines, subscription.BuildVLESSRealityURISuffix(tag, uuid, v6, sni, pub, sid, subscription.V6Suffix))
+			}
 		}
 		// The H3 route is independent of REALITY: it can be advertised even
 		// when the Reality params above are incomplete, because it describes a
@@ -96,8 +100,26 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 
 	if uri, ok := buildHy2Line(tag, name, hy2PW, env, warn); ok {
 		lines = append(lines, uri)
+		if v6 := publicIPv6(env); v6 != "" {
+			lines = append(lines, hy2V6Line(tag, name, hy2PW, v6, env))
+		}
 	}
 	return lines
+}
+
+// publicIPv6 is PUBLIC_IPV6 when it looks like an IPv6 literal, else "".
+func publicIPv6(env map[string]string) string {
+	v6 := strings.TrimSpace(env[state.KeyPublicIPv6])
+	if !strings.Contains(v6, ":") {
+		return ""
+	}
+	return v6
+}
+
+// hy2V6Line is the IPv6 twin of the line buildHy2Line just validated.
+func hy2V6Line(tag, name, hy2PW, v6 string, env map[string]string) string {
+	port, _ := strconv.Atoi(env[state.KeyHy2Port])
+	return subscription.BuildHy2URISuffix(tag, name, hy2PW, v6, env[state.KeyHy2Host], port, env[state.KeyHy2ObfsPW], subscription.V6Suffix)
 }
 
 // buildHy2Line renders the Hysteria2 URI when the node has a complete HY2

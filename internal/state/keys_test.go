@@ -3,7 +3,7 @@ package state
 import "testing"
 
 func TestKeysAreUnique(t *testing.T) {
-	all := []string{KeyMode, KeyDomain, KeyPublicIP, KeyAdminHost, KeyAdminTunnelUUID, KeyNodeID,
+	all := []string{KeyMode, KeyDomain, KeyPublicIP, KeyPublicIPv6, KeyAdminHost, KeyAdminTunnelUUID, KeyNodeID,
 		KeyRealityPriv, KeyRealityPub, KeyRealityShortID, KeyRealityDest, KeyRealitySNI,
 		KeyXHTTPPath, KeyXHTTPH3Host, KeyXHTTPH3Path, KeyNaiveHost, KeyNaiveUser, KeyNaivePass, KeyHy2Host, KeyHy2Port, KeyHy2ObfsPW}
 	seen := map[string]bool{}

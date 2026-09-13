@@ -101,3 +101,24 @@ describe("IPv6 routes in the grouped formats", () => {
     expect(byTag("AUTO").outbounds as string[]).not.toContain("kulinh@JPY-03-Reality-v6");
   });
 });
+
+// Same fixture and golden as TestBuildUserURIsIPv6TwinsMatchWorker in
+// internal/commands/ipv6_test.go: panel and cfvpnctl must emit identical lines.
+describe("IPv6 twins match the Go builder", () => {
+  it("matches byte for byte", () => {
+    const row: SubscriptionRow = {
+      vless_uuid: "2f8a1c3e-1111-4222-8333-abcdefabcdef", hy2_pw: "Zm9vYmFy_-abc", vpn_host: "edge-64b43148.dongnat247.com",
+      public_ip: "129.225.185.197", public_ipv6: "2603:c023:19:9800:0:f882:7490:be7a",
+      hy2_host: "quic-b55170f3.dongnat247.com", hy2_port: 32443, hy2_obfs_pw: "kQ3x", node_id: "JPY-03", mode: "direct",
+      reality_pubkey: "XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl", reality_sid: "2441ae2d78da98bb", reality_sni: "www.sony.jp",
+      xhttp_path: null, xhttp_h3_host: "quic-b55170f3.dongnat247.com", xhttp_h3_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10"
+    };
+    expect(buildSubscriptionURIs("kulinh", [row]).split("\n")).toEqual([
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@129.225.185.197:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.sony.jp&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=2441ae2d78da98bb&fp=chrome#kulinh%40JPY-03-Reality",
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@[2603:c023:19:9800:0:f882:7490:be7a]:443?encryption=none&security=reality&flow=xtls-rprx-vision&type=tcp&sni=www.sony.jp&pbk=XkP_9mQ2r-tuvWxyz0123456789AbCdEfGhIjKl&sid=2441ae2d78da98bb&fp=chrome#kulinh%40JPY-03-Reality-v6",
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#kulinh%40JPY-03-XHTTP-H3",
+      "hysteria2://kulinh:Zm9vYmFy_-abc@129.225.185.197:32443/?obfs=salamander&obfs-password=kQ3x&sni=quic-b55170f3.dongnat247.com&insecure=0#kulinh%40JPY-03-HY2",
+      "hysteria2://kulinh:Zm9vYmFy_-abc@[2603:c023:19:9800:0:f882:7490:be7a]:32443/?obfs=salamander&obfs-password=kQ3x&sni=quic-b55170f3.dongnat247.com&insecure=0#kulinh%40JPY-03-HY2-v6",
+    ]);
+  });
+});
