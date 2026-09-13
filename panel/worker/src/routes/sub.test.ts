@@ -393,7 +393,7 @@ describe("XHTTP line for cloudflare nodes with xhttp_enabled", () => {
   it("matches the Go golden string byte for byte", () => {
     const lines = buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 1 }]).split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#or-001-XHTTP");
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&alpn=h2%2Chttp%2F1.1&sni=static-df60bd79.duylinh.org#or-001-XHTTP");
   });
   it("emits nothing extra when disabled or for direct nodes", () => {
     expect(buildSubscriptionURIs("alice", [{ ...base, xhttp_enabled: 0 }]).split("\n")).toHaveLength(1);
@@ -410,7 +410,7 @@ describe("XHTTP-Direct line", () => {
   it("matches the Go golden string and uses the hostname, not the IP", () => {
     const lines = buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn-82169439.duylinh.net", xhttp_direct_path: "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10" }]).split("\n");
     expect(lines).toHaveLength(2);
-    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct");
+    expect(lines[1]).toBe("vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h2%2Chttp%2F1.1&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct");
   });
   it("needs both host and path", () => {
     expect(buildSubscriptionURIs("kulinh", [{ ...base, xhttp_direct_host: "cdn.example.com", xhttp_direct_path: null }]).split("\n")).toHaveLength(1);

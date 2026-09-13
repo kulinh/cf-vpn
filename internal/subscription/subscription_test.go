@@ -86,7 +86,7 @@ func TestGoldenHTTPUpgradeURIMatchesWorker(t *testing.T) {
 		"cdn-a1b2.rwl.one",
 		"/api/v1/sync",
 	)
-	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&sni=cdn-a1b2.rwl.one#alice-HTTPUpgrade"
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync&alpn=http%2F1.1&sni=cdn-a1b2.rwl.one#alice-HTTPUpgrade"
 	if got != want {
 		t.Fatalf("httpupgrade URI drifted from Worker\n got: %s\nwant: %s", got, want)
 	}
@@ -101,7 +101,7 @@ func TestGoldenHTTPUpgradeURIEscapesFullPath(t *testing.T) {
 		"cdn-a1b2.rwl.one",
 		"/api/v1/sync?ed=2048",
 	)
-	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync%3Fed%3D2048&sni=cdn-a1b2.rwl.one#alice%40hkg-01-HTTPUpgrade"
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-a1b2.rwl.one:443?encryption=none&security=tls&type=httpupgrade&host=cdn-a1b2.rwl.one&path=%2Fapi%2Fv1%2Fsync%3Fed%3D2048&alpn=http%2F1.1&sni=cdn-a1b2.rwl.one#alice%40hkg-01-HTTPUpgrade"
 	if got != want {
 		t.Fatalf("httpupgrade URI drifted from Worker\n got: %s\nwant: %s", got, want)
 	}
@@ -170,7 +170,7 @@ func TestBuildSubscriptionB64JoinsWithNewline(t *testing.T) {
 
 func TestGoldenXHTTPURIMatchesWorker(t *testing.T) {
 	got := BuildVLESSXHTTPURI("alice@or-001", "2f8a1c3e-1111-4222-8333-abcdefabcdef", "static-df60bd79.duylinh.org", "/api/v2/stream", "packet-up")
-	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#alice%40or-001-XHTTP"
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&alpn=h2%2Chttp%2F1.1&sni=static-df60bd79.duylinh.org#alice%40or-001-XHTTP"
 	if got != want {
 		t.Fatalf("\n got %s\nwant %s", got, want)
 	}
@@ -178,7 +178,7 @@ func TestGoldenXHTTPURIMatchesWorker(t *testing.T) {
 
 func TestGoldenXHTTPDirectURIMatchesWorker(t *testing.T) {
 	got := BuildVLESSXHTTPDirectURI("JPY-01", "2f8a1c3e-1111-4222-8333-abcdefabcdef", "cdn-82169439.duylinh.net", "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10", "stream-one")
-	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct"
+	want := "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h2%2Chttp%2F1.1&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct"
 	if got != want {
 		t.Fatalf("\n got %s\nwant %s", got, want)
 	}

@@ -97,10 +97,14 @@ func BuildVLESSRealityURISuffix(name, uuid, host, sni, pbk, sid, suffix string) 
 	)
 }
 
+// alpn=http/1.1 is explicit: behind Cloudflare the Upgrade only works on
+// HTTP/1.1, and a client that offers h2 (Shadowrocket does) gets h2 from the
+// edge and hangs. xray picks http/1.1 by itself, other clients do not. XHTTP
+// is the opposite and carries alpn=h2,http/1.1 (XTLS/Xray-core#6024).
 func BuildVLESSHTTPUpgradeURI(name, uuid, domain, path string) string {
 	enc := EncodeURIComponent
 	return fmt.Sprintf(
-		"vless://%s@%s:443?encryption=none&security=tls&type=httpupgrade&host=%s&path=%s&sni=%s#%s-HTTPUpgrade",
+		"vless://%s@%s:443?encryption=none&security=tls&type=httpupgrade&host=%s&path=%s&alpn=http%%2F1.1&sni=%s#%s-HTTPUpgrade",
 		uuid, domain, enc(domain), encodeVLESSPath(path), enc(domain), enc(name),
 	)
 }
@@ -111,7 +115,7 @@ func BuildVLESSHTTPUpgradeURI(name, uuid, domain, path string) string {
 func BuildVLESSXHTTPURI(name, uuid, domain, path, mode string) string {
 	enc := EncodeURIComponent
 	return fmt.Sprintf(
-		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=%s&sni=%s#%s-XHTTP",
+		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=%s&alpn=h2%%2Chttp%%2F1.1&sni=%s#%s-XHTTP",
 		uuid, domain, enc(domain), encodeVLESSPath(path), enc(mode), enc(domain), enc(name),
 	)
 }
@@ -123,7 +127,7 @@ func BuildVLESSXHTTPURI(name, uuid, domain, path, mode string) string {
 func BuildVLESSXHTTPDirectURI(name, uuid, host, path, mode string) string {
 	enc := EncodeURIComponent
 	return fmt.Sprintf(
-		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=%s&sni=%s#%s-XHTTP-Direct",
+		"vless://%s@%s:443?encryption=none&security=tls&type=xhttp&host=%s&path=%s&mode=%s&alpn=h2%%2Chttp%%2F1.1&sni=%s#%s-XHTTP-Direct",
 		uuid, host, enc(host), encodeVLESSPath(path), enc(mode), enc(host), enc(name),
 	)
 }

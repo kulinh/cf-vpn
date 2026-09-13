@@ -18,7 +18,7 @@ SAMPLE = "\n".join([
     "vless://11111111-2222-4333-8444-555555555555@96.9.231.74:443?encryption=none&security=reality"
     "&flow=xtls-rprx-vision&type=tcp&sni=www.singaporeair.com&pbk=PBK&sid=4a2739d7c27cf56d&fp=chrome#SIN-01-Reality",
     "vless://11111111-2222-4333-8444-555555555555@static-df60bd79.duylinh.org:443?encryption=none&security=tls"
-    "&type=httpupgrade&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv1%2Fsync&sni=static-df60bd79.duylinh.org#OR-001-HTTPUpgrade",
+    "&type=httpupgrade&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv1%2Fsync&alpn=http%2F1.1&sni=static-df60bd79.duylinh.org#OR-001-HTTPUpgrade",
     "hysteria2://kulinh:secretpw@hy-c36ca6bd.dongnat247.com:31300/?obfs=salamander&obfs-password=obfspw"
     "&sni=hy-c36ca6bd.dongnat247.com&insecure=0#HKG-01-HY2",
 ])

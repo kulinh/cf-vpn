@@ -24,7 +24,7 @@ func TestBuildUserURIsAddsXHTTPLineWhenEnabled(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("expected HTTPUpgrade + XHTTP, got %v", lines)
 	}
-	want := "vless://uuid@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&sni=static-df60bd79.duylinh.org#OR-001-XHTTP"
+	want := "vless://uuid@static-df60bd79.duylinh.org:443?encryption=none&security=tls&type=xhttp&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv2%2Fstream&mode=packet-up&alpn=h2%2Chttp%2F1.1&sni=static-df60bd79.duylinh.org#OR-001-XHTTP"
 	if lines[1] != want {
 		t.Fatalf("xhttp line:\n got %s\nwant %s", lines[1], want)
 	}
@@ -69,7 +69,7 @@ func TestBuildUserURIsAddsXHTTPDirectLine(t *testing.T) {
 	if len(lines) != 2 {
 		t.Fatalf("expected HTTPUpgrade + XHTTP-Direct, got %v", lines)
 	}
-	want := "vless://uuid@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c91&mode=stream-one&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct"
+	want := "vless://uuid@cdn-82169439.duylinh.net:443?encryption=none&security=tls&type=xhttp&host=cdn-82169439.duylinh.net&path=%2F3e6f9770dcd50c91&mode=stream-one&alpn=h2%2Chttp%2F1.1&sni=cdn-82169439.duylinh.net#JPY-01-XHTTP-Direct"
 	if lines[1] != want {
 		t.Fatalf("direct line:\n got %s\nwant %s", lines[1], want)
 	}
