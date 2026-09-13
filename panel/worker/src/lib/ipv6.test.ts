@@ -139,3 +139,16 @@ describe("sing-box AUTO without xhttp", () => {
     expect(cfg.outbounds.find((o) => o.tag === "AUTO")!.outbounds).toEqual(["kulinh@JPY-03-Reality"]);
   });
 });
+
+describe("public_ipv6 must be a real IPv6 literal (review L1, same rule as Go publicIPv6)", () => {
+  it("emits no twins for bracketed, zoned, mapped or malformed values, and trims whitespace", () => {
+    for (const v of ["[2001:db8::1]", "fe80::1%eth0", "::ffff:1.2.3.4", "a:b", "129.225.185.197"]) {
+      const lines = buildSubscriptionURIs("kulinh", [{ ...jpy03, public_ipv6: v }]).split("\n");
+      expect(lines.some((l) => l.includes("-v6"))).toBe(false);
+    }
+    const lines = buildSubscriptionURIs("kulinh", [{ ...jpy03, public_ipv6: `  ${V6}  ` }]).split("\n");
+    expect(lines[1]).toContain(`@[${V6}]:443?`);
+    const cfg = buildSingboxConfig("kulinh", [{ ...jpy03, public_ipv6: `  ${V6}\n` }], { final: "proxy" }) as { outbounds: Array<Record<string, unknown>> };
+    expect(cfg.outbounds.find((o) => o.tag === "kulinh@JPY-03-Reality-v6")!.server).toBe(V6);
+  });
+});

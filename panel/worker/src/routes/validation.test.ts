@@ -3,7 +3,7 @@ import { validateAdminHost } from "../lib/hosts";
 import { MAX_ENTITY_ID_LEN, userIDFromName } from "../lib/db";
 import { createUserByName } from "./users";
 import { createNode, nodeSync } from "./nodes";
-import { createZone } from "./zones";
+import { createZone, patchZone } from "./zones";
 import type { Env } from "../types";
 
 function makeDBStub(overrides?: {
@@ -151,5 +151,27 @@ describe("user id length cap", () => {
     const res = await createUserByName(env, "!!! ???", "operator@example.com");
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe("invalid_user");
+  });
+});
+
+describe("zone enabled flag (review L7)", () => {
+  const zoneReq = (method: string, body: unknown) =>
+    new Request("https://panel.test/api/zones", { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  it("createZone accepts 0/1 and rejects anything else", async () => {
+    for (const enabled of [true, "1", 2, null]) {
+      const res = await createZone(makeEnv(), zoneReq("POST", { name: "example.com", cf_zone_id: "a".repeat(32), enabled }));
+      expect(res.status).toBe(400);
+      expect((await res.json() as { error: string }).error).toBe("invalid_enabled");
+    }
+    for (const enabled of [0, 1, undefined]) {
+      expect((await createZone(makeEnv(), zoneReq("POST", { name: "example.com", cf_zone_id: "a".repeat(32), enabled }))).status).toBe(201);
+    }
+  });
+
+  it("patchZone rejects a non 0/1 enabled", async () => {
+    const env = makeEnv(makeDBStub({ first: { name: "example.com", cf_zone_id: "a".repeat(32), enabled: 1 } }));
+    expect((await patchZone(env, "example.com", zoneReq("PATCH", { enabled: false }))).status).toBe(400);
+    expect((await patchZone(env, "example.com", zoneReq("PATCH", { enabled: 0 }))).status).toBe(200);
   });
 });

@@ -11,7 +11,7 @@ import { callAgent, isConfigError, isTimeoutError, MAX_TIMEOUT_MS } from "../lib
 import { deleteDnsRecordByName, deleteTunnel, hasCfCredentials, isCfTunnelId } from "../lib/cf-api";
 import { error, isRecord, json, readJSON } from "../lib/http";
 import { eventStatement, logEvent } from "../lib/events";
-import { generateAdminHost, validateAdminHost } from "../lib/hosts";
+import { generateAdminHost, isDnsHostname, isIPv4, validateAdminHost } from "../lib/hosts";
 import { generateHost, generateHy2Host, pickZone } from "../lib/host-gen";
 
 // A healthy sweep over the Cloudflare tunnel already measures 450–1700 ms, and
@@ -106,6 +106,12 @@ export async function createNode(env: Env, request: Request, actor = "system"): 
   const hasZone = typeof body.zone === "string" && body.zone.length > 0;
   if (hasHost !== hasZone) {
     return error(400, { error: "invalid_request", detail: "host and zone must be provided together" });
+  }
+  if (hasHost && !isDnsHostname(hostOverride)) {
+    return error(400, { error: "invalid_vpn_host", detail: "vpn_host must be a plain DNS hostname" });
+  }
+  if (typeof body.hy2_host === "string" && body.hy2_host.trim() !== "" && !isDnsHostname(body.hy2_host.trim())) {
+    return error(400, { error: "invalid_hy2_host", detail: "hy2_host must be a plain DNS hostname" });
   }
   const exists = await one<{ id: string }>(env.DB.prepare("SELECT id FROM nodes WHERE id = ?").bind(body.id));
   if (exists) {
@@ -202,6 +208,13 @@ export async function patchNode(env: Env, id: string, request: Request, actor = 
   const vpnHostInput = body.host ?? body.vpn_host;
   if (vpnHostInput !== undefined && (typeof vpnHostInput !== "string" || vpnHostInput.trim() === "")) {
     return error(400, { error: "invalid_node", detail: "vpn_host (or host) must be a non-empty string" });
+  }
+  if (vpnHostInput !== undefined && !isDnsHostname(vpnHostInput)) {
+    return error(400, { error: "invalid_vpn_host", detail: "vpn_host must be a plain DNS hostname" });
+  }
+  // Same rule as createNode, which refuses a missing label.
+  if (body.label !== undefined && (typeof body.label !== "string" || body.label.trim() === "")) {
+    return error(400, { error: "invalid_node", detail: "label must be a non-empty string" });
   }
   // Validate zone against the zones table so a PATCH cannot point a node at a
   // non-existent zone (which would break rotate / DNS cleanup later).
@@ -422,6 +435,21 @@ async function getNodeOr404(env: Env, id: string): Promise<NodeRow | Response> {
   return row;
 }
 
+// Agent-reported hostnames go raw into subscription URIs. Same contract as
+// the text fields (absent keeps, "" clears), but a value that is not a plain
+// DNS name is ignored and the stored one kept — a compromised node must not
+// be able to write "evil.example#x" into every user's links.
+function hostOrKeep(v: string | undefined, keep: string | null): string | null {
+  if (v === undefined) return keep;
+  if (v === "") return null;
+  return isDnsHostname(v) ? v : keep;
+}
+
+// Same idea for the public IPv4 Reality/HY2 URIs dial.
+function ipv4OrKeep(v: string | undefined | null, keep: string | null): string | null {
+  return isIPv4(v) ? (v as string) : keep;
+}
+
 interface Hy2Runtime {
   hy2_host: string | null;
   hy2_port: number | null;
@@ -436,7 +464,7 @@ function mergeHy2Runtime(
   // empty (parseInt swallows the error and returns the zero value). Persisting
   // 0 would break subscription URI builders that emit ":0".
   return {
-    hy2_host: typeof agent.hy2_host === "string" && agent.hy2_host ? agent.hy2_host : row.hy2_host,
+    hy2_host: isDnsHostname(agent.hy2_host) ? agent.hy2_host : row.hy2_host,
     hy2_port: typeof agent.hy2_port === "number" && agent.hy2_port > 0 ? agent.hy2_port : row.hy2_port,
     hy2_obfs_pw: typeof agent.hy2_obfs_pw === "string" && agent.hy2_obfs_pw ? agent.hy2_obfs_pw : row.hy2_obfs_pw,
   };
@@ -471,7 +499,7 @@ function mergeXhttpRuntime(
   return {
     xhttp_path: agent.xhttp_path ?? fromRow.xhttp_path,
     xhttp_enabled: typeof agent.xhttp_enabled === "boolean" ? (agent.xhttp_enabled ? 1 : 0) : fromRow.xhttp_enabled,
-    xhttp_direct_host: textOrKeep(agent.xhttp_direct_host, fromRow.xhttp_direct_host),
+    xhttp_direct_host: hostOrKeep(agent.xhttp_direct_host, fromRow.xhttp_direct_host),
     xhttp_direct_path: textOrKeep(agent.xhttp_direct_path, fromRow.xhttp_direct_path)
   };
 }
@@ -501,7 +529,7 @@ function mergeH3Runtime(
   const textOrKeep = (v: string | undefined, keep: string | null): string | null =>
     v === undefined ? keep : v || null;
   return {
-    xhttp_h3_host: textOrKeep(agent.xhttp_h3_host, fromRow.xhttp_h3_host),
+    xhttp_h3_host: hostOrKeep(agent.xhttp_h3_host, fromRow.xhttp_h3_host),
     xhttp_h3_path: textOrKeep(agent.xhttp_h3_path, fromRow.xhttp_h3_path)
   };
 }
@@ -522,7 +550,7 @@ function mergeNaiveRuntime(
   const textOrKeep = (v: string | undefined, keep: string | null | undefined): string | null =>
     v === undefined ? keep ?? null : v || null;
   return {
-    naive_host: textOrKeep(agent.naive_host, row.naive_host),
+    naive_host: hostOrKeep(agent.naive_host, row.naive_host ?? null),
     naive_user: textOrKeep(agent.naive_user, row.naive_user),
     naive_pass: textOrKeep(agent.naive_pass, row.naive_pass)
   };
@@ -591,12 +619,12 @@ export async function nodeStatus(env: Env, id: string, actor: string): Promise<R
     const mode = typeof status.mode === "string" && status.mode.length > 0 ? status.mode : row.mode ?? null;
     const syncRuntimeFields = mode === "direct";
     const syncCloudflareFields = mode === "cloudflare";
-    const hasStatusHost = typeof status.vpn_host === "string" && status.vpn_host.length > 0;
+    const hasStatusHost = isDnsHostname(status.vpn_host);
     const hasStatusZone = typeof status.zone === "string" && status.zone.length > 0;
     await persistNodeRuntime(env, id, {
       vpn_host: syncRuntimeFields && hasStatusHost && hasStatusZone ? status.vpn_host : row.vpn_host,
       zone: syncRuntimeFields && hasStatusHost && hasStatusZone ? status.zone! : row.zone,
-      public_ip: syncRuntimeFields && status.public_ip ? status.public_ip : row.public_ip,
+      public_ip: syncRuntimeFields ? ipv4OrKeep(status.public_ip, row.public_ip) : row.public_ip,
       mode,
       hy2: mergeHy2Runtime(row, status),
       last_seen_at: nowTs(),
@@ -691,6 +719,9 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
   const settled = await Promise.allSettled(
     rows.map(async (row): Promise<D1PreparedStatement[]> => {
       const writes: D1PreparedStatement[] = [];
+      // Only used to decide the flip / event. The stored counter is incremented
+      // in SQL, so two overlapping sweeps cannot both write the same value and
+      // lose a failure.
       const failures = (row.consecutive_failures ?? 0) + 1;
       // Rows written before 0019 carry NULL; treat that as "was fine", so the
       // first sweep after the migration does not manufacture an event.
@@ -731,8 +762,8 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
           // would log nothing at all when a transport miss came first.
           writes.push(
             env.DB.prepare(
-              "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='config' WHERE id=? AND status != 'disabled'"
-            ).bind(failures, row.id)
+              "UPDATE nodes SET consecutive_failures=COALESCE(consecutive_failures, 0) + 1, last_sweep_outcome='config' WHERE id=? AND status != 'disabled'"
+            ).bind(row.id)
           );
           if (previous !== "config") {
             writes.push(
@@ -748,11 +779,11 @@ export async function sweepNodesHealth(env: Env): Promise<void> {
         writes.push(
           flip
             ? env.DB.prepare(
-                "UPDATE nodes SET status='unreachable', consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
-              ).bind(failures, row.id)
+                "UPDATE nodes SET status='unreachable', consecutive_failures=COALESCE(consecutive_failures, 0) + 1, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+              ).bind(row.id)
             : env.DB.prepare(
-                "UPDATE nodes SET consecutive_failures=?, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
-              ).bind(failures, row.id)
+                "UPDATE nodes SET consecutive_failures=COALESCE(consecutive_failures, 0) + 1, last_sweep_outcome='transport' WHERE id=? AND status != 'disabled'"
+              ).bind(row.id)
         );
         if (flip) {
           writes.push(
@@ -815,6 +846,9 @@ export async function nodeRotateCore(
     return row;
   }
   const hasHost = typeof override.host === "string" && override.host.length > 0;
+  if (hasHost && !isDnsHostname(override.host)) {
+    return error(400, { error: "invalid_vpn_host", detail: "host must be a plain DNS hostname" });
+  }
   const hasZone = typeof override.zone === "string" && override.zone.length > 0;
   if (hasHost !== hasZone) {
     return error(400, { error: "invalid_request", detail: "host and zone must be provided together" });
@@ -917,9 +951,16 @@ export async function nodeRotateCore(
   // pointed at the first new host. Log the new host so the row can be
   // reconciled by hand, and return a distinct error.
   const hy2 = mergeHy2Runtime(row, out);
+  // The panel chose newHost and told the agent to move there; an answer that
+  // is not a plain hostname / IPv4 is not written into every user's links.
+  if (isDnsHostname(out.vpn_host) && out.vpn_host !== newHost) {
+    console.warn("rotate: agent reported a different host than requested", id, out.vpn_host, newHost);
+  }
+  out.vpn_host = isDnsHostname(out.vpn_host) ? out.vpn_host : newHost;
+  out.public_ip = ipv4OrKeep(out.public_ip, row.public_ip) ?? "";
   try {
     await env.DB.prepare("UPDATE nodes SET vpn_host=?, hy2_host=?, hy2_port=?, hy2_obfs_pw=?, public_ip=?, zone=?, status='active', last_seen_at=? WHERE id=? AND status != 'disabled'")
-      .bind(out.vpn_host, hy2.hy2_host, hy2.hy2_port, hy2.hy2_obfs_pw, out.public_ip, newZoneName, nowTs(), id)
+      .bind(out.vpn_host, hy2.hy2_host, hy2.hy2_port, hy2.hy2_obfs_pw, out.public_ip || null, newZoneName, nowTs(), id)
       .run();
   } catch (e) {
     await logEvent(
@@ -995,7 +1036,7 @@ export async function nodeSyncCore(
     );
     const syncRuntimeFields = row.mode === "direct";
     const syncCloudflareFields = row.mode === "cloudflare";
-    const hasSyncHost = typeof out.vpn_host === "string" && out.vpn_host.length > 0;
+    const hasSyncHost = isDnsHostname(out.vpn_host);
     // A host whose zone is not in the zones table keeps the stored zone rather
     // than a guessed suffix that rotate/DNS cleanup could never resolve.
     const syncZone =
@@ -1003,7 +1044,7 @@ export async function nodeSyncCore(
     await persistNodeRuntime(env, id, {
       vpn_host: syncRuntimeFields && hasSyncHost ? out.vpn_host : row.vpn_host,
       zone: syncZone,
-      public_ip: syncRuntimeFields ? out.public_ip || row.public_ip : row.public_ip,
+      public_ip: syncRuntimeFields ? ipv4OrKeep(out.public_ip, row.public_ip) : row.public_ip,
       mode: row.mode ?? null,
       hy2: mergeHy2Runtime(row, out),
       last_seen_at: nowTs(),

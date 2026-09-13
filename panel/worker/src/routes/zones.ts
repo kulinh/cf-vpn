@@ -29,6 +29,11 @@ export async function createZone(env: Env, request: Request, actor = "system"): 
   if (!isCfId(body.cf_zone_id)) {
     return error(400, { error: "invalid_cf_zone_id", detail: "cf_zone_id must be 32 hex characters" });
   }
+  // enabled is compared with `enabled = 1`; storing true or "1" would park
+  // the zone out of the pool with no error.
+  if (body.enabled !== undefined && body.enabled !== 0 && body.enabled !== 1) {
+    return error(400, { error: "invalid_enabled", detail: "enabled must be 0 or 1" });
+  }
   const exists = await one<{ name: string }>(env.DB.prepare("SELECT name FROM zones WHERE name = ?").bind(body.name));
   if (exists) {
     return error(409, { error: "zone_exists", detail: body.name });
@@ -62,6 +67,9 @@ export async function patchZone(env: Env, name: string, request: Request, actor 
   }
   if (body.cf_zone_id !== undefined && !isCfId(body.cf_zone_id)) {
     return error(400, { error: "invalid_cf_zone_id", detail: "cf_zone_id must be 32 hex characters" });
+  }
+  if (body.enabled !== undefined && body.enabled !== 0 && body.enabled !== 1) {
+    return error(400, { error: "invalid_enabled", detail: "enabled must be 0 or 1" });
   }
   const nextZoneID = body.cf_zone_id ?? existing.cf_zone_id;
   const nextEnabled = body.enabled ?? existing.enabled;

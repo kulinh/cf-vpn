@@ -636,3 +636,16 @@ describe("NaiveProxy and ?format=singbox", () => {
     }
   });
 });
+
+describe("disabled nodes (review M1)", () => {
+  it("leaves nodes the operator disabled out of the subscription query", async () => {
+    const token = "9".repeat(32);
+    const base = makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] } });
+    const seen: string[] = [];
+    const db = { ...base, prepare(sql: string) { seen.push(sql); return base.prepare(sql); } } as unknown as D1Database;
+    expect((await publicSubscription(makeEnv(db), token)).status).toBe(200);
+    const q = seen.find((x) => /FROM user_nodes un JOIN nodes n/.test(x))!;
+    expect(q).toContain("n.status != 'disabled'");
+    expect(q).not.toContain("unreachable");
+  });
+});

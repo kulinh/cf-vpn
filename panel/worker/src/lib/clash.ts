@@ -1,4 +1,4 @@
-import { V6_SUFFIX, hasHy2, hasIPv6, hy2Address, isCloudflareRow, isRealityRow, realityHost, type SubscriptionRow } from "./subscription";
+import { V6_SUFFIX, hasHy2, hasIPv6, ipv6Of, hy2Address, isCloudflareRow, isRealityRow, realityHost, type SubscriptionRow } from "./subscription";
 
 export { hasHy2, isCloudflareRow, isRealityRow };
 
@@ -120,7 +120,7 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
       });
       proxies.push(reality(realityName(username, r.node_id), realityHost(r)));
       if (hasIPv6(r)) {
-        proxies.push(reality(realityV6Name(username, r.node_id), r.public_ipv6!));
+        proxies.push(reality(realityV6Name(username, r.node_id), ipv6Of(r)!));
       }
     } else if (isCloudflareRow(r)) {
       const path = r.xhttp_path ?? "/api/v1/sync";
@@ -158,7 +158,7 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
       });
       proxies.push(hy2(hy2Name(username, r.node_id), hy2Address(r)));
       if (hasIPv6(r)) {
-        proxies.push(hy2(hy2V6Name(username, r.node_id), r.public_ipv6!));
+        proxies.push(hy2(hy2V6Name(username, r.node_id), ipv6Of(r)!));
       }
     }
   }
