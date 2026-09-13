@@ -10,6 +10,7 @@
 # Provides:
 #   d1_query PAYLOAD_JSON               — always prints valid JSON
 #   d1_zone_for_domain DOMAIN           — longest zone from D1 that suffixes DOMAIN
+#   d1_zone_report                      — log existing nodes grouped by zone (non-fatal)
 #   d1_upsert_node                      — reads the node vars listed below
 #   d1_ensure_user                      — USER1_NAME, NOW_MS
 #   d1_upsert_user_nodes                — USER1_NAME, DB_NODE_ID, UUID_USER1, HY2_PASS_USER1, NOW_MS
@@ -89,6 +90,23 @@ d1_zone_for_domain() {
     warn "zone lookup in D1 failed ($(printf '%s' "$resp" | jq -r '.errors[0].message // "unknown"')) — falling back to last-two-labels heuristic"
   fi
   printf '%s\n' "$(echo "$domain" | rev | cut -d'.' -f1,2 | rev)"
+}
+
+# d1_zone_report — informational, never fatal: log how many nodes D1 holds and
+# list them grouped by zone, so a zone collision is visible before the install.
+d1_zone_report() {
+  local resp rows count
+  resp="$(d1_query "$(jq -n '{sql:"SELECT id,label,zone,vpn_host FROM nodes WHERE zone != ?", params:[""]}')")"
+  if [ "$(printf '%s' "$resp" | jq -r '.success // false')" != "true" ]; then
+    warn "D1 zone check failed (non-fatal): $(printf '%s' "$resp" | jq -r '.errors[0].message // "unknown"')"
+    return 0
+  fi
+  rows="$(printf '%s' "$resp" | jq '.result[0].results // []')"
+  count="$(printf '%s' "$rows" | jq 'length')"
+  log "D1 nodes: $count"
+  if [ "$count" -gt 0 ]; then
+    printf '%s' "$rows" | jq -r 'group_by(.zone) | .[] | "  \(.[0].zone): \(map(.id+"("+.vpn_host+")") | join(", "))"'
+  fi
 }
 
 # d1_upsert_node — INSERT OR REPLACE the node row.

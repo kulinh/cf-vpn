@@ -33,7 +33,7 @@
 #   7. rsync — push repo + STAGE_DIR to target
 #   8. stage install — install binaries on target; cloudflared via dpkg
 #   9. env — write /etc/cfvpn/cfvpn.env (with LEGO_DNS_RESOLVERS for fast DNS-01)
-#  10. firewall — ensure SSH stays open if ufw is active
+#  10. firewall — OCI image REJECT fix (no-op elsewhere); keep SSH open if ufw is active
 #  11. cfvpnctl install — runs on target (all binaries pre-staged)
 #  12. verify — check systemd units + run healthcheck
 #  13. D1 sync — upsert node + user + user_nodes, call agent sync
@@ -585,20 +585,7 @@ log "  openssl ${ossl_ver} built ($(du -sh "$STAGE_BIN/openssl" | cut -f1))"
 log "local stage ready: $(ls "$STAGE_BIN/" | tr '\n' ' ')"
 
 # ----- 6. D1 zone check (informational, local) -------------------------------
-# d1_query always prints valid JSON, so the guards below are enough.
-D1_RESP=$(d1_query "$(jq -n '{sql:"SELECT id,label,zone,vpn_host FROM nodes WHERE zone != ?", params:[""]}')")
-D1_OK=$(echo "$D1_RESP" | jq -r '.success // false')
-if [ "$D1_OK" = "true" ]; then
-  D1_ROWS=$(echo "$D1_RESP" | jq '.result[0].results // []')
-  NODE_COUNT=$(echo "$D1_ROWS" | jq 'length')
-  log "D1 existing nodes: $NODE_COUNT"
-  [ "$NODE_COUNT" -gt 0 ] && \
-    echo "$D1_ROWS" | jq -r \
-      'group_by(.zone) | .[] | "  \(.[0].zone): \(map(.id+"("+.vpn_host+")") | join(", "))"' \
-    || true
-else
-  warn "D1 zone check failed (non-fatal)"
-fi
+d1_zone_report
 
 # ----- 7. rsync repo + stage to target ---------------------------------------
 # Predictable /tmp paths are guessable by any local user on the target; let the
@@ -694,10 +681,13 @@ log "writing /etc/cfvpn/cfvpn.env on $TARGET_HOST"
 # ----- 10. firewall hygiene on target ----------------------------------------
 # The same helper the plain installer uses (the repo is already on the target
 # from step 7), so both paths whitelist the real SSH port rather than assuming 22.
+# cfvpn_oci_firewall_fix runs ON THE TARGET (it reads the target's DMI) and
+# returns at once on anything that is not an Oracle Cloud instance.
 ssh_run env "CFVPN_LIB=$REMOTE_PROJ/scripts/lib/cfvpn-common.sh" \
             "SSH_PORT=${SSH_PORT:-22}" bash -s <<'REMOTE'
 set -euo pipefail
 . "$CFVPN_LIB"
+cfvpn_oci_firewall_fix
 cfvpn_ensure_ufw_ssh_allowed "${SSH_PORT:-22}"
 REMOTE
 

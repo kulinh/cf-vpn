@@ -33,6 +33,7 @@ Thumbs.db
 panel/web/node_modules/
 panel/web/dist/
 panel/web/.vite/
+panel/web/*.tsbuildinfo
 
 # Worker build and dependency outputs
 panel/worker/node_modules
