@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentHttpError, callAgent, isConfigError, isTimeoutError, MAX_TIMEOUT_MS } from "./agent-client";
 import type { Env } from "../types";
 
-const env = { ADMIN_HOST_ALLOWED_SUFFIXES: "example.com", AGENT_SHARED_SECRET: "" } as unknown as Env;
+const env = { ADMIN_HOST_ALLOWED_SUFFIXES: "example.com" } as unknown as Env;
 const target = { adminHost: "node-a.example.com", agentSecret: "s".repeat(20), nodeId: "NODE-A" };
 
 afterEach(() => {
@@ -84,28 +84,19 @@ describe("callAgent timeout budget", () => {
   });
 });
 
-describe("callAgent shared-secret fallback", () => {
-  it("warns with the node id when falling back to AGENT_SHARED_SECRET", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), { status: 200 })
-    );
-    const fallbackEnv = { ...env, AGENT_SHARED_SECRET: "fleet-secret" } as Env;
-
-    await callAgent(fallbackEnv, { adminHost: "node-a.example.com", nodeId: "NODE-A" }, "/x");
-
-    expect(warn).toHaveBeenCalledWith("agent_secret missing for node", "NODE-A");
+describe("callAgent authentication", () => {
+  it("refuses to call a node without agent_secret instead of sending any fleet-wide secret (review H1)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 200 }));
+    const legacyEnv = { ...env, AGENT_SHARED_SECRET: "fleet-secret" } as unknown as Env;
+    await expect(callAgent(legacyEnv, { adminHost: "node-a.example.com", nodeId: "NODE-A" }, "/x")).rejects.toThrow(/agent_auth_missing: no agent_secret for NODE-A/);
+    expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("does not warn when the node has its own secret", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ ok: true }), { status: 200 })
-    );
-
-    await callAgent({ ...env, AGENT_SHARED_SECRET: "fleet-secret" } as Env, target, "/x");
-
-    expect(warn).not.toHaveBeenCalled();
+  it("sends the node's own secret as the bearer", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    await callAgent(env, { adminHost: "node-a.example.com", agentSecret: "per-node-secret-123", nodeId: "NODE-A" }, "/x");
+    const init = fetchSpy.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>)["Authorization"]).toBe("Bearer per-node-secret-123");
   });
 });
 

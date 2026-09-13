@@ -78,10 +78,9 @@ async function fetchJsonWithTimeout(
 export interface AgentTarget {
   adminHost: string;
   // agentSecret is the per-node bearer mirrored from /etc/cfvpn/cfvpn.env into
-  // nodes.agent_secret in D1. When empty the Worker falls back to env.AGENT_SHARED_SECRET
-  // (legacy single-secret mode); new deployments must always populate it.
+  // nodes.agent_secret in D1. Required: a node without it cannot be called.
   agentSecret?: string | null;
-  // Optional node id, used only to make the "no per-node secret" warning
+  // Optional node id, used only to make the "no per-node secret" error
   // actionable.
   nodeId?: string;
 }
@@ -105,20 +104,12 @@ export async function callAgent<T>(
     ...serviceTokenHeaders(env),
     ...(init.headers ?? {})
   };
-  let bearer = perNodeSecret;
-  if (!bearer && env.AGENT_SHARED_SECRET) {
-    // Legacy fleet-wide fallback. It is a secret-harvesting primitive (a node
-    // row without agent_secret makes the Worker send the fleet secret to that
-    // admin_host), but it cannot be removed until every prod node has
-    // agent_secret populated — so make its use loud instead of silent.
-    console.warn("agent_secret missing for node", typeof target === "string" ? adminHost : target.nodeId ?? adminHost);
-    bearer = env.AGENT_SHARED_SECRET;
-  }
+  // Per-node secret only. The old fleet-wide AGENT_SHARED_SECRET fallback was
+  // removed on 2026-09-13 once every node row had agent_secret: a row without
+  // one made the Worker send the fleet secret to whatever admin_host it named.
+  const bearer = perNodeSecret;
   if (!bearer) {
-    // Fail fast instead of silently issuing an unauthenticated request the agent
-    // will reject anyway — an empty bearer means neither nodes.agent_secret nor
-    // env.AGENT_SHARED_SECRET is configured, which is a misconfiguration.
-    throw new Error(`agent_auth_missing: no agent_secret for ${adminHost} and AGENT_SHARED_SECRET unset`);
+    throw new Error(`agent_auth_missing: no agent_secret for ${typeof target === "string" ? adminHost : target.nodeId ?? adminHost}`);
   }
   (headers as Record<string, string>)["Authorization"] = `Bearer ${bearer}`;
   const { response, payload } = await fetchJsonWithTimeout(

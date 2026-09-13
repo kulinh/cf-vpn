@@ -105,7 +105,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
       return notFound(pathname);
     }
 
-    const actor = requireActorEmail(request, env);
+    const actor = await requireActorEmail(request, env);
     if (actor instanceof Response) {
       return actor;
     }
