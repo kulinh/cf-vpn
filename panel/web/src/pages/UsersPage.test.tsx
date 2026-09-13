@@ -250,6 +250,48 @@ test('Hiddify button opens a hiddify import link via a synthetic anchor click', 
   }
 })
 
+test('sing-box button opens a remote-profile link to the split-routing config', async () => {
+  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
+  const subSpy = vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
+
+  const hrefSetter = vi.fn()
+  const originalLocation = window.location
+  Object.defineProperty(window, 'location', {
+    configurable: true,
+    value: {
+      ...originalLocation,
+      get href() {
+        return originalLocation.href
+      },
+      set href(value: string) {
+        hrefSetter(value)
+      },
+    },
+  })
+
+  const anchorClickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+
+  try {
+    render(<UsersPage />)
+
+    await screen.findByText('kulinh')
+    await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
+
+    fireEvent.click(screen.getByRole('button', { name: /sing-box/i }))
+
+    expect(hrefSetter).not.toHaveBeenCalled()
+    expect(anchorClickSpy).toHaveBeenCalledTimes(1)
+    const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
+    expect(anchor.href).toBe(
+      `sing-box://import-remote-profile?url=${encodeURIComponent(`${testSubscription.subUrl}?format=singbox`)}#RWL8899`,
+    )
+  } finally {
+    anchorClickSpy.mockRestore()
+    Object.defineProperty(window, 'location', { configurable: true, value: originalLocation })
+  }
+})
+
 test('shows Syncing... while request is pending', async () => {
   vi.spyOn(api, 'listUsers').mockResolvedValue([
     { id: 'kulinh', name: 'kulinh', nodes: ['HK', 'JP1', 'JP2', 'SG'] },

@@ -4,7 +4,7 @@ import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { getUserSubscription, listNodes, listUsers, upgradeUserNodes } from '../lib/api'
 import { describeLoadError } from '../lib/errors'
-import { buildHiddifyDeepLink, buildShadowrocketDeepLink } from '../lib/subscriptionLinks'
+import { buildHiddifyDeepLink, buildShadowrocketDeepLink, buildSingboxDeepLink } from '../lib/subscriptionLinks'
 import type { UserSubscription } from '../lib/api'
 import type { Node, User } from '../lib/types'
 
@@ -12,7 +12,7 @@ function normalizeNodeId(id: string): string {
   return id.trim().toLowerCase()
 }
 
-// Navigates to a custom-scheme deep link (shadowrocket://, hiddify://) via a
+// Navigates to a custom-scheme deep link (shadowrocket://, hiddify://, sing-box://) via a
 // synthetic <a> click rather than `location.href = ...`. Assigning
 // `location.href` performs a real navigation that can leave the bearer sub
 // token sitting in history / session-restore; a detached anchor click still
@@ -153,6 +153,15 @@ export function UsersPage() {
     openDeepLink(buildHiddifyDeepLink(sub.subUrl))
   }
 
+  const handleSingbox = (userId: string) => {
+    const sub = subs[userId]
+    if (!sub) {
+      setToastMessage('Subscription not ready yet, please retry')
+      return
+    }
+    openDeepLink(buildSingboxDeepLink(sub.subUrl))
+  }
+
   return (
     <>
       <section className="space-y-3">
@@ -198,6 +207,14 @@ export function UsersPage() {
                   className="rounded bg-emerald-600 px-3 py-1 text-xs text-white"
                 >
                   Hiddify
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSingbox(user.id)}
+                  title="sing-box app with rules: only blocked sites go through the proxy"
+                  className="rounded bg-violet-600 px-3 py-1 text-xs text-white"
+                >
+                  sing-box (rules)
                 </button>
                 <button
                   type="button"
