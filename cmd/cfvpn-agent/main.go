@@ -902,12 +902,6 @@ func parsePortOrWarn(key, s string) int {
 	return n
 }
 
-func parseInt(s string) int {
-	var out int
-	_, _ = fmt.Sscanf(strings.TrimSpace(s), "%d", &out)
-	return out
-}
-
 func parseInt64(s string) int64 {
 	var out int64
 	_, _ = fmt.Sscanf(strings.TrimSpace(s), "%d", &out)

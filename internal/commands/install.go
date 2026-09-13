@@ -1483,10 +1483,6 @@ func printRotateHint(stdout io.Writer, resumeCmd, tunnelID string) {
 	fmt.Fprintf(stdout, "cleanup command: cfvpnctl rotate-domain --cleanup %s\n", tunnelID)
 }
 
-func CertPathsForHost(host string) (certPath, keyPath string) {
-	return filepath.Join("/etc/cfvpn/certs", host, "fullchain.pem"), filepath.Join("/etc/cfvpn/certs", host, "privkey.pem")
-}
-
 // hysteriaCertDir holds the Hysteria2 leaf + key. It is a var so tests can
 // redirect it: without that, anything exercising cert issue/renew would read
 // and write the real /etc/cfvpn/hysteria of the machine running `go test`.
@@ -1494,8 +1490,4 @@ var hysteriaCertDir = "/etc/cfvpn/hysteria"
 
 func HysteriaCertPaths() (certPath, keyPath string) {
 	return filepath.Join(hysteriaCertDir, "cert.pem"), filepath.Join(hysteriaCertDir, "key.pem")
-}
-
-func XrayCertPaths() (certPath, keyPath string) {
-	return "/etc/cfvpn/xray/cert.pem", "/etc/cfvpn/xray/key.pem"
 }
