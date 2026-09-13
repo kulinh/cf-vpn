@@ -17,6 +17,11 @@ const PROFILE_TITLE = "RWL8899";
 // (`HiddifyNextX/` with its Xray core). Only it gets naive:// lines in the
 // base64 list; every other client keeps the list it has always had.
 const HIDDIFY_UA = /^HiddifyNextX?\//;
+// Except on iOS: the iOS build has no cronet, so a naive outbound fails
+// ("cronet: library not found", hiddify-app #2008) and takes the core down
+// with it; the app then reports "Connection refused" on its local core port
+// and refuses to add the profile at all.
+const HIDDIFY_IOS_UA = /^HiddifyNextX?\/\S+ \(ios\)/i;
 
 function notFoundText(): Response {
   return new Response("not found", {
@@ -156,7 +161,7 @@ export async function publicSubscription(
     });
   }
 
-  const naive = HIDDIFY_UA.test(userAgent ?? "");
+  const naive = HIDDIFY_UA.test(userAgent ?? "") && !HIDDIFY_IOS_UA.test(userAgent ?? "");
   const body = encodeSubscriptionBody(buildSubscriptionURIs(user.id, rows, { naive }), PROFILE_TITLE);
   return new Response(body, {
     status: 200,

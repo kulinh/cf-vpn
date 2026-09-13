@@ -175,13 +175,21 @@ export function buildSingboxConfig(username: string, rows: SubscriptionRow[], op
     routeRules.push({ ...always, action: "route", outbound: "PROXY" });
     dnsRules.push({ ...always, action: "route", server: "remote" });
   }
-  if (blocked.length > 0) {
-    ruleSets.push({ type: "inline", tag: "blocked", rules: blocked });
-    routeRules.push({ rule_set: ["blocked"], action: "route", outbound: "PROXY" });
+  // Names and addresses go in separate rule sets. A DNS rule that references
+  // a rule set with ip_cidr is a "legacy address filter" since sing-box 1.14
+  // (deprecated, removed in 1.16), so DNS only ever sees the domain set.
+  const blockedDomain = blocked.filter((r) => !("ip_cidr" in r));
+  const blockedIP = blocked.filter((r) => "ip_cidr" in r);
+  if (blockedDomain.length > 0) ruleSets.push({ type: "inline", tag: "blocked-domain", rules: blockedDomain });
+  if (blockedIP.length > 0) ruleSets.push({ type: "inline", tag: "blocked-ip", rules: blockedIP });
+  if (ruleSets.length > 0) {
+    routeRules.push({ rule_set: ruleSets.map((s) => s.tag), action: "route", outbound: "PROXY" });
+  }
+  if (blockedDomain.length > 0) {
     // Blocked names are resolved through the tunnel so a poisoned local answer
     // cannot send the connection somewhere else; everything else uses the
     // local resolver, which is what keeps domestic sites fast.
-    dnsRules.push({ rule_set: ["blocked"], action: "route", server: "remote" });
+    dnsRules.push({ rule_set: ["blocked-domain"], action: "route", server: "remote" });
   }
 
   const route: Json = {
