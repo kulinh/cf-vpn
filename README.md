@@ -340,7 +340,7 @@ The same token serves two formats; both list exactly the same nodes with the sam
 |---|---|---|
 | `https://<panel-host>/sub/<token>` | base64 URI list (default) | Shadowrocket, Hiddify (`hiddify://import/<sub-url>`), v2rayN, v2rayNG, Nekobox |
 | `https://<panel-host>/sub/<token>?format=clash` | mihomo/Clash YAML | Clash Verge (Rev), mihomo, Stash, Shadowrocket's Clash import |
-| `https://<panel-host>/sub/<token>?format=singbox` | full sing-box JSON (1.13+) | official sing-box apps (SFI/SFA); Hiddify also imports it but keeps only the outbounds |
+| `https://<panel-host>/sub/<token>?format=singbox` | full sing-box JSON (1.13+) | official sing-box apps (SFI/SFA) — panel button **sing-box (rules)** opens `sing-box://import-remote-profile?url=<enc sub?format=singbox>#RWL8899`; Hiddify also imports it but keeps only the outbounds |
 
 Any other `?format=` value returns `400 invalid_format` rather than silently serving base64.
 

@@ -18,3 +18,13 @@ export function buildHiddifyDeepLink(subUrl: string): string {
     ? `hiddify://import/?url=${encodeURIComponent(subUrl)}`
     : `hiddify://import/${subUrl}`
 }
+
+// The official sing-box apps (SFI on iOS/macOS, SFA on Android) import a
+// remote profile from this link (libbox GenerateRemoteProfileImportLink). It
+// points at ?format=singbox, the complete config that carries the
+// blocked-site rules, so only listed sites ride the proxy. No ?rules= is
+// added: the config then follows the operator's travel mode (Telegram /mode).
+// sing-box ignores the profile-title header, hence the #name.
+export function buildSingboxDeepLink(subUrl: string, name = 'RWL8899'): string {
+  return `sing-box://import-remote-profile?url=${encodeURIComponent(`${subUrl}?format=singbox`)}#${encodeURIComponent(name)}`
+}

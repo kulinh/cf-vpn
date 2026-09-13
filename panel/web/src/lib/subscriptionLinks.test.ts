@@ -3,6 +3,7 @@ import {
   buildPublicSubscriptionUrl,
   buildShadowrocketDeepLink,
   buildHiddifyDeepLink,
+  buildSingboxDeepLink,
 } from './subscriptionLinks'
 
 describe('subscriptionLinks', () => {
@@ -47,5 +48,12 @@ describe('subscriptionLinks', () => {
   it('falls back to the ?url= form when the subscription url carries a query string', () => {
     const subUrl = 'https://panel.example.com/sub/abc123?rules=uae'
     expect(buildHiddifyDeepLink(subUrl)).toBe(`hiddify://import/?url=${encodeURIComponent(subUrl)}`)
+  })
+
+  it('builds a sing-box remote-profile link for the split-routing ?format=singbox config', () => {
+    const subUrl = 'https://panel.example.com/sub/abc123'
+    expect(buildSingboxDeepLink(subUrl)).toBe(
+      `sing-box://import-remote-profile?url=${encodeURIComponent(`${subUrl}?format=singbox`)}#RWL8899`,
+    )
   })
 })
