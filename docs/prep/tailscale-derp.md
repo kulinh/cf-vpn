@@ -7,6 +7,12 @@ see the SIN-01 gap below): the public relays are back and region 900 is an
 extra region. The flag is now managed by `cfvpnctl derp china-mode on|off`
 (on = only the custom regions, for travel inside China).
 
+**Update 2026-09-13:** china-mode is kept **on permanently** (`cfvpnctl derp
+china-mode on`) — the default relays are blocked from China and the three
+private regions (900 HKG-01, 901 JPY-01, 902 JPY-03) serve everywhere, so the
+travel-mode switch (and the Telegram control bot that flipped it) was removed.
+The test table below records the two states as measured on 2026-09-12.
+
 | Item | HKG-01 (region 900) | JPY-01 (region 901) |
 |---|---|---|
 | Hostname | `derp-f2a4f360.duylinh.net` → 96.9.228.81 | `derp-da32d5af.duylinh.net` → 45.143.131.36 |

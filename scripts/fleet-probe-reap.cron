@@ -1,0 +1,8 @@
+# /etc/cron.d/cfvpn-fleet-probe-reap — delete the probe's Telegram alerts once their TTL passed.
+# Install: install -m 644 scripts/fleet-probe-reap.cron /etc/cron.d/cfvpn-fleet-probe-reap
+# Every box that runs fleet-probe.py (VNM-01, JPY-03) needs this: the queue in
+# TELEGRAM_TTL_DIR is a local directory, so each box reaps its own alerts. One
+# pass per run; an empty TELEGRAM_BOT_TOKEN makes it a no-op.
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+*/5 * * * * root /usr/bin/python3 /opt/cf-vpn/scripts/fleet-probe.py --reap --env /etc/cfvpn/fleet-probe.env >/dev/null 2>>/var/log/cfvpn-fleet-probe-reap.err

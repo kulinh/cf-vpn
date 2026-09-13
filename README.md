@@ -153,68 +153,24 @@ TS_OAUTH_CLIENT_SECRET=...
 
 ```bash
 cfvpnctl derp show                 # current flag + regions
-cfvpnctl derp china-mode on        # before flying to China: devices use ONLY our relays
-cfvpnctl derp china-mode off       # back home: public relays + our relays (normal)
-cfvpnctl rules-mode show           # which blocked-site list the Shadowrocket .conf inlines
-cfvpnctl rules-mode set uae        # cn (default) | uae | none — written to D1 settings.rules_mode
+cfvpnctl derp china-mode on        # devices use ONLY our relays — the permanent setting (see below)
+cfvpnctl derp china-mode off       # public relays + our relays — not used any more
 cfvpnctl derp region add --id 902 --code osa --name JPY-03 --host derp-xxxx.duylinh.net   # ports default 8443/3478; live: 900 HKG-01, 901 JPY-01, 902 JPY-03
 cfvpnctl derp region remove --id 901
 ```
 
-### Driving it from Telegram
+### China-mode stays on
 
-`cfvpn-tgbot` (unit `cfvpn-tgbot.service`, on **JPY-03** since 2026-09-12) long-polls
-**@rwl_vpn_bot** and accepts exactly these commands in the group chat
-`TELEGRAM_CHAT_ID`:
-
-```
-/mode status      # travel mode: which list the RWL8899 config inlines + DERP state
-/mode china       # config inlines the CN list AND china-mode on
-/mode uae         # config inlines the UAE list (OTT calls), china-mode off
-/mode home        # back to the default: CN list, china-mode off
-/china status     # or /derp — show the regions and whether china-mode is on
-/china on         # DERP china-mode alone, before flying to China
-/china off        # back home
-```
-
-Replies are short Telegram HTML (what changed, relay latencies, what to do
-next) rather than raw `cfvpnctl` output. Every reply and the command it
-answers is **deleted after 24 h** (the bot is a group admin): each sent
-message is queued as one JSON file in `/var/lib/cfvpn/tg-ttl/`, a reaper in
-the bot deletes due ones every minute, and `scripts/fleet-probe.py` queues its
-alerts in the same directory. `TELEGRAM_TTL_DIR=` (empty) disables it,
-`TELEGRAM_MESSAGE_TTL_HOURS` changes the TTL.
-
-Each box reaps its own queue, because the queue is a local directory: the bot's
-own reaper covers JPY-03, and on **VNM-01** — which has no bot process, only
-`fleet-probe.py` writing alerts — `/etc/cron.d/cfvpn-tgbot-reap` runs
-`cfvpn-tgbot --reap` every 5 minutes to delete them. `--reap` is a single pass
-and exits, so it is also the way to flush a queue by hand.
-
-It runs the same `cfvpnctl derp` code in-process, so snapshots, validation and
-the netcheck afterwards are identical; the reply carries that output. The
-Tailscale OAuth client never leaves the node the bot runs on, which is why the
-bot lives on a fleet node and not in the panel Worker.
-
-The bot shares the group with the Worker's bot, so it answers only the two
-commands above and stays silent on everything else (`/status`, `/nodes`,
-`/sub` … belong to the Worker). Privacy mode is on, so it only ever receives
-slash commands. Token and chat id come from `/etc/cfvpn/fleet-probe.env`
-(optionally overridden by `/etc/cfvpn/tgbot.env`).
-
-```bash
-# install / update
-go build -o bin/cfvpn-tgbot ./cmd/cfvpn-tgbot
-install -m 0755 bin/cfvpn-tgbot /usr/local/bin/cfvpn-tgbot
-install -m 644 scripts/cfvpn-tgbot.service /etc/systemd/system/cfvpn-tgbot.service
-systemctl daemon-reload && systemctl enable --now cfvpn-tgbot
-cfvpn-tgbot --setup                  # register the command menu for the chat
-cfvpn-tgbot --simulate "/derp"       # self-test: runs the command and replies in the chat
-journalctl -u cfvpn-tgbot -f
-```
-
-A restart never replays a command that was queued while the bot was down: it
-skips the backlog and only acts on updates that arrive afterwards.
+`china-mode` is kept **on permanently** (`cfvpnctl derp china-mode on`) and
+there is no travel-mode switch any more: Tailscale's default relays are
+blocked from China, and the three private regions (900 HKG-01, 901 JPY-01,
+902 JPY-03) serve every device everywhere, so nothing is gained by flipping
+back. The former Telegram control bot and its `/mode` / `/china` commands, and
+the fleet-wide rules setting it drove, are gone. Which blocked-site list a
+Shadowrocket `.conf` or `?format=singbox` config inlines is chosen per link
+with `?rules=cn|uae` (default `cn`) — the panel's **RWL-CN** and **RWL-UAE**
+profiles are those two links, so switching is done on the phone, not in the
+fleet.
 
 Every edit snapshots the policy before and after into
 `/root/cfvpn-backups/acl/<timestamp>.{before,after}.json`, validates it with
@@ -346,8 +302,8 @@ Any other `?format=` value returns `400 invalid_format` rather than silently ser
 
 **`?format=singbox`** is the Shadowrocket-style split for sing-box: `PROXY`
 (select) / `AUTO` (urltest, same members as the Shadowrocket AUTO group) /
-`HY2-BACKUP`, the sr_proxy_list module (`?rules=cn|uae|none`, default follows
-the `rules_mode` setting) inlined as an `inline` rule set routed to `PROXY`
+`HY2-BACKUP`, the sr_proxy_list module (`?rules=cn|uae`, default `cn` — the
+RWL-CN / RWL-UAE profiles) inlined as an `inline` rule set routed to `PROXY`
 with its names resolved through the tunnel, and `final: DIRECT`.
 `?final=proxy` makes it a full tunnel. If the module cannot be fetched at the
 edge the endpoint answers `503` rather than a config that proxies nothing.
@@ -394,6 +350,25 @@ Security: the Worker rejects any webhook whose `X-Telegram-Bot-Api-Secret-Token`
 header does not equal `TELEGRAM_WEBHOOK_SECRET`, and ignores any update whose
 `chat.id` is not `TELEGRAM_GROUP_ID`. Mutations are logged to the `events` table
 with actor `tg:<telegram_user_id>`.
+
+### fleet-probe alerts and their auto-delete
+
+`scripts/fleet-probe.py` (cron `scripts/fleet-probe.cron`, on VNM-01 and
+JPY-03) posts route DOWN/UP alerts to the same group and queues every message
+it sends as one JSON file in `/var/lib/cfvpn/tg-ttl/`
+(`{"chat_id","message_id","delete_at"}`, unix seconds) so the group keeps
+nothing older than `TELEGRAM_MESSAGE_TTL_HOURS` (default 24 h; `TELEGRAM_TTL_DIR=`
+empty disables the queue). The queue is a local directory, so each box reaps
+its own: install `scripts/fleet-probe-reap.cron` as
+`/etc/cron.d/cfvpn-fleet-probe-reap` next to the probe cron — it runs
+`fleet-probe.py --reap --env /etc/cfvpn/fleet-probe.env` every 5 minutes. `--reap`
+is a single pass that prints `reaped N` and exits 0, so it is also the way to
+flush a queue by hand; with `TELEGRAM_BOT_TOKEN` empty it does nothing. A file
+is removed after a successful delete, when Telegram answers that the message
+is already gone or cannot be deleted, or once it is older than Telegram's 48 h
+delete window; transient errors keep it for the next pass. This replaces the
+old `/etc/cron.d/*-tgbot-reap` entry on those boxes, which called the removed
+bot binary — delete that file when installing the new one.
 
 Commands: `/help`, `/nodes`, `/status <node>`, `/health <node>`, `/sync <node>`,
 `/rotate <node>`, `/users`, `/adduser <name>`, `/deluser <name>`, `/sub <name>`,

@@ -269,3 +269,140 @@ def test_ipv6_routes_parse_and_hysteria_server_is_bracketed():
     v, h = fp.parse_subscription(text)
     assert fp.xray_outbound(v)["settings"]["vnext"][0]["address"] == "2603:c023::1"
     assert fp.hysteria_config(h, 21001)["server"] == "[2603:c023::1]:32443"
+
+
+# ----- --reap: the Telegram message reaper (was cfvpn-tgbot --reap) ----------
+
+def _queue(tmp_path, name, entry):
+    import json
+    q = tmp_path / "q"
+    q.mkdir(exist_ok=True)
+    (q / name).write_text(entry if isinstance(entry, str) else json.dumps(entry))
+    return q
+
+
+def _stub_delete(monkeypatch, outcome):
+    """Stub the deleteMessage HTTP call: outcome is None (success) or an
+    exception instance to raise. Records every (token, chat_id, message_id)."""
+    calls = []
+
+    def fake(token, chat_id, message_id):
+        calls.append((token, chat_id, message_id))
+        if outcome is not None:
+            raise outcome
+    monkeypatch.setattr(fp, "delete_telegram_message", fake)
+    return calls
+
+
+def test_reap_deletes_due_file_after_successful_delete(tmp_path, monkeypatch):
+    now = 1_789_300_800
+    q = _queue(tmp_path, "-1_7.json", {"chat_id": -1, "message_id": 7, "delete_at": now - 60})
+    calls = _stub_delete(monkeypatch, None)
+    assert fp.reap_once("tok", str(q), now=now) == 1
+    assert calls == [("tok", -1, 7)]
+    assert list(q.iterdir()) == []
+
+
+def test_reap_permanent_error_removes_file(tmp_path, monkeypatch):
+    now = 1_789_300_800
+    q = _queue(tmp_path, "-1_8.json", {"chat_id": -1, "message_id": 8, "delete_at": now - 60})
+    _stub_delete(monkeypatch, fp.TelegramError("400 Bad Request: message to delete not found"))
+    assert fp.reap_once("tok", str(q), now=now) == 0
+    assert list(q.iterdir()) == []
+    _queue(tmp_path, "-1_9.json", {"chat_id": -1, "message_id": 9, "delete_at": now - 60})
+    _stub_delete(monkeypatch, fp.TelegramError("400 Bad Request: message can't be deleted"))
+    assert fp.reap_once("tok", str(q), now=now) == 0
+    assert list(q.iterdir()) == []
+
+
+def test_reap_transient_error_keeps_file(tmp_path, monkeypatch):
+    import urllib.error
+    now = 1_789_300_800
+    q = _queue(tmp_path, "-1_10.json", {"chat_id": -1, "message_id": 10, "delete_at": now - 60})
+    _stub_delete(monkeypatch, urllib.error.URLError("connection refused"))
+    assert fp.reap_once("tok", str(q), now=now) == 0
+    assert [p.name for p in q.iterdir()] == ["-1_10.json"]
+    _stub_delete(monkeypatch, fp.TelegramError("429 Too Many Requests: retry after 5"))
+    assert fp.reap_once("tok", str(q), now=now) == 0
+    assert [p.name for p in q.iterdir()] == ["-1_10.json"]
+    # ...until the message is older than Telegram's 48 h window: one last try, then dropped.
+    assert fp.reap_once("tok", str(q), now=now + fp.TELEGRAM_DELETE_WINDOW + 1) == 0
+    assert list(q.iterdir()) == []
+
+
+def test_reap_keeps_files_not_yet_due(tmp_path, monkeypatch):
+    now = 1_789_300_800
+    q = _queue(tmp_path, "-1_11.json", {"chat_id": -1, "message_id": 11, "delete_at": now + 3600})
+    calls = _stub_delete(monkeypatch, None)
+    assert fp.reap_once("tok", str(q), now=now) == 0
+    assert calls == [] and [p.name for p in q.iterdir()] == ["-1_11.json"]
+
+
+def test_reap_removes_malformed_files_without_calling_telegram(tmp_path, monkeypatch):
+    now = 1_789_300_800
+    q = _queue(tmp_path, "garbage.json", "{not json")
+    _queue(tmp_path, "nodelete.json", {"chat_id": -1, "message_id": 12, "sent_at": now})   # other tool's layout
+    _queue(tmp_path, "zero.json", {"chat_id": 0, "message_id": 0, "delete_at": now - 1})
+    _queue(tmp_path, "list.json", [1, 2, 3])
+    (q / "keep.tmp").write_text("half-written")                                              # not a .json: untouched
+    calls = _stub_delete(monkeypatch, None)
+    assert fp.reap_once("tok", str(q), now=now) == 0
+    assert calls == [] and [p.name for p in q.iterdir()] == ["keep.tmp"]
+
+
+def test_reap_is_a_noop_without_token_or_queue(tmp_path, monkeypatch, capsys):
+    now = 1_700_000_000   # the CLI below uses the real clock: keep the file long overdue
+    q = _queue(tmp_path, "-1_13.json", {"chat_id": -1, "message_id": 13, "delete_at": now - 60})
+    calls = _stub_delete(monkeypatch, None)
+    assert fp.reap_once("", str(q), now=now) == 0                    # TELEGRAM_BOT_TOKEN empty
+    assert fp.reap_once("tok", "", now=now) == 0                     # TELEGRAM_TTL_DIR empty
+    assert fp.reap_once("tok", str(tmp_path / "missing"), now=now) == 0
+    assert calls == [] and [p.name for p in q.iterdir()] == ["-1_13.json"]
+    # The CLI: exit 0 and "reaped N" on stdout, also with an empty token.
+    envf = _probe_env(tmp_path, TELEGRAM_BOT_TOKEN="", TELEGRAM_TTL_DIR=str(q))
+    assert fp.main(["--reap", "--env", envf]) == 0
+    assert capsys.readouterr().out == "reaped 0\n"
+    envf = _probe_env(tmp_path, TELEGRAM_BOT_TOKEN="tok", TELEGRAM_TTL_DIR=str(q))
+    assert fp.main(["--reap", "--env", envf]) == 0
+    assert capsys.readouterr().out == "reaped 1\n" and calls == [("tok", -1, 13)]
+
+
+def test_delete_telegram_message_classifies_http_errors(monkeypatch):
+    """The real HTTP call, with urlopen stubbed: a 400 carrying Telegram's
+    description is a permanent error, a 5xx without one is not."""
+    import io
+    import urllib.error
+
+    class Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def http(code, body):
+        def fake(req, timeout=0):
+            assert req.full_url == "https://api.telegram.org/bottok/deleteMessage"
+            assert req.data == b"chat_id=-1&message_id=7"
+            if code == 200:
+                return Resp(body)
+            raise urllib.error.HTTPError(req.full_url, code, "err", {}, io.BytesIO(body))
+        return fake
+
+    monkeypatch.setattr(fp.urllib.request, "urlopen", http(200, b'{"ok":true,"result":true}'))
+    assert fp.delete_telegram_message("tok", -1, 7) is None
+
+    monkeypatch.setattr(fp.urllib.request, "urlopen",
+                        http(400, b'{"ok":false,"description":"Bad Request: message to delete not found"}'))
+    try:
+        fp.delete_telegram_message("tok", -1, 7)
+        raise AssertionError("expected TelegramError")
+    except fp.TelegramError as e:
+        assert fp.is_permanent_delete_error(e) and "message to delete not found" in str(e)
+
+    monkeypatch.setattr(fp.urllib.request, "urlopen", http(502, b"<html>Bad Gateway</html>"))
+    try:
+        fp.delete_telegram_message("tok", -1, 7)
+        raise AssertionError("expected TelegramError")
+    except fp.TelegramError as e:
+        assert not fp.is_permanent_delete_error(e) and "502" in str(e)

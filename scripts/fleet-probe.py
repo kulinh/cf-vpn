@@ -12,18 +12,23 @@ and once on recovery (exit 2, no route is probed). Nothing on the nodes is
 touched.
 
     fleet-probe.py [--env /etc/cfvpn/fleet-probe.env] [--sub-file PATH] [--once]
+    fleet-probe.py --reap [--env /etc/cfvpn/fleet-probe.env]
 
 Env (file or process environment):
     SUB_URL             subscription URL (base64 body)
-    TELEGRAM_BOT_TOKEN  empty = alerts are printed to stderr only
+    TELEGRAM_BOT_TOKEN  empty = alerts are printed to stderr only (and --reap does nothing)
     TELEGRAM_CHAT_ID    default -1003806233980
     FAIL_THRESHOLD      default 2
     STATE_FILE          default /var/lib/cfvpn/fleet-probe.state
     LOG_FILE            default /var/log/cfvpn-fleet-probe.log
     XRAY_BIN / HYSTERIA_BIN   default /usr/local/bin/{xray,hysteria}
+    TELEGRAM_TTL_DIR    default /var/lib/cfvpn/tg-ttl; empty = alerts are never auto-deleted
+    TELEGRAM_MESSAGE_TTL_HOURS   default 24
 
 --once: run a single pass and print the table; still logs and alerts.
 --sub-file: read the subscription (base64 or decoded) from a file instead of SUB_URL.
+--reap: delete the queued alert messages whose TTL passed (one pass, prints
+        "reaped N", exits 0). scripts/fleet-probe-reap.cron runs it every 5 min.
 """
 import argparse
 import base64
@@ -276,12 +281,25 @@ def run_probes(routes: list, xray_bin: str, hy_bin: str) -> dict:
         shutil.rmtree(work, ignore_errors=True)
 
 
-# Auto-delete: the ops group keeps nothing older than TTL. cfvpn-tgbot (the
-# control bot on this box, same @rwl_vpn_bot token) deletes queued messages;
-# this script only queues its alerts in the same directory, one JSON file per
-# message ({"chat_id","message_id","delete_at"} in unix seconds) so no locking
-# is needed between the two writers.
+# Auto-delete: the ops group keeps nothing older than TTL. Telegram has no
+# server-side TTL for bot messages and only lets a bot delete messages younger
+# than 48 h, so every alert is queued as one JSON file per message in TTL["dir"]
+# ({"chat_id","message_id","delete_at"} in unix seconds) and `--reap` (cron,
+# every 5 minutes) deletes the due ones. One file per message means no locking
+# between the writer and the reaper, and a queued deletion survives reboots.
 TTL = {"dir": "/var/lib/cfvpn/tg-ttl", "hours": 24.0}
+# Telegram refuses to delete anything older than this; a file past it is
+# dropped after one last attempt so the queue cannot grow forever.
+TELEGRAM_DELETE_WINDOW = 48 * 3600
+# Telegram answers that will never change: already gone, too old, not ours.
+# Kept in sync with PERMANENT_ERRORS in /opt/xiaoqie_bot/janitor.py.
+PERMANENT_DELETE_ERRORS = (
+    "message to delete not found",
+    "message can't be deleted",
+    "message identifier is not specified",
+    "message_id_invalid",
+    "message not found",
+)
 
 
 def configure_ttl(env: dict) -> None:
@@ -305,6 +323,90 @@ def record_ttl(ttl_dir: str, chat_id: str, message_id: int, hours: float, now: f
     os.chmod(tmp, 0o600)
     os.replace(tmp, path)
     return path
+
+
+class TelegramError(Exception):
+    """A Telegram API answer with ok:false (its description is the message)."""
+
+
+def is_permanent_delete_error(err: Exception) -> bool:
+    msg = str(err).lower()
+    return any(needle in msg for needle in PERMANENT_DELETE_ERRORS)
+
+
+def delete_telegram_message(token: str, chat_id: int, message_id: int) -> None:
+    """One deleteMessage call. Raises TelegramError on an API refusal (with the
+    description, so the caller can tell permanent from transient) and
+    urllib.error.URLError / OSError on transport failures."""
+    data = up.urlencode({"chat_id": chat_id, "message_id": message_id}).encode()
+    req = urllib.request.Request(f"https://api.telegram.org/bot{token}/deleteMessage", data=data)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.load(resp)
+    except urllib.error.HTTPError as e:
+        # Telegram puts the reason in the JSON body of a 4xx; keep it.
+        try:
+            desc = json.load(e).get("description") or ""
+        except (ValueError, AttributeError):
+            desc = ""
+        raise TelegramError(f"{e.code} {desc or e.reason}") from None
+    if not isinstance(body, dict) or not body.get("ok"):
+        raise TelegramError(str(body.get("description") if isinstance(body, dict) else body))
+
+
+def reap_once(token: str, ttl_dir: str, now: float | None = None) -> int:
+    """Delete every queued message whose delete_at passed; returns how many were
+    deleted. A file is removed after a successful delete, after a permanent
+    Telegram refusal, or once it is older than Telegram's 48 h window; it is
+    kept on a transient error (the next pass retries). Malformed files are
+    removed. Does nothing without a token or a queue directory."""
+    if not token or not ttl_dir or not os.path.isdir(ttl_dir):
+        return 0
+    now = time.time() if now is None else now
+    deleted = 0
+    for name in sorted(os.listdir(ttl_dir)):
+        path = os.path.join(ttl_dir, name)
+        if not name.endswith(".json") or not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                entry = json.load(f)
+            chat_id, message_id = int(entry["chat_id"]), int(entry["message_id"])
+            delete_at = int(entry.get("delete_at") or 0)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            print(f"ttl: dropping unreadable {name}", file=sys.stderr)
+            _remove_quietly(path)
+            continue
+        # Unix epoch 0 is "due since 1970": a file without delete_at (another
+        # tool's layout) would be deleted the moment it was queued. Drop it.
+        if not chat_id or not message_id or delete_at <= 0:
+            print(f"ttl: dropping {name}: no chat_id/message_id/delete_at", file=sys.stderr)
+            _remove_quietly(path)
+            continue
+        if now < delete_at:
+            continue
+        try:
+            delete_telegram_message(token, chat_id, message_id)
+        except (TelegramError, urllib.error.URLError, OSError) as e:
+            if is_permanent_delete_error(e):
+                print(f"ttl: message {message_id} already gone or undeletable ({e}); dropping", file=sys.stderr)
+                _remove_quietly(path)
+            elif now - delete_at > TELEGRAM_DELETE_WINDOW:
+                print(f"ttl: message {message_id} past Telegram's 48 h window ({e}); dropping", file=sys.stderr)
+                _remove_quietly(path)
+            else:
+                print(f"ttl: delete {message_id}: {e} (will retry)", file=sys.stderr)
+            continue
+        deleted += 1
+        _remove_quietly(path)
+    return deleted
+
+
+def _remove_quietly(path: str) -> None:
+    try:
+        os.remove(path)
+    except OSError:
+        pass
 
 
 def probe_label(env: dict) -> str:
@@ -356,9 +458,13 @@ def main(argv=None) -> int:
     ap.add_argument("--env", default="/etc/cfvpn/fleet-probe.env")
     ap.add_argument("--sub-file")
     ap.add_argument("--once", action="store_true", help="print the result table to stdout")
+    ap.add_argument("--reap", action="store_true", help="delete the queued alert messages whose TTL passed, then exit")
     args = ap.parse_args(argv)
     env = load_env(args.env)
     configure_ttl(env)
+    if args.reap:
+        print(f"reaped {reap_once(env.get('TELEGRAM_BOT_TOKEN', ''), TTL['dir'])}")
+        return 0
     state_file = env.get("STATE_FILE", "/var/lib/cfvpn/fleet-probe.state")
     log_file = env.get("LOG_FILE", "/var/log/cfvpn-fleet-probe.log")
     threshold = int(env.get("FAIL_THRESHOLD", "2"))

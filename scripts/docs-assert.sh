@@ -22,10 +22,13 @@ if grep -RInE '(docker|docker-compose|container_name|docker compose)' "${DOCS[@]
   exit 1
 fi
 
-# cfvpn-tgbot moved to JPY-03 on 2026-09-12; VNM-01 only reaps its own
-# fleet-probe alerts via /etc/cron.d/cfvpn-tgbot-reap. An operator who believes
-# the README and looks for the bot on VNM-01 finds no process and no logs.
-if grep -qiE 'cfvpn-tgbot.*VNM-01 only|VNM-01 only.*cfvpn-tgbot' README.md; then
-  printf 'docs-assert: README still claims cfvpn-tgbot is VNM-01 only (it long-polls on JPY-03)\n' >&2
+# The Telegram control bot and `cfvpnctl rules-mode` were removed on
+# 2026-09-13 (DERP china-mode stays on permanently; the blocked-site list is
+# chosen per link with ?rules=). A README that still tells the operator to
+# build, install or drive them sends them to a binary that no longer exists.
+if grep -nE 'cfvpn-tgbot|rules-mode' README.md; then
+  printf 'docs-assert: README still mentions the removed Telegram control bot / rules-mode (see above)\n' >&2
   exit 1
 fi
+# ...and it must say how the probe alerts get deleted now.
+grep -q 'fleet-probe-reap.cron' README.md
