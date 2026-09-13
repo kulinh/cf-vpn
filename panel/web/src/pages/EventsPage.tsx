@@ -1,8 +1,16 @@
 import { useEffect, useState } from 'react'
 import { ErrorBanner } from '../components/ui/ErrorBanner'
+import { Badge, PageHeader, tableWrap, td, th, thead, tr, type Tone } from '../components/ui/theme'
 import { listEvents } from '../lib/api'
 import { describeLoadError } from '../lib/errors'
 import type { Event } from '../lib/types'
+
+function outcomeTone(outcome: string): Tone {
+  if (outcome === 'ok') return 'green'
+  if (outcome === 'error') return 'red'
+  if (outcome === 'partial') return 'amber'
+  return 'slate'
+}
 
 export function EventsPage() {
   const [events, setEvents] = useState<Event[]>([])
@@ -27,26 +35,30 @@ export function EventsPage() {
   }, [])
 
   return (
-    <section className="space-y-3">
-      <h1 className="text-xl font-semibold">Events</h1>
+    <section className="space-y-4">
+      <PageHeader title="Events" subtitle="Audit log of panel and cron actions." />
       <ErrorBanner message={loadError} />
-      <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900">
+      <div className={tableWrap}>
         <table className="min-w-full text-left text-sm">
-          <thead>
-            <tr className="border-b border-slate-800 text-xs uppercase tracking-wide text-slate-400">
-              <th className="px-3 py-2">Action</th>
-              <th className="px-3 py-2">Actor</th>
-              <th className="px-3 py-2">Outcome</th>
-              <th className="px-3 py-2">Timestamp</th>
+          <thead className={thead}>
+            <tr>
+              <th className={th}>Action</th>
+              <th className={th}>Actor</th>
+              <th className={th}>Outcome</th>
+              <th className={th}>Timestamp</th>
             </tr>
           </thead>
           <tbody>
             {events.map((event) => (
-              <tr key={event.id} className="border-b border-slate-800/70 last:border-0 text-slate-100">
-                <td className="px-3 py-2">{event.action}</td>
-                <td className="px-3 py-2">{event.actor}</td>
-                <td className="px-3 py-2">{event.outcome}</td>
-                <td className="px-3 py-2">{new Date(event.ts).toLocaleString()}</td>
+              <tr key={event.id} className={tr}>
+                <td className={`${td} font-mono text-xs text-slate-800 dark:text-slate-200`}>{event.action}</td>
+                <td className={`${td} text-slate-600 dark:text-slate-300`}>{event.actor}</td>
+                <td className={td}>
+                  <Badge tone={outcomeTone(event.outcome)} withDot>
+                    {event.outcome}
+                  </Badge>
+                </td>
+                <td className={`${td} tabular-nums text-slate-500 dark:text-slate-400`}>{new Date(event.ts).toLocaleString()}</td>
               </tr>
             ))}
           </tbody>
