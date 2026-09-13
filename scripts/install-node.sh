@@ -225,18 +225,7 @@ install -m 0755 "$PROJECT_ROOT/bin/cfvpnctl"    /usr/local/bin/cfvpnctl
 install -m 0755 "$PROJECT_ROOT/bin/cfvpn-agent" /usr/local/bin/cfvpn-agent
 
 # ----- 4. check zone collision ------------------------------------------------
-D1_RESP=$(d1_query "$(jq -n '{sql:"SELECT id,label,zone,vpn_host FROM nodes WHERE zone != ?", params:[""]}')")
-D1_OK=$(echo "$D1_RESP" | jq -r '.success // false')
-if [ "$D1_OK" != "true" ]; then
-  warn "D1 zone check failed (non-fatal): $(echo "$D1_RESP" | jq -r '.errors[0].message // "unknown"')"
-else
-  D1_ROWS=$(echo "$D1_RESP" | jq '.result[0].results // []')
-  NODE_COUNT=$(echo "$D1_ROWS" | jq 'length')
-  log "D1 nodes: $NODE_COUNT"
-  if [ "$NODE_COUNT" -gt 0 ]; then
-    echo "$D1_ROWS" | jq -r 'group_by(.zone) | .[] | "  \(.[0].zone): \(map(.id+"("+.vpn_host+")") | join(", "))"'
-  fi
-fi
+d1_zone_report
 
 # ----- 5. write env file ------------------------------------------------------
 # cfvpnctl reads NODE_ID (lowercase) from env for DNS label use.

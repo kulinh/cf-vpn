@@ -402,6 +402,19 @@ is "$(d1_zone_for_domain vpn.example.co.uk 2>/dev/null)" "co.uk" \
 contains "$(d1_zone_for_domain vpn.example.co.uk 2>&1 >/dev/null)" "falling back" \
    "fallback warns on stderr"
 
+section "cfvpn-d1.sh — d1_zone_report (shared by both installers)"
+out="$(d1_zone_report 2>&1)"; rc=$?
+is "$rc" "0" "zone report is non-fatal when D1 fails"
+contains "$out" "D1 zone check failed (non-fatal): curl failed" "…and says why"
+d1_query() { printf '{"success":true,"result":[{"results":[{"id":"JPY-01","label":"JPY-01","zone":"rwl247.dev","vpn_host":"a.rwl247.dev"},{"id":"SIN-01","label":"SIN-01","zone":"rwl247.dev","vpn_host":"b.rwl247.dev"},{"id":"HKG-01","label":"HKG-01","zone":"888vn.net","vpn_host":"c.888vn.net"}]}]}'; }
+out="$(d1_zone_report 2>&1)"; rc=$?
+is "$rc" "0" "zone report exits 0 on success"
+contains "$out" "D1 nodes: 3" "zone report counts the nodes"
+contains "$out" "  rwl247.dev: JPY-01(a.rwl247.dev), SIN-01(b.rwl247.dev)" "zone report groups nodes by zone"
+d1_query() { printf '{"success":true,"result":[{"results":[]}]}'; }
+out="$(d1_zone_report 2>&1)"; rc=$?
+is "$rc|$(printf '%s\n' "$out" | grep -c '^  ')" "0|0" "an empty fleet prints the count only and exits 0"
+
 section "cfvpn-d1.sh — d1_upsert_node NULLs the empty hy2 columns (C2)"
 # "No hysteria on this node" is NULL everywhere else in the system (that is what
 # `cfvpnctl hy2 disable` + d1-set-node.sh hy2-off write, and what the Worker
