@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -107,10 +108,14 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 	return lines
 }
 
-// publicIPv6 is PUBLIC_IPV6 when it looks like an IPv6 literal, else "".
+// publicIPv6 is PUBLIC_IPV6 when it is a plain IPv6 address literal, else "".
+// The value is bracketed into URIs as-is, so anything that merely contains a
+// colon ("a:b", an already bracketed "[..]", a zoned "fe80::1%eth0", an
+// IPv4-mapped "::ffff:1.2.3.4") would publish a twin no client can dial.
 func publicIPv6(env map[string]string) string {
 	v6 := strings.TrimSpace(env[state.KeyPublicIPv6])
-	if !strings.Contains(v6, ":") {
+	addr, err := netip.ParseAddr(v6)
+	if err != nil || !addr.Is6() || addr.Is4In6() || addr.Zone() != "" {
 		return ""
 	}
 	return v6

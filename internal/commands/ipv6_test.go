@@ -68,3 +68,36 @@ func TestBuildUserURIsNoHy2TwinWithoutUserPassword(t *testing.T) {
 		}
 	}
 }
+
+// publicIPv6 gates both twins; only a real IPv6 literal may pass, because the
+// value is bracketed into the URI verbatim.
+func TestPublicIPv6AcceptsOnlyPlainIPv6Literals(t *testing.T) {
+	for in, want := range map[string]string{
+		"2603:c023:19:9800:0:f882:7490:be7a": "2603:c023:19:9800:0:f882:7490:be7a",
+		"2a12:a304:4:8f3::a":                 "2a12:a304:4:8f3::a",
+		"::1":                                "::1",
+		"  2001:db8::1\n":                    "2001:db8::1",
+		"":                                   "",
+		"129.225.185.197":                    "",
+		"fe80::1%eth0":                       "",
+		"[2001:db8::1]":                      "",
+		"a:b":                                "",
+		"::ffff:1.2.3.4":                     "",
+		"2001:db8::1/64":                     "",
+	} {
+		if got := publicIPv6(map[string]string{state.KeyPublicIPv6: in}); got != want {
+			t.Errorf("publicIPv6(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBuildUserURIsNoTwinsForMalformedIPv6(t *testing.T) {
+	for _, v := range []string{"fe80::1%eth0", "[2001:db8::1]", "a:b", "::ffff:1.2.3.4"} {
+		env := jpy03V6Env()
+		env[state.KeyPublicIPv6] = v
+		got := buildUserURIs("kulinh", "u", "d.example", "pw", env, nil)
+		if len(got) != 3 {
+			t.Fatalf("PUBLIC_IPV6=%q: want 3 lines (no v6 twins), got %v", v, got)
+		}
+	}
+}
