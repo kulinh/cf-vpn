@@ -52,6 +52,9 @@ const PERSIST_COLUMNS = [
   "xhttp_direct_path",
   "xhttp_h3_host",
   "xhttp_h3_path",
+  "naive_host",
+  "naive_user",
+  "naive_pass",
   "tunnel_uuid",
   "id"
 ] as const;
@@ -193,6 +196,9 @@ describe("nodeRotate", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -263,6 +269,9 @@ describe("nodeHealthcheck", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -335,6 +344,9 @@ describe("deleteNode", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -399,6 +411,9 @@ describe("deleteNode", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -445,6 +460,9 @@ describe("deleteNode", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -494,6 +512,9 @@ describe("deleteNode", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: "persisted-tunnel-xyz"
       },
@@ -540,6 +561,9 @@ describe("deleteNode", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -583,6 +607,9 @@ describe("deleteNode", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -639,6 +666,9 @@ describe("nodeSyncCore", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -961,6 +991,9 @@ describe("nodeRotate persistence split (M-W6)", () => {
     xhttp_direct_path: null,
     xhttp_h3_host: null,
     xhttp_h3_path: null,
+    naive_host: null,
+    naive_user: null,
+    naive_pass: null,
     agent_secret: null,
     tunnel_uuid: null
   };
@@ -1097,6 +1130,9 @@ describe("patchNode status whitelist", () => {
     xhttp_direct_path: null,
     xhttp_h3_host: null,
     xhttp_h3_path: null,
+    naive_host: null,
+    naive_user: null,
+    naive_pass: null,
     agent_secret: null,
     tunnel_uuid: null
   };
@@ -1154,6 +1190,9 @@ describe("deleteNode row removal", () => {
         xhttp_direct_path: null,
         xhttp_h3_host: null,
         xhttp_h3_path: null,
+        naive_host: null,
+        naive_user: null,
+        naive_pass: null,
         agent_secret: null,
         tunnel_uuid: null
       },
@@ -1199,6 +1238,9 @@ const reviewRow: NodeRow = {
   xhttp_direct_path: null,
   xhttp_h3_host: null,
   xhttp_h3_path: null,
+  naive_host: null,
+  naive_user: null,
+  naive_pass: null,
   agent_secret: null,
   tunnel_uuid: null
 };
@@ -1461,25 +1503,25 @@ describe("patchNode host alias", () => {
   });
 });
 
+// Reads a persisted column by name, deriving the bind index from the SQL's
+// own SET clause rather than a positional constant, so this block cannot be
+// silently invalidated by a column added elsewhere in the statement.
+function persistedByName(writes: RunWrite[], column: string): unknown {
+  const w = writes.find((x) => /UPDATE nodes SET status='active'/.test(x.sql));
+  if (!w) throw new Error("no runtime UPDATE was issued");
+  const set = w.sql.slice(w.sql.indexOf("SET ") + 4, w.sql.indexOf(" WHERE "));
+  const cols = set.split(",").map((c) => c.trim().split("=")[0].trim());
+  // status='active' is a literal, not a bind, so it consumes no argument.
+  const binds = cols.filter((c) => c !== "status");
+  const i = binds.indexOf(column);
+  if (i < 0) throw new Error(`the runtime UPDATE does not persist ${column}: ${set}`);
+  return w.args[i];
+}
+
 // The H3 route lives on a DIRECT node, so it rides the same gate as the other
 // direct-mode runtime fields (reality_*), not the cloudflare gate that
 // xhttp_path / xhttp_direct_* use.
 describe("nodeStatus XHTTP-H3 runtime", () => {
-  // Reads a persisted column by name, deriving the bind index from the SQL's
-  // own SET clause rather than a positional constant, so this block cannot be
-  // silently invalidated by a column added elsewhere in the statement.
-  function persistedByName(writes: RunWrite[], column: string): unknown {
-    const w = writes.find((x) => /UPDATE nodes SET status='active'/.test(x.sql));
-    if (!w) throw new Error("no runtime UPDATE was issued");
-    const set = w.sql.slice(w.sql.indexOf("SET ") + 4, w.sql.indexOf(" WHERE "));
-    const cols = set.split(",").map((c) => c.trim().split("=")[0].trim());
-    // status='active' is a literal, not a bind, so it consumes no argument.
-    const binds = cols.filter((c) => c !== "status");
-    const i = binds.indexOf(column);
-    if (i < 0) throw new Error(`the runtime UPDATE does not persist ${column}: ${set}`);
-    return w.args[i];
-  }
-
   const directRow: NodeRow = {
     id: "JPY-03",
     label: "JPY 03",
@@ -1505,6 +1547,9 @@ describe("nodeStatus XHTTP-H3 runtime", () => {
     xhttp_direct_path: null,
     xhttp_h3_host: null,
     xhttp_h3_path: null,
+    naive_host: null,
+    naive_user: null,
+    naive_pass: null,
     agent_secret: null,
     tunnel_uuid: null
   };
@@ -1581,5 +1626,41 @@ describe("nodeStatus XHTTP-H3 runtime", () => {
     await nodeStatus(env, "JPY-03", "operator@example.com");
 
     expect(persistedByName(writes, "xhttp_h3_host")).toBeNull();
+  });
+});
+
+describe("nodeStatus naive runtime", () => {
+  const cfRow: NodeRow = {
+    id: "JPY-01", label: "JPY-01", admin_host: "jpy-01.rwl247.dev", vpn_host: "edge.rwl247.dev",
+    zone: "rwl247.dev", status: "active", last_seen_at: null, latency_ms: null, created_at: 1,
+    public_ip: null, mode: "cloudflare", hy2_host: null, hy2_port: null, hy2_obfs_pw: null,
+    reality_pubkey: null, reality_sid: null, reality_sni: null, reality_dest: null,
+    xhttp_path: "/api/v1/sync", xhttp_enabled: 1, xhttp_direct_host: null, xhttp_direct_path: null,
+    xhttp_h3_host: null, xhttp_h3_path: null, naive_host: null, naive_user: null, naive_pass: null,
+    agent_secret: null, tunnel_uuid: null
+  };
+  const base = { xray: "active", cloudflared: "active", hysteria: "active", vpn_host: "edge.rwl247.dev", mode: "cloudflare", tunnel_uuid: "", last_rotate_at: 0 };
+
+  it("persists the naive triple even on a cloudflare-mode node", async () => {
+    vi.mocked(callAgent).mockResolvedValue({ ...base, naive_host: "cdn.example.net", naive_user: "u1", naive_pass: "p1" } as never);
+    const writes: RunWrite[] = [];
+    await nodeStatus(makeEnv({ node: cfRow, zones: [], writes }), "JPY-01", "operator@example.com");
+    expect(persistedByName(writes, "naive_host")).toBe("cdn.example.net");
+    expect(persistedByName(writes, "naive_user")).toBe("u1");
+    expect(persistedByName(writes, "naive_pass")).toBe("p1");
+  });
+
+  it("keeps the stored triple when absent and clears it on empty strings", async () => {
+    const stored = { ...cfRow, naive_host: "cdn.example.net", naive_user: "u1", naive_pass: "p1" };
+    vi.mocked(callAgent).mockResolvedValue({ ...base } as never);
+    let writes: RunWrite[] = [];
+    await nodeStatus(makeEnv({ node: stored, zones: [], writes }), "JPY-01", "operator@example.com");
+    expect(persistedByName(writes, "naive_pass")).toBe("p1");
+
+    vi.mocked(callAgent).mockResolvedValue({ ...base, naive_host: "", naive_user: "", naive_pass: "" } as never);
+    writes = [];
+    await nodeStatus(makeEnv({ node: stored, zones: [], writes }), "JPY-01", "operator@example.com");
+    expect(persistedByName(writes, "naive_host")).toBeNull();
+    expect(persistedByName(writes, "naive_pass")).toBeNull();
   });
 });

@@ -48,11 +48,11 @@ GO_KEYS_RE='^(REALITY_PRIVATE_KEY|ADMIN_TUNNEL_UUID)='
 # HY2_ENABLED means "on" (internal/state/keys.go), so a node that was
 # deliberately running without hysteria came back with it enabled after a forced
 # re-install. The rest (REALITY_DEST/REALITY_SNI per-node camouflage,
-# XHTTP_DIRECT_*, XHTTP_H3_* which is the whole description of the H3 route and
-# cannot be re-derived, CLOUDFLARED_PROTOCOL=http2 on nodes with a bad UDP path
+# XHTTP_DIRECT_*, XHTTP_H3_* and NAIVE_* which describe routes that cannot be re-derived,
+# CLOUDFLARED_PROTOCOL=http2 on nodes with a bad UDP path
 # to the edge, XRAY_DNS_SERVERS for the China nodes) would silently revert to
 # the fleet default instead.
-CARRY_ON_FORCE_RE='^(ADMIN_TUNNEL_UUID|CF_API_TOKEN|CF_ACCOUNT_ID|HY2_ENABLED|XHTTP_ENABLED|XHTTP_DIRECT_HOST|XHTTP_DIRECT_PATH|XHTTP_H3_HOST|XHTTP_H3_PATH|CLOUDFLARED_PROTOCOL|REALITY_DEST|REALITY_SNI|XRAY_DNS_SERVERS)='
+CARRY_ON_FORCE_RE='^(ADMIN_TUNNEL_UUID|CF_API_TOKEN|CF_ACCOUNT_ID|HY2_ENABLED|XHTTP_ENABLED|XHTTP_DIRECT_HOST|XHTTP_DIRECT_PATH|XHTTP_H3_HOST|XHTTP_H3_PATH|NAIVE_HOST|NAIVE_USER|NAIVE_PASS|CLOUDFLARED_PROTOCOL|REALITY_DEST|REALITY_SNI|XRAY_DNS_SERVERS)='
 
 # Everything a re-install would regenerate, i.e. what the operator loses.
 LOSS_KEYS='REALITY_PRIVATE_KEY REALITY_PUBLIC_KEY REALITY_SHORT_ID UUID_USER1 HY2_PASS_USER1 HY2_OBFS_PW AGENT_SHARED_SECRET'

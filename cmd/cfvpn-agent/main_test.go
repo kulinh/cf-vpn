@@ -160,3 +160,27 @@ func TestStatusResponseOmitsTheH3RouteWhenUnset(t *testing.T) {
 		t.Error("xhttp_h3_path must be omitted when unset")
 	}
 }
+
+// The panel hands out the NaiveProxy route from these three keys; an unset
+// route must omit all of them (keep-on-absent, like the H3 pair).
+func TestStatusResponseNaiveRoute(t *testing.T) {
+	raw, err := json.Marshal(statusResponse{NaiveHost: "cdn.example.net", NaiveUser: "u1", NaivePass: "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["naive_host"] != "cdn.example.net" || got["naive_user"] != "u1" || got["naive_pass"] != "p1" {
+		t.Errorf("naive fields = %v %v %v", got["naive_host"], got["naive_user"], got["naive_pass"])
+	}
+	raw, _ = json.Marshal(statusResponse{})
+	got = map[string]any{}
+	_ = json.Unmarshal(raw, &got)
+	for _, k := range []string{"naive_host", "naive_user", "naive_pass"} {
+		if _, ok := got[k]; ok {
+			t.Errorf("%s must be omitted when unset", k)
+		}
+	}
+}

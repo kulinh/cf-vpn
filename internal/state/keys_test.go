@@ -5,7 +5,7 @@ import "testing"
 func TestKeysAreUnique(t *testing.T) {
 	all := []string{KeyMode, KeyDomain, KeyPublicIP, KeyAdminHost, KeyAdminTunnelUUID, KeyNodeID,
 		KeyRealityPriv, KeyRealityPub, KeyRealityShortID, KeyRealityDest, KeyRealitySNI,
-		KeyXHTTPPath, KeyXHTTPH3Host, KeyXHTTPH3Path, KeyHy2Host, KeyHy2Port, KeyHy2ObfsPW}
+		KeyXHTTPPath, KeyXHTTPH3Host, KeyXHTTPH3Path, KeyNaiveHost, KeyNaiveUser, KeyNaivePass, KeyHy2Host, KeyHy2Port, KeyHy2ObfsPW}
 	seen := map[string]bool{}
 	for _, k := range all {
 		if seen[k] {

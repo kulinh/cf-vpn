@@ -207,7 +207,7 @@ describe("publicSubscription", () => {
     const token = "2".repeat(32);
     const env = makeEnv(makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [] } }));
 
-    const res = await publicSubscription(env, token, "singbox");
+    const res = await publicSubscription(env, token, "surge");
 
     expect(res.status).toBe(400);
     expect((await res.json() as { error: string }).error).toBe("invalid_format");
@@ -544,6 +544,79 @@ describe("?format=shadowrocket&rules=", () => {
       expect(full).toMatch(/FINAL,PROXY\n$/);
       expect(full).not.toContain("RULE-SET,");
       expect(calls).toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("NaiveProxy and ?format=singbox", () => {
+  const token = "d".repeat(32);
+  const jpy01 = {
+    vless_uuid: "2f8a1c3e-1111-4222-8333-abcdefabcdef", hy2_pw: "p1", vpn_host: "edge-fd34b370.rwl247.dev", node_id: "JPY-01",
+    hy2_host: "quic.example.net", hy2_port: 31565, hy2_obfs_pw: "obfs", public_ip: "45.143.131.36",
+    mode: "cloudflare", reality_pubkey: null, reality_sid: null, reality_sni: null, xhttp_path: "/api/v1/sync", xhttp_enabled: 0,
+    naive_host: "cdn-82169439.duylinh.net", naive_user: "u1", naive_pass: "p@ss"
+  };
+  const jpy02 = {
+    vless_uuid: "3f8a1c3e-1111-4222-8333-abcdefabcdef", hy2_pw: "p2", vpn_host: "edge-2.example.net", node_id: "JPY-02",
+    hy2_host: null, hy2_port: null, hy2_obfs_pw: null, public_ip: "96.9.228.81",
+    mode: "direct", reality_pubkey: "pk", reality_sid: "ab", reality_sni: "www.amazon.co.jp", xhttp_path: null, xhttp_enabled: 0
+  };
+  const db = () => makeDB({ userByToken: { [token]: { id: "kulinh" } }, nodesByUser: { kulinh: [jpy01, jpy02] } });
+  const moduleText = "[Rule]\nDOMAIN-SUFFIX,google.com,PROXY\nDOMAIN,one.one.one.one,PROXY\nDOMAIN-KEYWORD,telegram,PROXY\nIP-CIDR,8.8.8.0/24,PROXY,no-resolve\nIP-CIDR6,2001:4860::/32,PROXY,no-resolve\n";
+
+  it("adds naive:// lines to the base64 list only for Hiddify", async () => {
+    const plain = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, "Shadowrocket/2070")).text());
+    expect(plain).not.toContain("naive://");
+    const hiddify = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, "HiddifyNext/4.1.1 (android) like ClashMeta v2ray sing-box")).text());
+    expect(hiddify.split("\n")).toContain("naive://u1:p%40ss@cdn-82169439.duylinh.net:443?security=tls&sni=cdn-82169439.duylinh.net&uot=false#kulinh%40JPY-01-Naive");
+  });
+
+  it("serves a split sing-box config with the module inlined as a rule set", async () => {
+    vi.stubGlobal("fetch", async () => new Response(moduleText, { status: 200 }));
+    try {
+      const res = await publicSubscription({ ...makeEnv(db()), PANEL_PUBLIC_ORIGIN: "https://cp.rwl265.com" }, token, "singbox", null, null);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      const cfg = await res.json() as { outbounds: Array<Record<string, unknown>>; route: Record<string, unknown>; dns: Record<string, unknown> };
+      const byTag = Object.fromEntries(cfg.outbounds.map((o) => [o.tag, o]));
+      expect(byTag["kulinh@JPY-01-Naive"]).toMatchObject({ type: "naive", server: "cdn-82169439.duylinh.net", server_port: 443, username: "u1", password: "p@ss" });
+      expect(byTag["kulinh@JPY-01-HY2"]).toMatchObject({ type: "hysteria2", server: "45.143.131.36", password: "kulinh:p1", obfs: { type: "salamander", password: "obfs" } });
+      expect(byTag["kulinh@JPY-02-Reality"]).toMatchObject({ type: "vless", server: "96.9.228.81", flow: "xtls-rprx-vision" });
+      expect(byTag["AUTO"]).toMatchObject({ type: "urltest", outbounds: ["kulinh@JPY-02-Reality", "kulinh@JPY-01-HY2"] });
+      expect((byTag["PROXY"].outbounds as string[]).slice(0, 2)).toEqual(["AUTO", "HY2-BACKUP"]);
+      expect(cfg.route.final).toBe("DIRECT");
+      expect(cfg.route.rule_set).toEqual([{ type: "inline", tag: "blocked", rules: [
+        { domain: ["one.one.one.one"], domain_suffix: ["google.com"], domain_keyword: ["telegram"] },
+        { ip_cidr: ["8.8.8.0/24", "2001:4860::/32"] }
+      ] }]);
+      expect(cfg.route.rules).toContainEqual({ domain: ["cp.rwl265.com"], domain_suffix: ["cloudflareaccess.com"], action: "route", outbound: "PROXY" });
+      expect(cfg.dns.final).toBe("local");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("final=proxy is a full tunnel with no rule set and no fetch", async () => {
+    let fetched = false;
+    vi.stubGlobal("fetch", async () => { fetched = true; return new Response(moduleText); });
+    try {
+      const cfg = await (await publicSubscription(makeEnv(db()), token, "singbox", "proxy", null)).json() as { route: Record<string, unknown>; dns: Record<string, unknown> };
+      expect(fetched).toBe(false);
+      expect(cfg.route.final).toBe("PROXY");
+      expect(cfg.route.rule_set).toBeUndefined();
+      expect(cfg.dns.final).toBe("remote");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("answers 503 instead of a split config without its list", async () => {
+    vi.stubGlobal("fetch", async () => { throw new Error("timeout"); });
+    try {
+      const res = await publicSubscription(makeEnv(db()), token, "singbox", null, "cn");
+      expect(res.status).toBe(503);
     } finally {
       vi.unstubAllGlobals();
     }

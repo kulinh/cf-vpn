@@ -85,7 +85,7 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
       // token can't be brute-forced / scraped at high volume.
       const ipLimited = enforceRateLimit(`sub:${request.headers.get("CF-Connecting-IP") ?? "unknown"}`);
       if (ipLimited) return ipLimited;
-      return publicSubscription(env, subToken, url.searchParams.get("format"), url.searchParams.get("final"), url.searchParams.get("rules"));
+      return publicSubscription(env, subToken, url.searchParams.get("format"), url.searchParams.get("final"), url.searchParams.get("rules"), request.headers.get("user-agent"));
     }
 
     if (pathname === "/telegram/webhook" && request.method === "POST") {

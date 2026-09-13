@@ -7,6 +7,7 @@
 #   bash scripts/d1-set-node.sh <NODE_ID> xhttp-on|xhttp-off   # nodes.xhttp_enabled
 #   bash scripts/d1-set-node.sh <NODE_ID> xhttp-direct   # copy XHTTP_DIRECT_HOST/PATH from the node (empty = NULL)
 #   bash scripts/d1-set-node.sh <NODE_ID> xhttp-h3       # copy XHTTP_H3_HOST/PATH from the node (empty = NULL)
+#   bash scripts/d1-set-node.sh <NODE_ID> naive          # copy NAIVE_HOST/USER/PASS from the node (empty = NULL)
 #
 # Why: the Worker only persists reality_*/hy2_* when the panel itself calls
 # the agent (node status / user sync), both behind Cloudflare Access. After a
@@ -78,11 +79,18 @@ case "$ACTION" in
     payload="$(jq -cn --arg id "$NODE" --arg h "$hh" --arg p "$hp" \
       '{sql:"UPDATE nodes SET xhttp_h3_host=NULLIF(?,\"\"), xhttp_h3_path=NULLIF(?,\"\") WHERE id=?", params:[$h,$p,$id]}')"
     ;;
+  naive)
+    envtxt="$(node_env)"
+    g() { printf '%s\n' "$envtxt" | awk -F= -v k="$1" '$1==k{print substr($0, length(k)+2); exit}'; }
+    nh="$(g NAIVE_HOST)"; nu="$(g NAIVE_USER)"; np="$(g NAIVE_PASS)"
+    payload="$(jq -cn --arg id "$NODE" --arg h "$nh" --arg u "$nu" --arg p "$np" \
+      '{sql:"UPDATE nodes SET naive_host=NULLIF(?,\"\"), naive_user=NULLIF(?,\"\"), naive_pass=NULLIF(?,\"\") WHERE id=?", params:[$h,$u,$p,$id]}')"
+    ;;
   xhttp-on|xhttp-off)
     v=0; [ "$ACTION" = "xhttp-on" ] && v=1
     payload="$(jq -cn --arg id "$NODE" --argjson v "$v" '{sql:"UPDATE nodes SET xhttp_enabled=? WHERE id=?", params:[$v,$id]}')"
     ;;
-  *) echo "unknown action: $ACTION (hy2-off|hy2-on|reality|xhttp-on|xhttp-off|xhttp-direct|xhttp-h3)" >&2; exit 2 ;;
+  *) echo "unknown action: $ACTION (hy2-off|hy2-on|reality|xhttp-on|xhttp-off|xhttp-direct|xhttp-h3|naive)" >&2; exit 2 ;;
 esac
 
 out="$(d1_query "$payload")"
