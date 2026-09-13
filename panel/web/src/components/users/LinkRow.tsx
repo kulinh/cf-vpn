@@ -62,7 +62,7 @@ export function LinkRow({ label, fullLabel, copyValue, openHref, onOpen, onCopy,
 
 export function ClientBlock({ title, accent, children }: { title: string; accent: string; children: React.ReactNode }) {
   return (
-    <section className="mt-3 rounded-lg border border-slate-800 p-2">
+    <section className="mt-3 flex min-w-0 flex-col rounded-lg border border-slate-800 p-2 md:mt-0">
       <h3 className={`mb-2 text-xs font-semibold uppercase tracking-wide ${accent}`}>{title}</h3>
       <div className="space-y-1.5">{children}</div>
     </section>

@@ -131,7 +131,7 @@ export function UsersPage() {
               <p className="font-medium text-slate-100">{user.name}</p>
               <p className="mt-1 text-xs text-slate-400">Nodes: {user.nodes.join(', ')}</p>
               {sub ? (
-                <>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
                   <ClientBlock title="Shadowrocket" accent="text-sky-400">
                     <LinkRow
                       label="Subscription RWL"
@@ -179,7 +179,7 @@ export function UsersPage() {
                       />
                     ))}
                   </ClientBlock>
-                </>
+                </div>
               ) : (
                 <p className="mt-2 text-xs text-slate-500">Subscription not ready yet, please retry</p>
               )}
