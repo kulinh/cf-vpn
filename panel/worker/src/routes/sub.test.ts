@@ -573,6 +573,16 @@ describe("NaiveProxy and ?format=singbox", () => {
     expect(hiddify.split("\n")).toContain("naive://u1:p%40ss@cdn-82169439.duylinh.net:443?security=tls&sni=cdn-82169439.duylinh.net&uot=false#kulinh%40JPY-01-Naive");
   });
 
+  it("leaves naive:// out for Hiddify on iOS, where a naive outbound kills the core", async () => {
+    for (const ua of ["HiddifyNext/4.0.0 (ios) like ClashMeta v2ray sing-box", "HiddifyNextX/4.0.0 (iOS) like ClashMeta v2ray sing-box"]) {
+      const body = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, ua)).text());
+      expect(body).not.toContain("naive://");
+      expect(body).toContain("kulinh%40JPY-01-HY2");
+    }
+    const mac = atob(await (await publicSubscription(makeEnv(db()), token, null, null, null, "HiddifyNext/4.1.1 (macos) like ClashMeta v2ray sing-box")).text());
+    expect(mac).toContain("naive://");
+  });
+
   it("serves a split sing-box config with the module inlined as a rule set", async () => {
     vi.stubGlobal("fetch", async () => new Response(moduleText, { status: 200 }));
     try {
@@ -587,10 +597,14 @@ describe("NaiveProxy and ?format=singbox", () => {
       expect(byTag["AUTO"]).toMatchObject({ type: "urltest", outbounds: ["kulinh@JPY-02-Reality", "kulinh@JPY-01-HY2"] });
       expect((byTag["PROXY"].outbounds as string[]).slice(0, 2)).toEqual(["AUTO", "HY2-BACKUP"]);
       expect(cfg.route.final).toBe("DIRECT");
-      expect(cfg.route.rule_set).toEqual([{ type: "inline", tag: "blocked", rules: [
-        { domain: ["one.one.one.one"], domain_suffix: ["google.com"], domain_keyword: ["telegram"] },
-        { ip_cidr: ["8.8.8.0/24", "2001:4860::/32"] }
-      ] }]);
+      expect(cfg.route.rule_set).toEqual([
+        { type: "inline", tag: "blocked-domain", rules: [{ domain: ["one.one.one.one"], domain_suffix: ["google.com"], domain_keyword: ["telegram"] }] },
+        { type: "inline", tag: "blocked-ip", rules: [{ ip_cidr: ["8.8.8.0/24", "2001:4860::/32"] }] }
+      ]);
+      expect(cfg.route.rules).toContainEqual({ rule_set: ["blocked-domain", "blocked-ip"], action: "route", outbound: "PROXY" });
+      // sing-box 1.14 deprecates DNS rules that reach an ip_cidr rule set.
+      expect(cfg.dns.rules).toContainEqual({ rule_set: ["blocked-domain"], action: "route", server: "remote" });
+      expect(JSON.stringify(cfg.dns.rules)).not.toContain("blocked-ip");
       expect(cfg.route.rules).toContainEqual({ domain: ["cp.rwl265.com"], domain_suffix: ["cloudflareaccess.com"], action: "route", outbound: "PROXY" });
       expect(cfg.dns.final).toBe("local");
     } finally {
