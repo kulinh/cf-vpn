@@ -1,7 +1,7 @@
 import type { SubscriptionRow } from "./subscription";
 import { hasHy2, hasIPv6, hasNaive, ipv6Of, hy2Address, isCloudflareRow, isRealityRow, realityHost } from "./subscription";
 import { httpUpgradeName, hy2Name, hy2V6Name, naiveName, realityName, realityV6Name, xhttpH3Name } from "./clash";
-import { AUTO_MEMBERS } from "./shadowrocket";
+import { autoMembers } from "./shadowrocket";
 import type { ModuleRules } from "./cnrules";
 
 // A complete sing-box configuration (1.12+ syntax: typed DNS servers, rule
@@ -20,6 +20,10 @@ export type SingboxFinal = "direct" | "proxy";
 
 export interface SingboxOptions {
   final?: SingboxFinal;
+  // cn | uae | ru | none; "ru" swaps AUTO for the RU list (+ Naive, which
+  // sing-box can carry and which rides one HTTP/2 connection — the shape that
+  // survives TSPU's parallel-handshake rule).
+  rules?: string;
   // Control-plane hosts that must ride the proxy from China (leading dot =
   // whole zone), same meaning as in the Shadowrocket builder.
   alwaysProxyHosts?: string[];
@@ -149,9 +153,10 @@ export function buildSingboxConfig(username: string, rows: SubscriptionRow[], op
   // by the same node's HY2 route instead: also QUIC, and measured on par with
   // H3 from the home line (2026-09-13, VNM-01 -> JPY-03: ~10 MB/s for both,
   // REALITY ~3.5). Shadowrocket keeps H3.
-  const auto = [...new Set(AUTO_MEMBERS.map(([id, name]) =>
+  const auto = [...new Set(autoMembers(opts.rules).map(([id, name]) =>
     name === xhttpH3Name && !have.has(name(id)) ? hy2Name(id) : name(id)
   ))].filter((n) => have.has(n));
+  if (opts.rules === "ru" && have.has(naiveName("JPY-01"))) auto.push(naiveName("JPY-01"));
   const hy2 = tags.filter((t) => t.endsWith("-HY2"));
 
   const groups: Json[] = [];
