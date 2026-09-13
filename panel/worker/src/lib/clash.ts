@@ -55,41 +55,43 @@ function emitListItem(node: Node, indent: string, out: string[]): void {
 }
 
 // The proxy names are exactly the fragments of the base64 subscription's URIs,
-// so a user sees the same node names in Clash and in Shadowrocket.
-export function realityName(username: string, nodeId: string): string {
-  return `${username}@${nodeId}-Reality`;
+// so a user sees the same node names in Clash and in Shadowrocket. They carry
+// no user prefix (dropped 2026-09-13): every user gets their own subscription,
+// so "<user>@" only made the names long on a phone screen.
+export function realityName(nodeId: string): string {
+  return `${nodeId}-Reality`;
 }
-export function httpUpgradeName(username: string, nodeId: string): string {
-  return `${username}@${nodeId}-HTTPUpgrade`;
+export function httpUpgradeName(nodeId: string): string {
+  return `${nodeId}-HTTPUpgrade`;
 }
-export function hy2Name(username: string, nodeId: string): string {
-  return `${username}@${nodeId}-HY2`;
+export function hy2Name(nodeId: string): string {
+  return `${nodeId}-HY2`;
 }
 // IPv6 twins (public_ipv6 set). Manual picks only: never in an automatic group.
-export function realityV6Name(username: string, nodeId: string): string {
-  return `${realityName(username, nodeId)}${V6_SUFFIX}`;
+export function realityV6Name(nodeId: string): string {
+  return `${realityName(nodeId)}${V6_SUFFIX}`;
 }
-export function hy2V6Name(username: string, nodeId: string): string {
-  return `${hy2Name(username, nodeId)}${V6_SUFFIX}`;
+export function hy2V6Name(nodeId: string): string {
+  return `${hy2Name(nodeId)}${V6_SUFFIX}`;
 }
 export function isV6Name(name: string): boolean {
   return name.endsWith(V6_SUFFIX);
 }
 // XHTTP routes exist in the base64 subscription and the Shadowrocket groups
 // only: mihomo has no xhttp transport, so the Clash output omits them.
-export function xhttpName(username: string, nodeId: string): string {
-  return `${username}@${nodeId}-XHTTP`;
+export function xhttpName(nodeId: string): string {
+  return `${nodeId}-XHTTP`;
 }
-export function xhttpDirectName(username: string, nodeId: string): string {
-  return `${username}@${nodeId}-XHTTP-Direct`;
+export function xhttpDirectName(nodeId: string): string {
+  return `${nodeId}-XHTTP-Direct`;
 }
-export function xhttpH3Name(username: string, nodeId: string): string {
-  return `${username}@${nodeId}-XHTTP-H3`;
+export function xhttpH3Name(nodeId: string): string {
+  return `${nodeId}-XHTTP-H3`;
 }
 
 // sing-box and Hiddify only.
-export function naiveName(username: string, nodeId: string): string {
-  return `${username}@${nodeId}-Naive`;
+export function naiveName(nodeId: string): string {
+  return `${nodeId}-Naive`;
 }
 
 const AUTO_GROUP = "Auto";
@@ -118,14 +120,14 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
           "short-id": r.reality_sid!
         }
       });
-      proxies.push(reality(realityName(username, r.node_id), realityHost(r)));
+      proxies.push(reality(realityName(r.node_id), realityHost(r)));
       if (hasIPv6(r)) {
-        proxies.push(reality(realityV6Name(username, r.node_id), ipv6Of(r)!));
+        proxies.push(reality(realityV6Name(r.node_id), ipv6Of(r)!));
       }
     } else if (isCloudflareRow(r)) {
       const path = r.xhttp_path ?? "/api/v1/sync";
       proxies.push({
-        name: httpUpgradeName(username, r.node_id),
+        name: httpUpgradeName(r.node_id),
         type: "vless",
         server: r.vpn_host,
         port: 443,
@@ -156,9 +158,9 @@ function buildProxies(username: string, rows: SubscriptionRow[]): Node[] {
         obfs: "salamander",
         "obfs-password": r.hy2_obfs_pw!
       });
-      proxies.push(hy2(hy2Name(username, r.node_id), hy2Address(r)));
+      proxies.push(hy2(hy2Name(r.node_id), hy2Address(r)));
       if (hasIPv6(r)) {
-        proxies.push(hy2(hy2V6Name(username, r.node_id), ipv6Of(r)!));
+        proxies.push(hy2(hy2V6Name(r.node_id), ipv6Of(r)!));
       }
     }
   }

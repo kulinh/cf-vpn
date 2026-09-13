@@ -5,13 +5,18 @@ import { buildClashConfig } from "../lib/clash";
 import { buildShadowrocketConfig } from "../lib/shadowrocket";
 import { buildSingboxConfig } from "../lib/singbox";
 import { fetchModuleRules, isRuleSetKey, moduleURL, type ModuleRules } from "../lib/cnrules";
-import { RULES_MODE_KEY, getSetting } from "../lib/settings";
 import { error } from "../lib/http";
 
 const TOKEN_RE = /^[a-f0-9]{32}$/;
 
-// Profile name shown by clients; also the REMARKS= line inside the body.
-const PROFILE_TITLE = "RWL8899";
+// Profile names shown by clients. The node list (base64, Clash) is "RWL";
+// a config that carries rules is named after them — RWL-CN / RWL-UAE — so
+// the two profiles a traveller installs are told apart at a glance.
+const NODES_TITLE = "RWL";
+function profileTitle(final: string | null | undefined, rules: string): string {
+  if (final === "proxy") return "RWL-FULL";
+  return `RWL-${rules.toUpperCase()}`;
+}
 
 // Hiddify identifies itself as `HiddifyNext/<ver> (<os>) like ClashMeta ...`
 // (`HiddifyNextX/` with its Xray core). Only it gets naive:// lines in the
@@ -90,18 +95,13 @@ export async function publicSubscription(
 
   // Blacklist mode pulls the blocked-site module at the edge (GitHub is
   // reachable from Cloudflare, not from China) and inlines it. Full tunnel
-  // has no use for it.
-  // No ?rules= on the link: use the fleet-wide travel mode the operator set
-  // (Telegram /mode or `cfvpnctl rules-mode`), so an installed config link
-  // follows the trip without being edited. An explicit ?rules= always wins.
+  // has no use for it. The list is chosen by the link alone (?rules=cn|uae,
+  // default cn): one link per trip, nothing to switch fleet-wide.
+  const effectiveRules = rules ? rules : "cn";
+  const title = profileTitle(final, effectiveRules);
   const resolveRules = async (): Promise<{ wantsRules: boolean; source: string; moduleRules?: ModuleRules | null }> => {
-    let effective: string | null = rules ? rules : null;
-    if (effective == null && final !== "proxy") {
-      const stored = await getSetting(env, RULES_MODE_KEY);
-      effective = stored && (stored === "none" || isRuleSetKey(stored)) ? stored : "cn";
-    }
-    const wantsRules = final !== "proxy" && effective !== "none";
-    const source = moduleURL(effective && isRuleSetKey(effective) ? effective : "cn", env.RULES_BASE_URL || undefined);
+    const wantsRules = final !== "proxy" && effectiveRules !== "none";
+    const source = moduleURL(isRuleSetKey(effectiveRules) ? effectiveRules : "cn", env.RULES_BASE_URL || undefined);
     return { wantsRules, source, moduleRules: wantsRules ? await fetchModuleRules(source) : undefined };
   };
 
@@ -125,7 +125,7 @@ export async function publicSubscription(
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store, private",
         "profile-update-interval": "24",
-        "profile-title": `base64:${btoa(PROFILE_TITLE)}`
+        "profile-title": `base64:${btoa(title)}`
       }
     });
   }
@@ -146,7 +146,7 @@ export async function publicSubscription(
       status: 200,
       headers: {
         "content-type": "text/plain; charset=utf-8",
-        "content-disposition": `attachment; filename="${PROFILE_TITLE}.conf"`,
+        "content-disposition": `attachment; filename="${title}.conf"`,
         "cache-control": "no-store, private"
       }
     });
@@ -159,13 +159,13 @@ export async function publicSubscription(
         "content-type": "text/yaml; charset=utf-8",
         "cache-control": "no-store, private",
         "profile-update-interval": "24",
-        "profile-title": `base64:${btoa(PROFILE_TITLE)}`
+        "profile-title": `base64:${btoa(NODES_TITLE)}`
       }
     });
   }
 
   const naive = HIDDIFY_UA.test(userAgent ?? "") && !HIDDIFY_IOS_UA.test(userAgent ?? "");
-  const body = encodeSubscriptionBody(buildSubscriptionURIs(user.id, rows, { naive }), PROFILE_TITLE);
+  const body = encodeSubscriptionBody(buildSubscriptionURIs(user.id, rows, { naive }), NODES_TITLE);
   return new Response(body, {
     status: 200,
     headers: {
@@ -178,7 +178,7 @@ export async function publicSubscription(
       // refuse to auto-update. We have no traffic accounting to report anyway.
       // profile-title names the profile in clients that ignore the REMARKS=
       // line (a Shadowrocket-only convention).
-      "profile-title": `base64:${btoa(PROFILE_TITLE)}`
+      "profile-title": `base64:${btoa(NODES_TITLE)}`
     }
   });
 }

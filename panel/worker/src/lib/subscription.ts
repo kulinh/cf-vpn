@@ -187,7 +187,8 @@ export interface SubscriptionURIOptions {
 export function buildSubscriptionURIs(username: string, rows: SubscriptionRow[], opts: SubscriptionURIOptions = {}): string {
   const lines: string[] = [];
   for (const r of rows) {
-    const tag = `${username}@${r.node_id}`;
+    // Route name = "<NODE>-<Type>"; no user prefix (see clash.ts realityName).
+    const tag = r.node_id;
     let uri: string;
     if (isRealityRow(r)) {
       uri = buildVLESSRealityURI(tag, r.vless_uuid, realityHost(r),

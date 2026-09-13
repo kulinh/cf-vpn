@@ -4,6 +4,7 @@ import {
   buildShadowrocketDeepLink,
   buildHiddifyDeepLink,
   buildSingboxDeepLink,
+  buildShadowrocketConfUrl,
 } from './subscriptionLinks'
 
 describe('subscriptionLinks', () => {
@@ -16,7 +17,7 @@ describe('subscriptionLinks', () => {
   it('builds shadowrocket deep link with a sub:// pseudo-URI and standard base64 (with padding)', () => {
     const subUrl = 'https://panel.example.com/sub/abc123'
     expect(buildShadowrocketDeepLink(subUrl)).toBe(
-      `shadowrocket://add/sub://${btoa(subUrl)}?remark=${encodeURIComponent('RWL8899')}`,
+      `shadowrocket://add/sub://${btoa(subUrl)}?remark=${encodeURIComponent('RWL')}`,
     )
   })
 
@@ -36,7 +37,7 @@ describe('subscriptionLinks', () => {
     const encoded = btoa(subUrl)
     expect(encoded).toContain('/')
     expect(buildShadowrocketDeepLink(subUrl)).toBe(
-      `shadowrocket://add/sub://${encoded}?remark=${encodeURIComponent('RWL8899')}`,
+      `shadowrocket://add/sub://${encoded}?remark=${encodeURIComponent('RWL')}`,
     )
   })
 
@@ -50,10 +51,19 @@ describe('subscriptionLinks', () => {
     expect(buildHiddifyDeepLink(subUrl)).toBe(`hiddify://import/?url=${encodeURIComponent(subUrl)}`)
   })
 
-  it('builds a sing-box remote-profile link for the split-routing ?format=singbox config', () => {
+  it('builds a sing-box remote-profile link per rule set, named after it', () => {
     const subUrl = 'https://panel.example.com/sub/abc123'
     expect(buildSingboxDeepLink(subUrl)).toBe(
-      `sing-box://import-remote-profile?url=${encodeURIComponent(`${subUrl}?format=singbox`)}#RWL8899`,
+      `sing-box://import-remote-profile?url=${encodeURIComponent(`${subUrl}?format=singbox&rules=cn`)}#RWL-CN`,
+    )
+    expect(buildSingboxDeepLink(subUrl, 'uae')).toBe(
+      `sing-box://import-remote-profile?url=${encodeURIComponent(`${subUrl}?format=singbox&rules=uae`)}#RWL-UAE`,
+    )
+  })
+
+  it('builds the Shadowrocket remote-config URL per rule set', () => {
+    expect(buildShadowrocketConfUrl('https://panel.example.com/sub/abc123', 'uae')).toBe(
+      'https://panel.example.com/sub/abc123?format=shadowrocket&rules=uae',
     )
   })
 })

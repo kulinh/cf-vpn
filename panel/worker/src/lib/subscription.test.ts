@@ -11,14 +11,14 @@ import { buildSubscriptionURIs, buildVLESSXHTTPH3URI, type SubscriptionRow } fro
 describe("buildVLESSXHTTPH3URI", () => {
   it("matches the Go builder byte for byte", () => {
     const got = buildVLESSXHTTPH3URI(
-      "kulinh@JPY-03",
+      "JPY-03",
       "2f8a1c3e-1111-4222-8333-abcdefabcdef",
       "quic-b55170f3.dongnat247.com",
       "/3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10",
       "stream-one",
     );
     expect(got).toBe(
-      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#kulinh%40JPY-03-XHTTP-H3",
+      "vless://2f8a1c3e-1111-4222-8333-abcdefabcdef@quic-b55170f3.dongnat247.com:443?encryption=none&security=tls&type=xhttp&host=quic-b55170f3.dongnat247.com&path=%2F3e6f9770dcd50c915247c33fd08196de51072c667f2b2b10&mode=stream-one&alpn=h3&sni=quic-b55170f3.dongnat247.com#JPY-03-XHTTP-H3",
     );
   });
 });
@@ -49,9 +49,9 @@ describe("buildSubscriptionURIs with an H3 route", () => {
   it("emits REALITY, then H3, then HY2", () => {
     const lines = buildSubscriptionURIs("kulinh", [directH3Row]).split("\n");
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toContain("#kulinh%40JPY-03-Reality");
-    expect(lines[1]).toContain("#kulinh%40JPY-03-XHTTP-H3");
-    expect(lines[2]).toContain("#kulinh%40JPY-03-HY2");
+    expect(lines[0]).toContain("#JPY-03-Reality");
+    expect(lines[1]).toContain("#JPY-03-XHTTP-H3");
+    expect(lines[2]).toContain("#JPY-03-HY2");
   });
 
   it("dials the certificate hostname, not the public IP", () => {

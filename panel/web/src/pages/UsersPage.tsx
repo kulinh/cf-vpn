@@ -4,7 +4,7 @@ import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { getUserSubscription, listNodes, listUsers, upgradeUserNodes } from '../lib/api'
 import { describeLoadError } from '../lib/errors'
-import { buildHiddifyDeepLink, buildShadowrocketDeepLink, buildSingboxDeepLink } from '../lib/subscriptionLinks'
+import { RULE_SETS, buildHiddifyDeepLink, buildShadowrocketConfUrl, buildShadowrocketDeepLink, buildSingboxDeepLink, profileName, type RuleSet } from '../lib/subscriptionLinks'
 import type { UserSubscription } from '../lib/api'
 import type { Node, User } from '../lib/types'
 
@@ -170,13 +170,23 @@ export function UsersPage() {
     openDeepLink(buildHiddifyDeepLink(sub.subUrl))
   }
 
-  const handleSingbox = (userId: string) => {
+  const handleSingbox = (userId: string, rules: RuleSet) => {
     const sub = subs[userId]
     if (!sub) {
       setToastMessage('Subscription not ready yet, please retry')
       return
     }
-    openDeepLink(buildSingboxDeepLink(sub.subUrl))
+    openDeepLink(buildSingboxDeepLink(sub.subUrl, rules))
+  }
+
+  const handleCopyShadowrocketConf = async (userId: string, rules: RuleSet) => {
+    try {
+      const sub = subs[userId] ?? (await getUserSubscription(userId))
+      await navigator.clipboard.writeText(buildShadowrocketConfUrl(sub.subUrl, rules))
+      setToastMessage(`${profileName(rules)} config URL copied — Shadowrocket > Config > Add remote`)
+    } catch {
+      setToastMessage('Failed to copy config URL')
+    }
   }
 
   return (
@@ -214,10 +224,22 @@ export function UsersPage() {
                 <button
                   type="button"
                   onClick={() => void handleShadowrocket(user.id)}
+                  title="Add the node list to Shadowrocket; then add a RWL-CN / RWL-UAE config for the rules"
                   className="rounded bg-sky-600 px-3 py-1 text-xs text-white"
                 >
                   Shadowrocket
                 </button>
+                {RULE_SETS.map((r) => (
+                  <button
+                    key={`sr-${r.key}`}
+                    type="button"
+                    onClick={() => void handleCopyShadowrocketConf(user.id, r.key)}
+                    title={`Copy the ${profileName(r.key)} Shadowrocket config URL. ${r.hint}`}
+                    className="rounded bg-sky-800 px-3 py-1 text-xs text-white"
+                  >
+                    Copy conf {r.label}
+                  </button>
+                ))}
                 <button
                   type="button"
                   onClick={() => void handleHiddify(user.id)}
@@ -225,14 +247,17 @@ export function UsersPage() {
                 >
                   Hiddify
                 </button>
-                <button
-                  type="button"
-                  onClick={() => void handleSingbox(user.id)}
-                  title="sing-box app with rules: only blocked sites go through the proxy"
-                  className="rounded bg-violet-600 px-3 py-1 text-xs text-white"
-                >
-                  sing-box (rules)
-                </button>
+                {RULE_SETS.map((r) => (
+                  <button
+                    key={`sb-${r.key}`}
+                    type="button"
+                    onClick={() => void handleSingbox(user.id, r.key)}
+                    title={`sing-box profile ${profileName(r.key)}. ${r.hint}`}
+                    className="rounded bg-violet-600 px-3 py-1 text-xs text-white"
+                  >
+                    sing-box {r.label}
+                  </button>
+                ))}
                 <button
                   type="button"
                   disabled={isSyncing || isUpToDate}

@@ -208,7 +208,7 @@ test('Shadowrocket button opens a shadowrocket sub:// deep link via a synthetic 
     expect(anchorClickSpy).toHaveBeenCalledTimes(1)
     const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
     expect(anchor.href).toBe(
-      `shadowrocket://add/sub://${btoa(testSubscription.subUrl)}?remark=${encodeURIComponent('RWL8899')}`,
+      `shadowrocket://add/sub://${btoa(testSubscription.subUrl)}?remark=${encodeURIComponent('RWL')}`,
     )
   } finally {
     anchorClickSpy.mockRestore()
@@ -285,13 +285,13 @@ test('sing-box button opens a remote-profile link to the split-routing config', 
     await screen.findByText('kulinh')
     await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
 
-    fireEvent.click(screen.getByRole('button', { name: /sing-box/i }))
+    fireEvent.click(screen.getByRole('button', { name: /sing-box UAE/i }))
 
     expect(hrefSetter).not.toHaveBeenCalled()
     expect(anchorClickSpy).toHaveBeenCalledTimes(1)
     const anchor = anchorClickSpy.mock.instances[0] as unknown as HTMLAnchorElement
     expect(anchor.href).toBe(
-      `sing-box://import-remote-profile?url=${encodeURIComponent(`${testSubscription.subUrl}?format=singbox`)}#RWL8899`,
+      `sing-box://import-remote-profile?url=${encodeURIComponent(`${testSubscription.subUrl}?format=singbox&rules=uae`)}#RWL-UAE`,
     )
   } finally {
     anchorClickSpy.mockRestore()
@@ -389,4 +389,18 @@ test('Show QR ignores a stale response so one user\'s token never renders under 
   expect(within(document.body).getByText('User: bob')).toBeInTheDocument()
   expect(toCanvas).toHaveBeenCalledWith(expect.anything(), subFor('bob').subUrl, expect.anything())
   expect(toCanvas).not.toHaveBeenCalledWith(expect.anything(), subFor('alice').subUrl, expect.anything())
+})
+
+test('Copy conf UAE puts the Shadowrocket RWL-UAE config URL on the clipboard', async () => {
+  vi.spyOn(api, 'listUsers').mockResolvedValue([{ id: 'kulinh', name: 'kulinh', nodes: ['HK'] }])
+  vi.spyOn(api, 'listNodes').mockResolvedValue([makeNode('HK')])
+  vi.spyOn(api, 'getUserSubscription').mockResolvedValue(testSubscription)
+  const writeText = vi.fn().mockResolvedValue(undefined)
+  Object.assign(navigator, { clipboard: { writeText } })
+
+  render(<UsersPage />)
+  fireEvent.click(await screen.findByRole('button', { name: /copy conf UAE/i }))
+
+  expect(await screen.findByText(/RWL-UAE config URL copied/i)).toBeInTheDocument()
+  expect(writeText).toHaveBeenCalledWith(`${testSubscription.subUrl}?format=shadowrocket&rules=uae`)
 })

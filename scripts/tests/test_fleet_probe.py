@@ -16,18 +16,18 @@ spec.loader.exec_module(fp)
 SAMPLE = "\n".join([
     "REMARKS=RWL8899",
     "vless://11111111-2222-4333-8444-555555555555@96.9.231.74:443?encryption=none&security=reality"
-    "&flow=xtls-rprx-vision&type=tcp&sni=www.singaporeair.com&pbk=PBK&sid=4a2739d7c27cf56d&fp=chrome#kulinh%40SIN-01-Reality",
+    "&flow=xtls-rprx-vision&type=tcp&sni=www.singaporeair.com&pbk=PBK&sid=4a2739d7c27cf56d&fp=chrome#SIN-01-Reality",
     "vless://11111111-2222-4333-8444-555555555555@static-df60bd79.duylinh.org:443?encryption=none&security=tls"
-    "&type=httpupgrade&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv1%2Fsync&sni=static-df60bd79.duylinh.org#kulinh%40OR-001-HTTPUpgrade",
+    "&type=httpupgrade&host=static-df60bd79.duylinh.org&path=%2Fapi%2Fv1%2Fsync&sni=static-df60bd79.duylinh.org#OR-001-HTTPUpgrade",
     "hysteria2://kulinh:secretpw@hy-c36ca6bd.dongnat247.com:31300/?obfs=salamander&obfs-password=obfspw"
-    "&sni=hy-c36ca6bd.dongnat247.com&insecure=0#kulinh%40HKG-01-HY2",
+    "&sni=hy-c36ca6bd.dongnat247.com&insecure=0#HKG-01-HY2",
 ])
 
 
 def test_parse_decoded_text_in_order():
     routes = fp.parse_subscription(SAMPLE)
     assert [r.kind for r in routes] == ["vless", "vless", "hy2"]
-    assert [r.name for r in routes] == ["kulinh@SIN-01-Reality", "kulinh@OR-001-HTTPUpgrade", "kulinh@HKG-01-HY2"]
+    assert [r.name for r in routes] == ["SIN-01-Reality", "OR-001-HTTPUpgrade", "HKG-01-HY2"]
     assert routes[0].host == "96.9.231.74" and routes[0].port == 443
 
 
@@ -122,9 +122,9 @@ def test_load_env_keeps_quotes_verbatim(tmp_path):
 
 
 def test_duplicate_route_names_are_detected():
-    dup = SAMPLE + "\nvless://11111111-2222-4333-8444-555555555555@1.2.3.4:443?security=reality&sni=a&pbk=B#kulinh%40SIN-01-Reality"
+    dup = SAMPLE + "\nvless://11111111-2222-4333-8444-555555555555@1.2.3.4:443?security=reality&sni=a&pbk=B#SIN-01-Reality"
     assert fp.duplicate_names(fp.parse_subscription(SAMPLE)) == []
-    assert fp.duplicate_names(fp.parse_subscription(dup)) == ["kulinh@SIN-01-Reality"]
+    assert fp.duplicate_names(fp.parse_subscription(dup)) == ["SIN-01-Reality"]
 
 
 def _probe_env(tmp_path, **extra):
@@ -169,7 +169,7 @@ def test_fetch_failure_alerts_once_after_threshold_and_once_on_recovery(tmp_path
     assert len(sent) == 2 and "UP subscription: routes fetched again" in sent[1]
     state = json.load(open(tmp_path / "st" / "probe.state"))
     assert state[fp.FETCH_KEY] == {"fails": 0, "alerted": False}
-    assert state["kulinh@SIN-01-Reality"] == {"fails": 0, "alerted": False}
+    assert state["SIN-01-Reality"] == {"fails": 0, "alerted": False}
     assert fp.main(["--env", envf]) == 0
     assert len(sent) == 2                               # healthy run stays quiet
 
@@ -181,7 +181,7 @@ def test_empty_and_duplicate_subscriptions_alert_and_exit_2(tmp_path, monkeypatc
     assert fp.main(["--env", envf]) == 2
     assert len(sent) == 1 and "DOWN subscription: no routes in subscription (1 consecutive failures)" in sent[0]
 
-    dup = SAMPLE + "\nvless://11111111-2222-4333-8444-555555555555@1.2.3.4:443?security=tls#kulinh%40SIN-01-Reality"
+    dup = SAMPLE + "\nvless://11111111-2222-4333-8444-555555555555@1.2.3.4:443?security=tls#SIN-01-Reality"
     monkeypatch.setattr(fp, "fetch_subscription", lambda url: dup)
     assert fp.main(["--env", envf]) == 2                # already alerted: exit 2, no new message
     assert len(sent) == 1
@@ -190,7 +190,7 @@ def test_empty_and_duplicate_subscriptions_alert_and_exit_2(tmp_path, monkeypatc
     assert len(sent) == 2 and "UP subscription" in sent[1]
     monkeypatch.setattr(fp, "fetch_subscription", lambda url: dup)
     assert fp.main(["--env", envf]) == 2
-    assert "duplicate route names in subscription: kulinh@SIN-01-Reality" in sent[2]
+    assert "duplicate route names in subscription: SIN-01-Reality" in sent[2]
 
 
 def test_probe_run_crash_alerts_and_exits_2(tmp_path, monkeypatch):
@@ -258,7 +258,7 @@ def test_send_telegram_honours_429_retry_after(monkeypatch):
 
 def test_h3_outbound_carries_alpn():
     text = ("vless://u@quic.example.com:443?encryption=none&security=tls&type=xhttp&host=quic.example.com"
-            "&path=%2Fp&mode=stream-one&alpn=h3&sni=quic.example.com#kulinh%40JPY-03-XHTTP-H3")
+            "&path=%2Fp&mode=stream-one&alpn=h3&sni=quic.example.com#JPY-03-XHTTP-H3")
     (r,) = fp.parse_subscription(text)
     assert fp.xray_outbound(r)["streamSettings"]["tlsSettings"]["alpn"] == ["h3"]
 

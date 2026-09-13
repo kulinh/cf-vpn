@@ -13,7 +13,7 @@ import type { ModuleRules } from "./cnrules";
 // Reality nodes, the two nodes that keep Hysteria2, and the one cloudflare
 // route that stayed stable from China. Members the user does not have are
 // skipped so the group is always valid.
-export const AUTO_MEMBERS: ReadonlyArray<readonly [string, (u: string, n: string) => string]> = [
+export const AUTO_MEMBERS: ReadonlyArray<readonly [string, (n: string) => string]> = [
   ["JPY-02", realityName],
   ["SIN-01", realityName],
   // JPY-03 (Oracle Osaka, added 2026-09-12): a Japan route on a different
@@ -41,33 +41,33 @@ export function availableNames(username: string, rows: SubscriptionRow[]): strin
   const names: string[] = [];
   for (const r of rows) {
     if (isRealityRow(r)) {
-      names.push(realityName(username, r.node_id));
+      names.push(realityName(r.node_id));
       // IPv6 twin: PROXY only. It ends in -v6, so the HY2-BACKUP filter below
       // and AUTO (fixed IPv4 members) never pick it up.
       if (hasIPv6(r)) {
-        names.push(realityV6Name(username, r.node_id));
+        names.push(realityV6Name(r.node_id));
       }
       // Same inbound-level gate as buildSubscriptionURIs: H3 is independent of
       // REALITY and lives on the same direct node.
       if (hasXHTTPH3(r)) {
-        names.push(xhttpH3Name(username, r.node_id));
+        names.push(xhttpH3Name(r.node_id));
       }
     } else if (isCloudflareRow(r)) {
-      names.push(httpUpgradeName(username, r.node_id));
+      names.push(httpUpgradeName(r.node_id));
       if (hasXHTTP(r)) {
-        names.push(xhttpName(username, r.node_id));
+        names.push(xhttpName(r.node_id));
       }
       // Direct route: a standalone backup node in PROXY, never in AUTO.
       if (hasXHTTPDirect(r)) {
-        names.push(xhttpDirectName(username, r.node_id));
+        names.push(xhttpDirectName(r.node_id));
       }
     } else {
       continue;
     }
     if (hasHy2(r)) {
-      names.push(hy2Name(username, r.node_id));
+      names.push(hy2Name(r.node_id));
       if (hasIPv6(r)) {
-        names.push(hy2V6Name(username, r.node_id));
+        names.push(hy2V6Name(r.node_id));
       }
     }
   }
@@ -101,7 +101,7 @@ export function buildShadowrocketConfig(username: string, rows: SubscriptionRow[
   const final: ShadowrocketFinal = opts.final ?? "direct";
   const all = availableNames(username, rows);
   const have = new Set(all);
-  const members = AUTO_MEMBERS.map(([id, name]) => name(username, id)).filter((n) => have.has(n));
+  const members = AUTO_MEMBERS.map(([id, name]) => name(id)).filter((n) => have.has(n));
 
   const out: string[] = [
     "[General]",

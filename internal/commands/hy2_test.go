@@ -129,7 +129,7 @@ func TestBuildUserURIsHy2UsesPublicIPWithHostSNI(t *testing.T) {
 		"HY2_HOST": "udp-2aa9f681.duylinh.org", "HY2_PORT": "5331", "HY2_OBFS_PW": "o", "HY2_ENABLED": "1",
 	}
 	lines := buildUserURIs("kulinh", "uuid", "d.example", "pw", env, nil)
-	if len(lines) != 2 || lines[1] != "hysteria2://kulinh:pw@51.81.245.144:5331/?obfs=salamander&obfs-password=o&sni=udp-2aa9f681.duylinh.org&insecure=0#kulinh%40OR-001-HY2" {
+	if len(lines) != 2 || lines[1] != "hysteria2://kulinh:pw@51.81.245.144:5331/?obfs=salamander&obfs-password=o&sni=udp-2aa9f681.duylinh.org&insecure=0#OR-001-HY2" {
 		t.Fatalf("got %v", lines)
 	}
 }

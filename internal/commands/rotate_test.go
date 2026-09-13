@@ -653,7 +653,7 @@ func TestRunRotateDirectRegenerateSubscriptionsVLESSOnly(t *testing.T) {
 // emits "<name>@vpn" in the client email), RegenerateSubscriptions strips the
 // suffix once so subscription file names and URI fragments use the bare name.
 // This guards against the regression where users provisioned via install/rotate
-// templates ended up with `alice@vpn.txt` files and `#alice@vpn-HTTPUpgrade`
+// templates ended up with `alice@vpn.txt` files and `#vpn-HTTPUpgrade`
 // fragments while users added later via xray.AddUser produced bare names.
 func TestRegenerateSubscriptionsCloudflareTemplateStripsVpnSuffix(t *testing.T) {
 	withRotateDirectTempPaths(t)
