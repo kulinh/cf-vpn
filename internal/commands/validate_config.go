@@ -66,7 +66,7 @@ func realValidateXrayConfig(ctx context.Context, config []byte) error {
 	return nil
 }
 
-// defaultXrayAssetDir is where the Xray-install script puts geoip.dat and
+// defaultXrayAssetDir is where binary.EnsureXray puts geoip.dat and
 // geosite.dat. It must match the Environment= line in systemd.XrayService()
 // (internal/systemd/units.go), which is what the running service uses.
 const defaultXrayAssetDir = "/usr/local/share/xray"

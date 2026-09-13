@@ -130,7 +130,9 @@ func readTestFile(t *testing.T, path string) string {
 // failingIP makes install abort right after the tunnel step.
 type failingIP struct{}
 
-func (failingIP) Detect(context.Context) (string, error) { return "", errors.New("no route to metadata") }
+func (failingIP) Detect(context.Context) (string, error) {
+	return "", errors.New("no route to metadata")
+}
 
 // The cleanup hint deletes a tunnel and its credentials. When the tunnel was
 // REUSED (an existing node), printing that hint invites the operator to destroy

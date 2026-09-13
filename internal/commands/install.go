@@ -1043,13 +1043,104 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 
 	binRunner := resolveBinaryRunner(deps.BinaryRunner)
 	sysRunner := resolveRunner(deps.SystemdRunner)
-	domain := strings.TrimSpace(in.Domain)
-	zone := ""
-	zoneID := ""
-	if domain != "" {
-		zone = zoneOfDomain(domain)
-		if zone == "" {
-			return fmt.Errorf("resolve zone for %s: invalid domain", domain)
+	p := &installPlan{in: in, adminHost: adminHost}
+	if err := p.resolveHosts(ctx, deps, rng); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, "ensuring binaries...")
+	if err := ensureRuntimeBinaries(ctx, binRunner, false); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, "tuning network stack...")
+	tuneNetBestEffort(ctx, stdout, stderr)
+	fmt.Fprintln(stdout, "issuing certificates...")
+	p.hy2CertPath, p.hy2KeyPath = HysteriaCertPaths()
+	if err := deps.Cert.Issue(ctx, p.hy2Host, p.hy2CertPath, p.hy2KeyPath, in.CFAPIToken); err != nil {
+		return fmt.Errorf("issue cert for %s: %w", p.hy2Host, err)
+	}
+
+	if err := p.provisionAdminTunnel(ctx, deps.CF, stdout); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, "detecting public ip...")
+	ip, err := deps.IP.Detect(ctx)
+	if err != nil {
+		p.hint(stdout)
+		return fmt.Errorf("detect public ip: %w", err)
+	}
+	ip = strings.TrimSpace(ip)
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || !addr.Is4() {
+		return fmt.Errorf("detect public ip: expected IPv4 address, got %q", ip)
+	}
+	p.ip = ip
+
+	if err := p.generateCredentials(stdout); err != nil {
+		return err
+	}
+
+	if err := p.configureDNS(ctx, deps.CF, stdout); err != nil {
+		return err
+	}
+
+	if err := p.writeConfigs(ctx, stdout); err != nil {
+		return err
+	}
+
+	if err := p.saveEnv(); err != nil {
+		return err
+	}
+
+	fmt.Fprintln(stdout, "configuring dns (hy2)...")
+	if err := deps.CF.UpsertARecord(ctx, p.zoneID, p.hy2Host, p.ip); err != nil {
+		return fmt.Errorf("upsert hy2 dns a record: %w", err)
+	}
+
+	fmt.Fprintln(stdout, "installing systemd units...")
+	if err := installSystemdUnits(ctx, sysRunner); err != nil {
+		return err
+	}
+	installFirewall(ctx, deps.UFW, in.Mode, p.hy2Port, stderr)
+
+	p.printSummary(stdout)
+	return nil
+}
+
+// installPlan carries what RunInstall resolves and generates along the way
+// (hosts, tunnel, public IP, credentials) into the steps that consume it.
+type installPlan struct {
+	in        InstallInputs
+	adminHost string
+
+	domain, zone, zoneID        string
+	hy2Host, hy2Port, hy2ObfsPW string
+	hy2CertPath, hy2KeyPath     string
+
+	tunnelID string
+	// A reused tunnel belongs to a node that is already running. Failing after
+	// provisionAdminTunnel must never print the `rotate-domain --cleanup <uuid>`
+	// hint: following it deletes the live tunnel and its credentials.
+	reusedTunnel bool
+
+	ip            string
+	userUUID      string
+	hy2PassUser1  string
+	realityParams xray.RealityParams
+}
+
+// resolveHosts settles the VPN domain and its zone (picking a pool zone and
+// generating a host when none was given) and the HY2 host, port and obfs
+// password.
+func (p *installPlan) resolveHosts(ctx context.Context, deps InstallDeps, rng io.Reader) error {
+	var err error
+	p.domain = strings.TrimSpace(p.in.Domain)
+	if p.domain != "" {
+		p.zone = zoneOfDomain(p.domain)
+		if p.zone == "" {
+			return fmt.Errorf("resolve zone for %s: invalid domain", p.domain)
 		}
 	} else {
 		picked, err := zones.PickZone(rng, zones.DefaultPool, "")
@@ -1063,59 +1154,46 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		if _, err := deps.CF.GetZoneID(ctx, picked.Name); err != nil {
 			return fmt.Errorf("zone %s not found via CF token; check internal/zones/pool.go matches the token's account: %w", picked.Name, err)
 		}
-		domain = generated
-		zone = picked.Name
-		zoneID = picked.CFZoneID
+		p.domain = generated
+		p.zone = picked.Name
+		p.zoneID = picked.CFZoneID
 	}
 
-	hy2Host := in.Hy2Host
-	if hy2Host == "" {
-		hy2Host, err = zones.GenerateHy2Host(rng, zone)
+	p.hy2Host = p.in.Hy2Host
+	if p.hy2Host == "" {
+		p.hy2Host, err = zones.GenerateHy2Host(rng, p.zone)
 		if err != nil {
 			return fmt.Errorf("generate hy2 host: %w", err)
 		}
 	}
-	hy2Port := in.Hy2Port
-	if hy2Port == "" {
+	p.hy2Port = p.in.Hy2Port
+	if p.hy2Port == "" {
 		port, err := pickHy2UDPPort(ctx, rng, deps.UDPProber)
 		if err != nil {
 			return err
 		}
-		hy2Port = strconv.Itoa(port)
-	} else if _, err := validateHy2Port(hy2Port); err != nil {
+		p.hy2Port = strconv.Itoa(port)
+	} else if _, err := validateHy2Port(p.hy2Port); err != nil {
 		return err
 	}
-	hy2ObfsPW := in.Hy2ObfsPW
-	if hy2ObfsPW == "" {
-		hy2ObfsPW, err = generatePasswordFrom(rng, 24)
+	p.hy2ObfsPW = p.in.Hy2ObfsPW
+	if p.hy2ObfsPW == "" {
+		p.hy2ObfsPW, err = generatePasswordFrom(rng, 24)
 		if err != nil {
 			return fmt.Errorf("generate hy2 obfs password: %w", err)
 		}
 	}
+	return nil
+}
 
-	fmt.Fprintln(stdout, "ensuring binaries...")
-	if err := ensureRuntimeBinaries(ctx, binRunner, false); err != nil {
-		return err
-	}
-
-	fmt.Fprintln(stdout, "tuning network stack...")
-	tuneNetBestEffort(ctx, stdout, stderr)
-	fmt.Fprintln(stdout, "issuing certificates...")
-	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
-	if err := deps.Cert.Issue(ctx, hy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {
-		return fmt.Errorf("issue cert for %s: %w", hy2Host, err)
-	}
-
-	tunnelName := tunnelNameForNode(in.NodeID)
+// provisionAdminTunnel reuses ADMIN_TUNNEL_UUID when set, otherwise creates
+// the node's admin tunnel and writes its credentials.
+func (p *installPlan) provisionAdminTunnel(ctx context.Context, cf InstallCFClient, stdout io.Writer) error {
+	tunnelName := tunnelNameForNode(p.in.NodeID)
 	if tunnelName == "" {
-		return fmt.Errorf("derive tunnel name: NODE_ID %q is not a valid DNS label", in.NodeID)
+		return fmt.Errorf("derive tunnel name: NODE_ID %q is not a valid DNS label", p.in.NodeID)
 	}
-	var tunnelID string
-	// A reused tunnel belongs to a node that is already running. Failing after
-	// this point must never print the `rotate-domain --cleanup <uuid>` hint:
-	// following it deletes the live tunnel and its credentials.
-	reusedTunnel := false
-	if reuse := strings.TrimSpace(in.AdminTunnelUUID); reuse != "" {
+	if reuse := strings.TrimSpace(p.in.AdminTunnelUUID); reuse != "" {
 		// Reuse path: the tunnel secret is handed out once, at creation, so the
 		// credentials file on disk is the only copy. Without it the tunnel
 		// cannot be served, and minting a replacement behind the operator's
@@ -1128,122 +1206,122 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 				reuse, credPath, err, reuse)
 		}
 		fmt.Fprintf(stdout, "reusing admin tunnel %s...\n", reuse)
-		tunnelID = reuse
-		reusedTunnel = true
-	} else {
-		fmt.Fprintln(stdout, "creating admin tunnel...")
-		var (
-			creds []byte
-			err   error
-		)
-		tunnelID, creds, err = deps.CF.CreateTunnel(ctx, tunnelName)
-		if err != nil {
-			return fmt.Errorf("create tunnel: %w", err)
-		}
-		if tunnelID == "" {
-			return fmt.Errorf("create tunnel: empty tunnel id")
-		}
-		credPath := filepath.Join(cloudflaredCredDir, tunnelID+".json")
-		if err := writeAtomicFile(credPath, creds, 0o600); err != nil {
-			printRotateHint(stdout, "cfvpnctl install", tunnelID)
-			return fmt.Errorf("write tunnel credentials: %w", err)
-		}
+		p.tunnelID = reuse
+		p.reusedTunnel = true
+		return nil
 	}
-
-	hint := func() {
-		if reusedTunnel {
-			// Deliberately never prints the cleanup flag: this tunnel belongs
-			// to a node that is already running and must not be deleted.
-			fmt.Fprintf(stdout, "operation failed; admin tunnel %s was REUSED by this node — do NOT delete that tunnel, there is nothing to clean up\n", tunnelID)
-			fmt.Fprintf(stdout, "resume command: cfvpnctl install\n")
-			return
-		}
-		printRotateHint(stdout, "cfvpnctl install", tunnelID)
-	}
-
-	fmt.Fprintln(stdout, "detecting public ip...")
-	ip, err := deps.IP.Detect(ctx)
+	fmt.Fprintln(stdout, "creating admin tunnel...")
+	tunnelID, creds, err := cf.CreateTunnel(ctx, tunnelName)
+	p.tunnelID = tunnelID
 	if err != nil {
-		hint()
-		return fmt.Errorf("detect public ip: %w", err)
+		return fmt.Errorf("create tunnel: %w", err)
 	}
-	ip = strings.TrimSpace(ip)
-	addr, err := netip.ParseAddr(ip)
-	if err != nil || !addr.Is4() {
-		return fmt.Errorf("detect public ip: expected IPv4 address, got %q", ip)
+	if tunnelID == "" {
+		return fmt.Errorf("create tunnel: empty tunnel id")
 	}
+	credPath := filepath.Join(cloudflaredCredDir, tunnelID+".json")
+	if err := writeAtomicFile(credPath, creds, 0o600); err != nil {
+		printRotateHint(stdout, "cfvpnctl install", tunnelID)
+		return fmt.Errorf("write tunnel credentials: %w", err)
+	}
+	return nil
+}
 
-	userUUID, err := GenerateUUIDv4()
+// hint prints how to resume (and, for a tunnel this run created, how to clean
+// up) after a failure past tunnel provisioning.
+func (p *installPlan) hint(stdout io.Writer) {
+	if p.reusedTunnel {
+		// Deliberately never prints the cleanup flag: this tunnel belongs
+		// to a node that is already running and must not be deleted.
+		fmt.Fprintf(stdout, "operation failed; admin tunnel %s was REUSED by this node — do NOT delete that tunnel, there is nothing to clean up\n", p.tunnelID)
+		fmt.Fprintf(stdout, "resume command: cfvpnctl install\n")
+		return
+	}
+	printRotateHint(stdout, "cfvpnctl install", p.tunnelID)
+}
+
+// generateCredentials mints user1's VLESS UUID and HY2 password and, in direct
+// mode, the Reality keypair.
+func (p *installPlan) generateCredentials(stdout io.Writer) error {
+	var err error
+	p.userUUID, err = GenerateUUIDv4()
 	if err != nil {
 		return fmt.Errorf("generate uuid: %w", err)
 	}
-	hy2PassUser1 := in.Hy2PassUser1
-	if hy2PassUser1 == "" {
-		hy2PassUser1, err = GeneratePassword(24)
+	p.hy2PassUser1 = p.in.Hy2PassUser1
+	if p.hy2PassUser1 == "" {
+		p.hy2PassUser1, err = GeneratePassword(24)
 		if err != nil {
 			return fmt.Errorf("generate hy2 user password: %w", err)
 		}
 	}
-
-	var realityParams xray.RealityParams
-	if in.Mode == "direct" {
-		var err error
-		realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{Dest: in.RealityDest, SNI: in.RealitySNI})
+	if p.in.Mode == "direct" {
+		p.realityParams, err = xray.GenerateRealityParams(xray.GenerateRealityOptions{Dest: p.in.RealityDest, SNI: p.in.RealitySNI})
 		if err != nil {
 			return fmt.Errorf("generate reality params: %w", err)
 		}
-		fmt.Fprintf(stdout, "generated Reality keypair (pub: %s, dest %s)\n", realityParams.PublicKey, realityParams.Dest)
+		fmt.Fprintf(stdout, "generated Reality keypair (pub: %s, dest %s)\n", p.realityParams.PublicKey, p.realityParams.Dest)
 	}
+	return nil
+}
 
+// configureDNS points the VPN host at the node (A record in direct mode, tunnel
+// CNAME in cloudflare mode) and the admin host at the tunnel.
+func (p *installPlan) configureDNS(ctx context.Context, cf InstallCFClient, stdout io.Writer) error {
 	fmt.Fprintln(stdout, "configuring dns...")
-	if zoneID == "" {
-		zone := zoneOfDomain(domain)
+	if p.zoneID == "" {
+		zone := zoneOfDomain(p.domain)
 		var err error
-		zoneID, err = deps.CF.GetZoneID(ctx, zone)
+		p.zoneID, err = cf.GetZoneID(ctx, zone)
 		if err != nil {
-			hint()
+			p.hint(stdout)
 			return fmt.Errorf("get zone id for %s: %w", zone, err)
 		}
 	}
-	if in.Mode == "direct" {
-		if err := deps.CF.UpsertARecord(ctx, zoneID, domain, ip); err != nil {
+	if p.in.Mode == "direct" {
+		if err := cf.UpsertARecord(ctx, p.zoneID, p.domain, p.ip); err != nil {
 			return fmt.Errorf("upsert dns a record: %w", err)
 		}
 	} else {
-		if err := deps.CF.UpsertCNAME(ctx, zoneID, domain, tunnelID+".cfargotunnel.com"); err != nil {
+		if err := cf.UpsertCNAME(ctx, p.zoneID, p.domain, p.tunnelID+".cfargotunnel.com"); err != nil {
 			return fmt.Errorf("upsert vpn dns cname: %w", err)
 		}
 	}
-	adminZoneID, err := deps.CF.GetZoneID(ctx, adminHostZone)
+	adminZoneID, err := cf.GetZoneID(ctx, adminHostZone)
 	if err != nil {
-		hint()
+		p.hint(stdout)
 		return fmt.Errorf("get zone id for %s: %w", adminHostZone, err)
 	}
-	if err := deps.CF.UpsertCNAME(ctx, adminZoneID, adminHost, tunnelID+".cfargotunnel.com"); err != nil {
+	if err := cf.UpsertCNAME(ctx, adminZoneID, p.adminHost, p.tunnelID+".cfargotunnel.com"); err != nil {
 		return fmt.Errorf("upsert admin dns cname: %w", err)
 	}
+	return nil
+}
 
+// writeConfigs renders and writes the xray, hysteria and cloudflared configs.
+func (p *installPlan) writeConfigs(ctx context.Context, stdout io.Writer) error {
 	fmt.Fprintln(stdout, "rendering configs...")
-	users := []templates.XrayUser{{Name: in.User1Name, UUID: userUUID}}
+	users := []templates.XrayUser{{Name: p.in.User1Name, UUID: p.userUUID}}
 	var xrayRendered string
-	if in.Mode == "direct" {
+	var err error
+	if p.in.Mode == "direct" {
 		// A fresh install has no H3 route yet (the operator enables it
 		// afterwards with `cfvpnctl xhttp-h3`), so there is no env to read
 		// here — but it still goes through the helper so this call site can
 		// never be the one that silently drops the inbound.
 		xrayRendered, err = templates.RenderXrayDirectReality(WithH3FromEnv(templates.XrayDirectRealityInputs{
 			Users:       users,
-			PrivateKey:  realityParams.PrivateKey,
-			ShortIDs:    []string{realityParams.ShortID},
-			Dest:        realityParams.Dest,
-			ServerNames: []string{realityParams.SNI},
-			DNSServers:  xrayDNSServersCSV(in.XrayDNSServers),
+			PrivateKey:  p.realityParams.PrivateKey,
+			ShortIDs:    []string{p.realityParams.ShortID},
+			Dest:        p.realityParams.Dest,
+			ServerNames: []string{p.realityParams.SNI},
+			DNSServers:  xrayDNSServersCSV(p.in.XrayDNSServers),
 		}, nil))
 		if err != nil {
 			return fmt.Errorf("render xray reality config: %w", err)
 		}
 	} else {
-		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, domain, xrayDNSServersCSV(in.XrayDNSServers))
+		xrayRendered, err = templates.RenderXrayCloudflareHTTPUpgrade(users, p.domain, xrayDNSServersCSV(p.in.XrayDNSServers))
 		if err != nil {
 			return fmt.Errorf("render xray cloudflare config: %w", err)
 		}
@@ -1251,7 +1329,7 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
 		return fmt.Errorf("write xray config: %w", err)
 	}
-	hyRendered, err := templates.RenderHysteriaConfig(templates.HysteriaInputs{Listen: ":" + hy2Port, TLSCert: hy2CertPath, TLSKey: hy2KeyPath, ObfsPW: hy2ObfsPW, UpMbps: 100, DownMbps: 100, Users: []templates.HysteriaUser{{Name: in.User1Name, Password: hy2PassUser1}}})
+	hyRendered, err := templates.RenderHysteriaConfig(templates.HysteriaInputs{Listen: ":" + p.hy2Port, TLSCert: p.hy2CertPath, TLSKey: p.hy2KeyPath, ObfsPW: p.hy2ObfsPW, UpMbps: 100, DownMbps: 100, Users: []templates.HysteriaUser{{Name: p.in.User1Name, Password: p.hy2PassUser1}}})
 	if err != nil {
 		return fmt.Errorf("render hysteria config: %w", err)
 	}
@@ -1259,13 +1337,13 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 		return fmt.Errorf("write hysteria config: %w", err)
 	}
 	var cfRendered string
-	if in.Mode == "direct" {
-		cfRendered, err = templates.RenderCloudflaredAdmin(tunnelID, adminHost, "")
+	if p.in.Mode == "direct" {
+		cfRendered, err = templates.RenderCloudflaredAdmin(p.tunnelID, p.adminHost, "")
 		if err != nil {
 			return fmt.Errorf("render cloudflared admin config: %w", err)
 		}
 	} else {
-		cfRendered, err = templates.RenderCloudflaredWithAdmin(tunnelID, domain, adminHost, "")
+		cfRendered, err = templates.RenderCloudflaredWithAdmin(p.tunnelID, p.domain, p.adminHost, "")
 		if err != nil {
 			return fmt.Errorf("render cloudflared config: %w", err)
 		}
@@ -1273,7 +1351,11 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if err := writeAtomicFile(cloudflaredConfig, []byte(cfRendered), 0o600); err != nil {
 		return fmt.Errorf("write cloudflared config: %w", err)
 	}
+	return nil
+}
 
+// saveEnv writes the install's keys into cfvpn.env.
+func (p *installPlan) saveEnv() error {
 	// Start from any existing env file so operator-supplied keys (notably
 	// AGENT_SHARED_SECRET, which install-node.sh writes before invoking
 	// `cfvpnctl install`) survive the rewrite.
@@ -1281,39 +1363,54 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 	if err != nil {
 		envMap = map[string]string{}
 	}
-	envMap["CF_API_TOKEN"] = in.CFAPIToken
-	envMap["CF_ACCOUNT_ID"] = in.CFAccountID
-	envMap["NODE_ID"] = in.NodeID
-	envMap["DOMAIN"] = domain
-	envMap["USER1_NAME"] = in.User1Name
-	envMap["MODE"] = in.Mode
-	envMap["PUBLIC_IP"] = ip
-	envMap["ADMIN_HOST"] = adminHost
-	envMap["ADMIN_TUNNEL_UUID"] = tunnelID
-	envMap["UUID_USER1"] = userUUID
-	envMap["HY2_HOST"] = hy2Host
-	envMap["HY2_PORT"] = hy2Port
-	envMap["HY2_OBFS_PW"] = hy2ObfsPW
-	envMap["HY2_PASS_USER1"] = hy2PassUser1
-	if in.Mode == "direct" {
-		envMap[state.KeyRealityPriv] = realityParams.PrivateKey
-		envMap[state.KeyRealityPub] = realityParams.PublicKey
-		envMap[state.KeyRealityShortID] = realityParams.ShortID
-		envMap[state.KeyRealityDest] = realityParams.Dest
-		envMap[state.KeyRealitySNI] = realityParams.SNI
+	envMap["CF_API_TOKEN"] = p.in.CFAPIToken
+	envMap["CF_ACCOUNT_ID"] = p.in.CFAccountID
+	envMap["NODE_ID"] = p.in.NodeID
+	envMap["DOMAIN"] = p.domain
+	envMap["USER1_NAME"] = p.in.User1Name
+	envMap["MODE"] = p.in.Mode
+	envMap["PUBLIC_IP"] = p.ip
+	envMap["ADMIN_HOST"] = p.adminHost
+	envMap["ADMIN_TUNNEL_UUID"] = p.tunnelID
+	envMap["UUID_USER1"] = p.userUUID
+	envMap["HY2_HOST"] = p.hy2Host
+	envMap["HY2_PORT"] = p.hy2Port
+	envMap["HY2_OBFS_PW"] = p.hy2ObfsPW
+	envMap["HY2_PASS_USER1"] = p.hy2PassUser1
+	if p.in.Mode == "direct" {
+		envMap[state.KeyRealityPriv] = p.realityParams.PrivateKey
+		envMap[state.KeyRealityPub] = p.realityParams.PublicKey
+		envMap[state.KeyRealityShortID] = p.realityParams.ShortID
+		envMap[state.KeyRealityDest] = p.realityParams.Dest
+		envMap[state.KeyRealitySNI] = p.realityParams.SNI
 	} else {
 		envMap[state.KeyXHTTPPath] = templates.VLESSPath
 	}
 	if err := state.SaveAtomic(envFilePath, envMap, 0o600); err != nil {
 		return fmt.Errorf("save env: %w", err)
 	}
+	return nil
+}
 
-	fmt.Fprintln(stdout, "configuring dns (hy2)...")
-	if err := deps.CF.UpsertARecord(ctx, zoneID, hy2Host, ip); err != nil {
-		return fmt.Errorf("upsert hy2 dns a record: %w", err)
+// printSummary prints the completion line and user1's base64 subscription as
+// the final stdout line.
+func (p *installPlan) printSummary(stdout io.Writer) {
+	fmt.Fprintf(stdout, "install complete: %s mode %s -> %s, admin %s\n", p.in.Mode, p.domain, p.ip, p.adminHost)
+	var vlessURI string
+	if p.in.Mode == "direct" {
+		vlessURI = subscription.BuildVLESSRealityURI(p.in.User1Name, p.userUUID, p.ip,
+			p.realityParams.SNI, p.realityParams.PublicKey, p.realityParams.ShortID)
+	} else {
+		// Phase 0: XHTTP failed through cloudflared; using HTTPUpgrade instead
+		vlessURI = subscription.BuildVLESSHTTPUpgradeURI(p.in.User1Name, p.userUUID, p.domain, templates.VLESSPath)
 	}
+	sub := base64.StdEncoding.EncodeToString([]byte(vlessURI))
+	fmt.Fprintln(stdout, sub)
+}
 
-	fmt.Fprintln(stdout, "installing systemd units...")
+// installSystemdUnits writes the canonical unit set, reloads systemd and
+// enables every cfvpn service and timer.
+func installSystemdUnits(ctx context.Context, sysRunner systemd.Runner) error {
 	// Single source of truth for the unit set (shared with reconcile) so a fresh
 	// install can't drift from what reconcile expects — previously this map
 	// omitted the healthcheck service+timer, leaving new nodes without it.
@@ -1330,27 +1427,20 @@ func RunInstall(ctx context.Context, in InstallInputs, deps InstallDeps, stdout,
 			return fmt.Errorf("enable %s: %w", svc, err)
 		}
 	}
-	if in.Mode == "direct" {
-		if err := deps.UFW.Allow(ctx, "443/tcp"); err != nil && stderr != nil {
+	return nil
+}
+
+// installFirewall opens 443/tcp (direct mode) and the HY2 UDP port. Failures
+// only warn and never fail the install.
+func installFirewall(ctx context.Context, ufw UFWRunner, mode, hy2Port string, stderr io.Writer) {
+	if mode == "direct" {
+		if err := ufw.Allow(ctx, "443/tcp"); err != nil && stderr != nil {
 			fmt.Fprintf(stderr, "warning: ufw allow 443/tcp failed: %v\n", err)
 		}
 	}
-	if err := deps.UFW.Allow(ctx, hy2Port+"/udp"); err != nil && stderr != nil {
+	if err := ufw.Allow(ctx, hy2Port+"/udp"); err != nil && stderr != nil {
 		fmt.Fprintf(stderr, "warning: ufw allow %s/udp failed: %v\n", hy2Port, err)
 	}
-
-	fmt.Fprintf(stdout, "install complete: %s mode %s -> %s, admin %s\n", in.Mode, domain, ip, adminHost)
-	var vlessURI string
-	if in.Mode == "direct" {
-		vlessURI = subscription.BuildVLESSRealityURI(in.User1Name, userUUID, ip,
-			realityParams.SNI, realityParams.PublicKey, realityParams.ShortID)
-	} else {
-		// Phase 0: XHTTP failed through cloudflared; using HTTPUpgrade instead
-		vlessURI = subscription.BuildVLESSHTTPUpgradeURI(in.User1Name, userUUID, domain, templates.VLESSPath)
-	}
-	sub := base64.StdEncoding.EncodeToString([]byte(vlessURI))
-	fmt.Fprintln(stdout, sub)
-	return nil
 }
 
 // tunnelNameForNode derives the Cloudflare tunnel name from a node's NODE_ID,
@@ -1483,10 +1573,6 @@ func printRotateHint(stdout io.Writer, resumeCmd, tunnelID string) {
 	fmt.Fprintf(stdout, "cleanup command: cfvpnctl rotate-domain --cleanup %s\n", tunnelID)
 }
 
-func CertPathsForHost(host string) (certPath, keyPath string) {
-	return filepath.Join("/etc/cfvpn/certs", host, "fullchain.pem"), filepath.Join("/etc/cfvpn/certs", host, "privkey.pem")
-}
-
 // hysteriaCertDir holds the Hysteria2 leaf + key. It is a var so tests can
 // redirect it: without that, anything exercising cert issue/renew would read
 // and write the real /etc/cfvpn/hysteria of the machine running `go test`.
@@ -1494,8 +1580,4 @@ var hysteriaCertDir = "/etc/cfvpn/hysteria"
 
 func HysteriaCertPaths() (certPath, keyPath string) {
 	return filepath.Join(hysteriaCertDir, "cert.pem"), filepath.Join(hysteriaCertDir, "key.pem")
-}
-
-func XrayCertPaths() (certPath, keyPath string) {
-	return "/etc/cfvpn/xray/cert.pem", "/etc/cfvpn/xray/key.pem"
 }

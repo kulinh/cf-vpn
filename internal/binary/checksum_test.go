@@ -136,3 +136,67 @@ func TestVerifyFileSHA256(t *testing.T) {
 		t.Fatal("missing file accepted")
 	}
 }
+
+// The layout of Xray-core's Xray-linux-64.zip.dgst (v26.3.27).
+const xrayRealDgst = `MD5= ee4e2ff74948a9b464624b1cabc44409
+SHA1= b55b06e74e89083b9cedfdecf0d68b579cd2af72
+SHA2-256= 23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+SHA2-512= e8bc40a0687cac184bbe4b5c1f047e69064ccedc489fb25e208889ae287bbf8736dff16b108d68fc00dc33edc8bb53502e47a9698a277f4f51b67b83d899e518
+`
+
+func TestExpectedSHA256DgstPicksTheSHA256Line(t *testing.T) {
+	got, err := ExpectedSHA256Dgst([]byte(xrayRealDgst), "/tmp/x/Xray-linux-64.zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae" {
+		t.Fatalf("digest = %s", got)
+	}
+}
+
+func TestExpectedSHA256DgstRejectsMissingOrMalformed(t *testing.T) {
+	for name, body := range map[string]string{
+		"only weak digests": "MD5= ee4e2ff74948a9b464624b1cabc44409\nSHA1= b55b06e74e89083b9cedfdecf0d68b579cd2af72\n",
+		"short digest":      "SHA2-256= 23cd9af9\n",
+		"not hex":           "SHA2-256= " + strings.Repeat("z", 64) + "\n",
+		"empty":             "",
+		// A sha256sum-style line is not a .dgst and must not be read as one.
+		"sha256sum format": "23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae  Xray-linux-64.zip\n",
+	} {
+		if _, err := ExpectedSHA256Dgst([]byte(body), "Xray-linux-64.zip"); err == nil {
+			t.Errorf("%s: accepted %q", name, body)
+		}
+	}
+}
+
+func TestVerifyFileSHA256Dgst(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "Xray-linux-64.zip")
+	const body = "zip-bytes"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(body))
+	if err := VerifyFileSHA256Dgst(path, []byte("MD5= x\nSHA2-256= "+hex.EncodeToString(sum[:])+"\n")); err != nil {
+		t.Fatalf("valid archive rejected: %v", err)
+	}
+	if err := VerifyFileSHA256Dgst(path, []byte(xrayRealDgst)); err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("tampered archive: err = %v", err)
+	}
+}
+
+// Hysteria's hashes.txt names builds as build/<asset>; the entry is matched on
+// its base name, and the -avx build (whose name extends ours) must not match.
+func TestExpectedSHA256HysteriaHashesLayout(t *testing.T) {
+	hashes := []byte("1111111111111111111111111111111111111111111111111111111111111111  build/hysteria-linux-amd64-avx\n" +
+		"2222222222222222222222222222222222222222222222222222222222222222  build/hysteria-linux-amd64\n" +
+		"3333333333333333333333333333333333333333333333333333333333333333  build/hysteria-linux-arm64\n")
+	for asset, want := range map[string]string{
+		"hysteria-linux-amd64": "2222222222222222222222222222222222222222222222222222222222222222",
+		"hysteria-linux-arm64": "3333333333333333333333333333333333333333333333333333333333333333",
+	} {
+		got, err := ExpectedSHA256(hashes, "/tmp/d/"+asset)
+		if err != nil || got != want {
+			t.Errorf("%s: got %q, %v; want %s", asset, got, err, want)
+		}
+	}
+}

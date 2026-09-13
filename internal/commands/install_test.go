@@ -1,9 +1,12 @@
 package commands
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -1591,7 +1594,7 @@ func TestRunUpgradeWithBinariesForcesInstallAndRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	binRunner := &installRecorder{}
+	binRunner := &releaseDownloadFaker{}
 	sysRunner := &installRecorder{}
 	deps := InstallDeps{
 		CF:            &fakeInstallCF{zones: map[string]string{"example.com": "zone-1", adminHostZone: "admin-zone"}},
@@ -1609,7 +1612,7 @@ func TestRunUpgradeWithBinariesForcesInstallAndRestarts(t *testing.T) {
 	}
 
 	binCalls := strings.Join(flattenCalls(binRunner.calls), "\n")
-	for _, want := range []string{"Xray-install", "get.hy2.sh"} {
+	for _, want := range []string{"XTLS/Xray-core/releases", "/usr/local/bin/xray", "apernet/hysteria/releases", "/usr/local/bin/hysteria"} {
 		if !strings.Contains(binCalls, want) {
 			t.Fatalf("binary runner never ran the %s installer:\n%s", want, binCalls)
 		}
@@ -1646,11 +1649,63 @@ func TestRunUpgradeWithoutBinariesLeavesInstallersAlone(t *testing.T) {
 		t.Fatalf("RunUpgrade: %v", err)
 	}
 	calls := strings.Join(flattenCalls(binRunner.calls), "\n")
-	for _, unwanted := range []string{"Xray-install", "get.hy2.sh"} {
+	for _, unwanted := range []string{"XTLS/Xray-core", "apernet/hysteria"} {
 		if strings.Contains(calls, unwanted) {
 			t.Fatalf("plain upgrade ran the %s installer (binaries must be opt-in):\n%s", unwanted, calls)
 		}
 	}
+}
+
+// releaseDownloadFaker records binary-runner calls like installRecorder and,
+// on a release download call ("bash -lc <script> $0 <workdir> <asset>"), drops
+// a verifiable asset plus its checksum file where curl would have left them.
+type releaseDownloadFaker struct {
+	installRecorder
+}
+
+func (f *releaseDownloadFaker) Run(ctx context.Context, name string, args ...string) error {
+	if err := f.installRecorder.Run(ctx, name, args...); err != nil {
+		return err
+	}
+	if name != "bash" || len(args) < 5 || !strings.Contains(args[1], "releases/latest/download") {
+		return nil
+	}
+	dir, asset := args[3], args[4]
+	digest := func(b []byte) string {
+		sum := sha256.Sum256(b)
+		return hex.EncodeToString(sum[:])
+	}
+	write := func(name string, b []byte) error {
+		return os.WriteFile(filepath.Join(dir, name), b, 0o600)
+	}
+	switch {
+	case strings.HasPrefix(asset, "Xray-"):
+		var buf bytes.Buffer
+		zw := zip.NewWriter(&buf)
+		for _, n := range []string{"xray", "geoip.dat", "geosite.dat"} {
+			w, err := zw.Create(n)
+			if err != nil {
+				return err
+			}
+			if _, err := w.Write([]byte("fake " + n)); err != nil {
+				return err
+			}
+		}
+		if err := zw.Close(); err != nil {
+			return err
+		}
+		if err := write(asset, buf.Bytes()); err != nil {
+			return err
+		}
+		return write(asset+".dgst", []byte("SHA2-256= "+digest(buf.Bytes())+"\n"))
+	case strings.HasPrefix(asset, "hysteria-"):
+		body := []byte("fake hysteria")
+		if err := write(asset, body); err != nil {
+			return err
+		}
+		return write("hashes.txt", []byte(digest(body)+"  build/"+asset+"\n"))
+	}
+	return nil
 }
 
 func flattenCalls(calls [][]string) []string {

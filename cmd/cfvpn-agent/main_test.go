@@ -2,10 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kulinh/cf-vpn/internal/commands"
 )
 
 // H7/H8 at the agent boundary: a rotate request is the one place where a
@@ -182,5 +185,81 @@ func TestStatusResponseNaiveRoute(t *testing.T) {
 		if _, ok := got[k]; ok {
 			t.Errorf("%s must be omitted when unset", k)
 		}
+	}
+}
+
+// M4: every body-reading handler caps the body at maxRequestBody and answers
+// 413 before doing any work (no lock, no config read).
+func TestBodyReadingHandlersRejectOversizedBodies(t *testing.T) {
+	// Syntactically valid JSON so that only the size can be the reason.
+	huge := `{"new_host":"` + strings.Repeat("a", maxRequestBody+1) + `"}`
+	for path, h := range map[string]http.HandlerFunc{
+		"/admin/v1/rotate-domain": handleRotateDomain,
+		"/admin/v1/sync":          handleSync,
+		"/admin/v1/users":         handleUsers,
+	} {
+		rec := httptest.NewRecorder()
+		h(rec, httptest.NewRequest(http.MethodPost, path, strings.NewReader(huge)))
+		if rec.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s: status = %d, want 413; body: %.200s", path, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), "body_too_large") {
+			t.Errorf("%s: body = %.200s", path, rec.Body.String())
+		}
+	}
+}
+
+func TestDecodeJSONBody(t *testing.T) {
+	var v map[string]string
+	rec := httptest.NewRecorder()
+	if !decodeJSONBody(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"kulinh"}`)), &v) || v["name"] != "kulinh" {
+		t.Fatalf("a small valid body must decode: %v %s", v, rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	if decodeJSONBody(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":`)), &v) {
+		t.Fatal("malformed JSON decoded")
+	}
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "invalid_json") {
+		t.Fatalf("malformed JSON: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	// Just under the cap still decodes.
+	body := `{"name":"` + strings.Repeat("a", maxRequestBody-20) + `"}`
+	rec = httptest.NewRecorder()
+	if !decodeJSONBody(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body)), &v) {
+		t.Fatalf("a body under the cap was refused: %d %.200s", rec.Code, rec.Body.String())
+	}
+}
+
+// L4: the agent enforces commands.MaxUsers like the CLI does.
+func TestUserLimitRefusal(t *testing.T) {
+	for n := 0; n <= commands.MaxUsers; n++ {
+		if r := userLimitRefusal(n); r != "" {
+			t.Errorf("userLimitRefusal(%d) = %q, want pass", n, r)
+		}
+	}
+	r := userLimitRefusal(commands.MaxUsers + 1)
+	if r == "" || !strings.Contains(r, fmt.Sprintf("max %d", commands.MaxUsers)) {
+		t.Fatalf("expected a refusal naming the limit, got %q", r)
+	}
+}
+
+// A sync over the limit is refused with 400 before the lock or any config is
+// touched.
+func TestHandleSyncRejectsTooManyUsers(t *testing.T) {
+	users := make([]syncUser, commands.MaxUsers+1)
+	for i := range users {
+		users[i] = syncUser{Name: fmt.Sprintf("user%d", i), VlessUUID: "u", Hy2PW: "p"}
+	}
+	raw, err := json.Marshal(syncRequest{Users: users})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	handleSync(rec, httptest.NewRequest(http.MethodPost, "/admin/v1/sync", strings.NewReader(string(raw))))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "user_limit_exceeded") {
+		t.Fatalf("body = %s", rec.Body.String())
 	}
 }
