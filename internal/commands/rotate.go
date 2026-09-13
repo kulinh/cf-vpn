@@ -240,38 +240,14 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 	// Reality nodes have no public LE cert on :443; only HY2 needs a real cert.
 	in.NewHy2Host = strings.TrimSpace(in.NewHy2Host)
 	in.NewHy2ZoneID = strings.TrimSpace(in.NewHy2ZoneID)
-	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
-	// The HY2 cert and key live at FIXED paths that hysteria is already
-	// serving, and they are overwritten for the new host before anything is
-	// committed. If the rotation then fails, the next unrelated restart
-	// (reboot, reconcile-units, OOM) would serve a certificate for a host that
-	// never went live — TLS failures for every HY2 client, with nothing in the
-	// log pointing at the rotation. Keep the old pair and put it back.
-	prevHy2Cert, prevHy2Key := readFileOrNil(hy2CertPath), readFileOrNil(hy2KeyPath)
-	hy2CertTouched := false
-	restoreHy2Cert := func() {
-		if !hy2CertTouched || prevHy2Cert == nil || prevHy2Key == nil {
-			return
-		}
-		if rerr := writeAtomicFile(hy2CertPath, prevHy2Cert, 0o600); rerr != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: restore previous HY2 cert failed: %v\n", rerr)
-		}
-		if rerr := writeAtomicFile(hy2KeyPath, prevHy2Key, 0o600); rerr != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: restore previous HY2 key failed: %v\n", rerr)
-		}
-	}
-	if in.NewHy2Host != "" {
-		hy2CertTouched = true
-		if err := deps.Cert.Issue(ctx, in.NewHy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {
-			restoreHy2Cert()
-			return RotateDirectResult{}, fmt.Errorf("issue cert for %s: %w", in.NewHy2Host, err)
-		}
+	rb := newRotateRollback(stderr)
+	if err := rb.issueHy2Cert(ctx, deps.Cert, in.NewHy2Host, in.CFAPIToken); err != nil {
+		return RotateDirectResult{}, err
 	}
 
 	users, err := rotateDirectUsers(in.ExistingUsers)
 	if err != nil {
-		restoreHy2Cert()
-		return RotateDirectResult{}, err
+		return rb.fail(err)
 	}
 	rendered, err := templates.RenderXrayDirectReality(WithH3FromEnv(templates.XrayDirectRealityInputs{
 		Users:       users,
@@ -282,54 +258,35 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		DNSServers:  xrayDNSServersFromEnv(env),
 	}, env))
 	if err != nil {
-		restoreHy2Cert()
-		return RotateDirectResult{}, fmt.Errorf("render xray reality config: %w", err)
+		return rb.fail(fmt.Errorf("render xray reality config: %w", err))
 	}
 
 	oldConfig, oldConfigErr := os.ReadFile(xrayConfigPath)
 	oldConfigExists := oldConfigErr == nil
 	if oldConfigErr != nil && !os.IsNotExist(oldConfigErr) {
-		restoreHy2Cert()
-		return RotateDirectResult{}, fmt.Errorf("read existing xray config: %w", oldConfigErr)
-	}
-
-	dnsCreated := false
-	hy2DnsCreated := false
-	rollbackDNS := func(cause error) (RotateDirectResult, error) {
-		restoreHy2Cert()
-		if hy2DnsCreated {
-			if derr := deps.CF.DeleteARecordByName(ctx, in.NewHy2ZoneID, in.NewHy2Host); derr != nil && stderr != nil {
-				fmt.Fprintf(stderr, "warning: rollback delete HY2 A record failed: %v\n", derr)
-			}
-		}
-		if dnsCreated {
-			if derr := deps.CF.DeleteARecordByName(ctx, in.NewZoneID, in.NewHost); derr != nil && stderr != nil {
-				fmt.Fprintf(stderr, "warning: rollback delete A record failed: %v\n", derr)
-			}
-		}
-		return RotateDirectResult{}, cause
+		return rb.fail(fmt.Errorf("read existing xray config: %w", oldConfigErr))
 	}
 
 	if err := deps.CF.UpsertARecord(ctx, in.NewZoneID, in.NewHost, ip); err != nil {
-		return rollbackDNS(fmt.Errorf("upsert dns a record: %w", err))
+		return rb.fail(fmt.Errorf("upsert dns a record: %w", err))
 	}
-	dnsCreated = true
+	rb.createdDNS("A record", func() error { return deps.CF.DeleteARecordByName(ctx, in.NewZoneID, in.NewHost) })
 
 	if in.NewHy2Host != "" && in.NewHy2ZoneID != "" {
 		if err := deps.CF.UpsertARecord(ctx, in.NewHy2ZoneID, in.NewHy2Host, ip); err != nil {
-			return rollbackDNS(fmt.Errorf("upsert hy2 dns a record: %w", err))
+			return rb.fail(fmt.Errorf("upsert hy2 dns a record: %w", err))
 		}
-		hy2DnsCreated = true
+		rb.createdDNS("HY2 A record", func() error { return deps.CF.DeleteARecordByName(ctx, in.NewHy2ZoneID, in.NewHy2Host) })
 	}
 
 	// H12: refuse to publish a config xray cannot load; the live one stays.
 	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(rendered), 0o600); err != nil {
-		return rollbackDNS(fmt.Errorf("write xray config: %w", err))
+		return rb.fail(fmt.Errorf("write xray config: %w", err))
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {
 		if oldConfigExists {
 			if rerr := writeAtomicFile(xrayConfigPath, oldConfig, 0o600); rerr != nil {
-				return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w; additionally failed to restore previous xray config: %v", err, rerr))
+				return rb.fail(fmt.Errorf("restart cfvpn-xray.service: %w; additionally failed to restore previous xray config: %v", err, rerr))
 			}
 			// Restore the file AND restart so xray comes back up on the
 			// known-good config instead of being left in a failed state.
@@ -337,9 +294,9 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 				fmt.Fprintf(stderr, "warning: restart cfvpn-xray.service with restored config failed: %v\n", rerr)
 			}
 		} else if rerr := os.Remove(xrayConfigPath); rerr != nil && !os.IsNotExist(rerr) {
-			return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w; additionally failed to remove new xray config: %v", err, rerr))
+			return rb.fail(fmt.Errorf("restart cfvpn-xray.service: %w; additionally failed to remove new xray config: %v", err, rerr))
 		}
-		return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w", err))
+		return rb.fail(fmt.Errorf("restart cfvpn-xray.service: %w", err))
 	}
 
 	env["DOMAIN"] = in.NewHost
@@ -347,7 +304,7 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 	env["MODE"] = "direct"
 
 	if in.NewHy2Host != "" {
-		if err := rotateHy2Config(ctx, in.NewHy2Host, hy2CertPath, hy2KeyPath, env, resolveRunner(deps.Runner)); err != nil {
+		if err := rotateHy2Config(ctx, in.NewHy2Host, rb.hy2CertPath, rb.hy2KeyPath, env, resolveRunner(deps.Runner)); err != nil {
 			// xray is already live with the new host; persist partial state so the
 			// system state is visible (DOMAIN/PUBLIC_IP updated, HY2_HOST not yet).
 			_ = state.SaveAtomic(envFilePath, env, 0o600)
@@ -364,33 +321,11 @@ func RunRotateDirect(ctx context.Context, in RotateDirectInputs, deps RotateDire
 		return RotateDirectResult{}, err
 	}
 
-	if strings.TrimSpace(in.OldHost) != "" && strings.TrimSpace(in.OldZoneID) != "" {
-		if err := deps.CF.DeleteARecordByName(ctx, in.OldZoneID, in.OldHost); err != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: delete old A record failed: %v\n", err)
-		}
-	}
-	if strings.TrimSpace(in.OldHy2Host) != "" && strings.TrimSpace(in.OldHy2ZoneID) != "" {
-		if err := deps.CF.DeleteARecordByName(ctx, in.OldHy2ZoneID, in.OldHy2Host); err != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: delete old hy2 A record failed: %v\n", err)
-		}
-	}
+	deleteOldRecord(stderr, in.OldHost, in.OldZoneID, "A record", func() error { return deps.CF.DeleteARecordByName(ctx, in.OldZoneID, in.OldHost) })
+	deleteOldRecord(stderr, in.OldHy2Host, in.OldHy2ZoneID, "hy2 A record", func() error { return deps.CF.DeleteARecordByName(ctx, in.OldHy2ZoneID, in.OldHy2Host) })
 
 	// Build result: HY2 fields from env (port and obfsPW are unchanged).
-	hy2Port := 0
-	if p, err := strconv.Atoi(env["HY2_PORT"]); err == nil {
-		hy2Port = p
-	}
-	result := RotateDirectResult{
-		VpnHost:   in.NewHost,
-		PublicIP:  ip,
-		Hy2ObfsPW: env["HY2_OBFS_PW"],
-		Hy2Port:   hy2Port,
-	}
-	if in.NewHy2Host != "" {
-		result.Hy2Host = in.NewHy2Host
-	} else {
-		result.Hy2Host = env["HY2_HOST"]
-	}
+	result := rotateResult(in.NewHost, ip, in.NewHy2Host, env)
 
 	if stdout != nil {
 		fmt.Fprintf(stdout, "direct rotation complete: %s -> %s\n", in.NewHost, ip)
@@ -521,80 +456,36 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 
 	in.NewHy2Host = strings.TrimSpace(in.NewHy2Host)
 	in.NewHy2ZoneID = strings.TrimSpace(in.NewHy2ZoneID)
-	hy2CertPath, hy2KeyPath := HysteriaCertPaths()
-	// The HY2 cert and key live at FIXED paths that hysteria is already
-	// serving, and they are overwritten for the new host before anything is
-	// committed. If the rotation then fails, the next unrelated restart
-	// (reboot, reconcile-units, OOM) would serve a certificate for a host that
-	// never went live — TLS failures for every HY2 client, with nothing in the
-	// log pointing at the rotation. Keep the old pair and put it back.
-	prevHy2Cert, prevHy2Key := readFileOrNil(hy2CertPath), readFileOrNil(hy2KeyPath)
-	hy2CertTouched := false
-	restoreHy2Cert := func() {
-		if !hy2CertTouched || prevHy2Cert == nil || prevHy2Key == nil {
-			return
-		}
-		if rerr := writeAtomicFile(hy2CertPath, prevHy2Cert, 0o600); rerr != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: restore previous HY2 cert failed: %v\n", rerr)
-		}
-		if rerr := writeAtomicFile(hy2KeyPath, prevHy2Key, 0o600); rerr != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: restore previous HY2 key failed: %v\n", rerr)
-		}
-	}
-	if in.NewHy2Host != "" {
-		hy2CertTouched = true
-		if err := deps.Cert.Issue(ctx, in.NewHy2Host, hy2CertPath, hy2KeyPath, in.CFAPIToken); err != nil {
-			restoreHy2Cert()
-			return RotateDirectResult{}, fmt.Errorf("issue cert for %s: %w", in.NewHy2Host, err)
-		}
+	rb := newRotateRollback(stderr)
+	if err := rb.issueHy2Cert(ctx, deps.Cert, in.NewHy2Host, in.CFAPIToken); err != nil {
+		return RotateDirectResult{}, err
 	}
 
 	users, err := rotateDirectUsers(in.ExistingUsers)
 	if err != nil {
-		restoreHy2Cert()
-		return RotateDirectResult{}, err
+		return rb.fail(err)
 	}
 
 	xrayRendered, err := templates.RenderXrayCloudflareOpts(users, in.NewHost, xrayDNSServersFromEnv(env), xrayCloudflareOptsFromEnv(env))
 	if err != nil {
-		restoreHy2Cert()
-		return RotateDirectResult{}, fmt.Errorf("render xray cloudflare config: %w", err)
+		return rb.fail(fmt.Errorf("render xray cloudflare config: %w", err))
 	}
 	cfRendered, err := templates.RenderCloudflaredWithAdminOpts(tunnelUUID, in.NewHost, adminHost, templates.CloudflaredOptions{Protocol: env[state.KeyCloudflaredProtocol], XHTTP: XHTTPEnabled(env)})
 	if err != nil {
-		restoreHy2Cert()
-		return RotateDirectResult{}, fmt.Errorf("render cloudflared config: %w", err)
+		return rb.fail(fmt.Errorf("render cloudflared config: %w", err))
 	}
 
 	oldXray, oldXrayErr := os.ReadFile(xrayConfigPath)
 	oldXrayExists := oldXrayErr == nil
 	if oldXrayErr != nil && !os.IsNotExist(oldXrayErr) {
-		restoreHy2Cert()
-		return RotateDirectResult{}, fmt.Errorf("read existing xray config: %w", oldXrayErr)
+		return rb.fail(fmt.Errorf("read existing xray config: %w", oldXrayErr))
 	}
 	oldCfd, oldCfdErr := os.ReadFile(cloudflaredConfig)
 	oldCfdExists := oldCfdErr == nil
 	if oldCfdErr != nil && !os.IsNotExist(oldCfdErr) {
-		restoreHy2Cert()
-		return RotateDirectResult{}, fmt.Errorf("read existing cloudflared config: %w", oldCfdErr)
+		return rb.fail(fmt.Errorf("read existing cloudflared config: %w", oldCfdErr))
 	}
 
-	cnameCreated := false
-	hy2DnsCreated := false
-	rollbackDNS := func(cause error) (RotateDirectResult, error) {
-		restoreHy2Cert()
-		if hy2DnsCreated {
-			if derr := deps.CF.DeleteARecordByName(ctx, in.NewHy2ZoneID, in.NewHy2Host); derr != nil && stderr != nil {
-				fmt.Fprintf(stderr, "warning: rollback delete HY2 A record failed: %v\n", derr)
-			}
-		}
-		if cnameCreated {
-			if derr := deps.CF.DeleteCNAMEByName(ctx, in.NewZoneID, in.NewHost); derr != nil && stderr != nil {
-				fmt.Fprintf(stderr, "warning: rollback delete VPN CNAME failed: %v\n", derr)
-			}
-		}
-		return RotateDirectResult{}, cause
-	}
 	restoreXray := func() {
 		if oldXrayExists {
 			_ = writeAtomicFile(xrayConfigPath, oldXray, 0o600)
@@ -611,23 +502,23 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 	}
 
 	if err := deps.CF.UpsertCNAME(ctx, in.NewZoneID, in.NewHost, tunnelUUID+".cfargotunnel.com"); err != nil {
-		return rollbackDNS(fmt.Errorf("upsert vpn cname: %w", err))
+		return rb.fail(fmt.Errorf("upsert vpn cname: %w", err))
 	}
-	cnameCreated = true
+	rb.createdDNS("VPN CNAME", func() error { return deps.CF.DeleteCNAMEByName(ctx, in.NewZoneID, in.NewHost) })
 
 	if in.NewHy2Host != "" && in.NewHy2ZoneID != "" {
 		ip := strings.TrimSpace(env["PUBLIC_IP"])
 		if ip == "" {
-			return rollbackDNS(fmt.Errorf("PUBLIC_IP is required in env to upsert HY2 A record"))
+			return rb.fail(fmt.Errorf("PUBLIC_IP is required in env to upsert HY2 A record"))
 		}
 		if err := deps.CF.UpsertARecord(ctx, in.NewHy2ZoneID, in.NewHy2Host, ip); err != nil {
-			return rollbackDNS(fmt.Errorf("upsert hy2 dns a record: %w", err))
+			return rb.fail(fmt.Errorf("upsert hy2 dns a record: %w", err))
 		}
-		hy2DnsCreated = true
+		rb.createdDNS("HY2 A record", func() error { return deps.CF.DeleteARecordByName(ctx, in.NewHy2ZoneID, in.NewHy2Host) })
 	}
 
 	if err := writeXrayConfigChecked(ctx, xrayConfigPath, []byte(xrayRendered), 0o600); err != nil {
-		return rollbackDNS(fmt.Errorf("write xray config: %w", err))
+		return rb.fail(fmt.Errorf("write xray config: %w", err))
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); err != nil {
 		restoreXray()
@@ -635,13 +526,13 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		if rerr := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service"); rerr != nil && stderr != nil {
 			fmt.Fprintf(stderr, "warning: restart cfvpn-xray.service with restored config failed: %v\n", rerr)
 		}
-		return rollbackDNS(fmt.Errorf("restart cfvpn-xray.service: %w", err))
+		return rb.fail(fmt.Errorf("restart cfvpn-xray.service: %w", err))
 	}
 
 	if err := writeAtomicFile(cloudflaredConfig, []byte(cfRendered), 0o600); err != nil {
 		restoreXray()
 		_ = systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-xray.service")
-		return rollbackDNS(fmt.Errorf("write cloudflared config: %w", err))
+		return rb.fail(fmt.Errorf("write cloudflared config: %w", err))
 	}
 	if err := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-cloudflared.service"); err != nil {
 		restoreCfd()
@@ -652,14 +543,14 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		if rerr := systemd.Restart(ctx, resolveRunner(deps.Runner), "cfvpn-cloudflared.service"); rerr != nil && stderr != nil {
 			fmt.Fprintf(stderr, "warning: restart cfvpn-cloudflared.service with restored config failed: %v\n", rerr)
 		}
-		return rollbackDNS(fmt.Errorf("restart cfvpn-cloudflared.service: %w", err))
+		return rb.fail(fmt.Errorf("restart cfvpn-cloudflared.service: %w", err))
 	}
 
 	env["DOMAIN"] = in.NewHost
 	env["MODE"] = "cloudflare"
 
 	if in.NewHy2Host != "" {
-		if err := rotateHy2Config(ctx, in.NewHy2Host, hy2CertPath, hy2KeyPath, env, resolveRunner(deps.Runner)); err != nil {
+		if err := rotateHy2Config(ctx, in.NewHy2Host, rb.hy2CertPath, rb.hy2KeyPath, env, resolveRunner(deps.Runner)); err != nil {
 			// xray + cloudflared are already live with the new host; persist
 			// partial state so the system state is visible.
 			_ = state.SaveAtomic(envFilePath, env, 0o600)
@@ -676,37 +567,127 @@ func RunRotateCloudflare(ctx context.Context, in RotateCloudflareInputs, deps Ro
 		return RotateDirectResult{}, err
 	}
 
-	if strings.TrimSpace(in.OldHost) != "" && strings.TrimSpace(in.OldZoneID) != "" {
-		if err := deps.CF.DeleteCNAMEByName(ctx, in.OldZoneID, in.OldHost); err != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: delete old vpn cname failed: %v\n", err)
-		}
-	}
-	if strings.TrimSpace(in.OldHy2Host) != "" && strings.TrimSpace(in.OldHy2ZoneID) != "" {
-		if err := deps.CF.DeleteARecordByName(ctx, in.OldHy2ZoneID, in.OldHy2Host); err != nil && stderr != nil {
-			fmt.Fprintf(stderr, "warning: delete old hy2 a record failed: %v\n", err)
-		}
-	}
+	deleteOldRecord(stderr, in.OldHost, in.OldZoneID, "vpn cname", func() error { return deps.CF.DeleteCNAMEByName(ctx, in.OldZoneID, in.OldHost) })
+	deleteOldRecord(stderr, in.OldHy2Host, in.OldHy2ZoneID, "hy2 a record", func() error { return deps.CF.DeleteARecordByName(ctx, in.OldHy2ZoneID, in.OldHy2Host) })
 
-	hy2Port := 0
-	if p, err := strconv.Atoi(env["HY2_PORT"]); err == nil {
-		hy2Port = p
-	}
-	result := RotateDirectResult{
-		VpnHost:   in.NewHost,
-		PublicIP:  env["PUBLIC_IP"],
-		Hy2ObfsPW: env["HY2_OBFS_PW"],
-		Hy2Port:   hy2Port,
-	}
-	if in.NewHy2Host != "" {
-		result.Hy2Host = in.NewHy2Host
-	} else {
-		result.Hy2Host = env["HY2_HOST"]
-	}
+	result := rotateResult(in.NewHost, env["PUBLIC_IP"], in.NewHy2Host, env)
 
 	if stdout != nil {
 		fmt.Fprintf(stdout, "cloudflare rotation complete: %s\n", in.NewHost)
 	}
 	return result, nil
+}
+
+// rotateRollback undoes what RunRotateDirect / RunRotateCloudflare changed
+// before the rotation committed: the HY2 cert pair it overwrote and the DNS
+// records it created.
+type rotateRollback struct {
+	stderr io.Writer
+
+	// The HY2 cert and key live at FIXED paths that hysteria is already
+	// serving, and they are overwritten for the new host before anything is
+	// committed. If the rotation then fails, the next unrelated restart
+	// (reboot, reconcile-units, OOM) would serve a certificate for a host that
+	// never went live — TLS failures for every HY2 client, with nothing in the
+	// log pointing at the rotation. Keep the old pair and put it back.
+	hy2CertPath, hy2KeyPath string
+	prevHy2Cert, prevHy2Key []byte
+	hy2CertTouched          bool
+
+	// createdRecords are undone newest first.
+	createdRecords []rotateCreatedRecord
+}
+
+type rotateCreatedRecord struct {
+	what   string
+	delete func() error
+}
+
+func newRotateRollback(stderr io.Writer) *rotateRollback {
+	certPath, keyPath := HysteriaCertPaths()
+	return &rotateRollback{
+		stderr:      stderr,
+		hy2CertPath: certPath,
+		hy2KeyPath:  keyPath,
+		prevHy2Cert: readFileOrNil(certPath),
+		prevHy2Key:  readFileOrNil(keyPath),
+	}
+}
+
+// issueHy2Cert issues the HY2 cert for newHy2Host (no-op when empty), putting
+// the previous pair back if issuance fails.
+func (rb *rotateRollback) issueHy2Cert(ctx context.Context, mgr cert.Manager, newHy2Host, token string) error {
+	if newHy2Host == "" {
+		return nil
+	}
+	rb.hy2CertTouched = true
+	if err := mgr.Issue(ctx, newHy2Host, rb.hy2CertPath, rb.hy2KeyPath, token); err != nil {
+		rb.restoreHy2Cert()
+		return fmt.Errorf("issue cert for %s: %w", newHy2Host, err)
+	}
+	return nil
+}
+
+func (rb *rotateRollback) restoreHy2Cert() {
+	if !rb.hy2CertTouched || rb.prevHy2Cert == nil || rb.prevHy2Key == nil {
+		return
+	}
+	if rerr := writeAtomicFile(rb.hy2CertPath, rb.prevHy2Cert, 0o600); rerr != nil && rb.stderr != nil {
+		fmt.Fprintf(rb.stderr, "warning: restore previous HY2 cert failed: %v\n", rerr)
+	}
+	if rerr := writeAtomicFile(rb.hy2KeyPath, rb.prevHy2Key, 0o600); rerr != nil && rb.stderr != nil {
+		fmt.Fprintf(rb.stderr, "warning: restore previous HY2 key failed: %v\n", rerr)
+	}
+}
+
+// createdDNS registers a record the rotation created; what names it in the
+// rollback warning.
+func (rb *rotateRollback) createdDNS(what string, del func() error) {
+	rb.createdRecords = append(rb.createdRecords, rotateCreatedRecord{what: what, delete: del})
+}
+
+// fail restores the HY2 cert, deletes the created records and returns cause.
+func (rb *rotateRollback) fail(cause error) (RotateDirectResult, error) {
+	rb.restoreHy2Cert()
+	for i := len(rb.createdRecords) - 1; i >= 0; i-- {
+		rec := rb.createdRecords[i]
+		if derr := rec.delete(); derr != nil && rb.stderr != nil {
+			fmt.Fprintf(rb.stderr, "warning: rollback delete %s failed: %v\n", rec.what, derr)
+		}
+	}
+	return RotateDirectResult{}, cause
+}
+
+// deleteOldRecord removes the pre-rotation record for host once the rotation
+// has committed. Failure only warns: the new host is already live.
+func deleteOldRecord(stderr io.Writer, host, zoneID, what string, del func() error) {
+	if strings.TrimSpace(host) == "" || strings.TrimSpace(zoneID) == "" {
+		return
+	}
+	if err := del(); err != nil && stderr != nil {
+		fmt.Fprintf(stderr, "warning: delete old %s failed: %v\n", what, err)
+	}
+}
+
+// rotateResult builds the rotation result. Port and obfs password are unchanged
+// by a rotation and come from env, as does the HY2 host when it was not rotated.
+func rotateResult(newHost, publicIP, newHy2Host string, env map[string]string) RotateDirectResult {
+	hy2Port := 0
+	if p, err := strconv.Atoi(env["HY2_PORT"]); err == nil {
+		hy2Port = p
+	}
+	result := RotateDirectResult{
+		VpnHost:   newHost,
+		PublicIP:  publicIP,
+		Hy2ObfsPW: env["HY2_OBFS_PW"],
+		Hy2Port:   hy2Port,
+	}
+	if newHy2Host != "" {
+		result.Hy2Host = newHy2Host
+	} else {
+		result.Hy2Host = env["HY2_HOST"]
+	}
+	return result
 }
 
 func rotateDirectUsers(existing []ExistingUser) ([]templates.XrayUser, error) {
