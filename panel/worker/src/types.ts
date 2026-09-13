@@ -7,7 +7,6 @@ export interface Env {
   ADMIN_HOST_ALLOWED_SUFFIXES?: string;
   CF_API_TOKEN?: string;
   CF_ACCOUNT_ID?: string;
-  AGENT_SHARED_SECRET?: string;
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_GROUP_ID?: string;
@@ -27,10 +26,11 @@ export interface Env {
   // the Worker. Both must be set for it to apply; see lib/auth.ts.
   PANEL_BASIC_USER?: string;
   PANEL_BASIC_PASS?: string;
-  // Optional Cloudflare Access JWKS verification gate (see lib/auth.ts NOTE).
-  // When both are set (and a JWKS-capable JWT library is available), the Worker
-  // should verify the CF-Access-Jwt-Assertion signature instead of only
-  // checking header presence.
+  // Cloudflare Access. Both set = Access headers are honoured, but only after
+  // the CF-Access-Jwt-Assertion verifies against the team JWKS (lib/auth.ts).
+  // Either unset = Access headers are ignored and basic auth is required.
+  // ACCESS_TEAM_DOMAIN: "rwl265.cloudflareaccess.com"; ACCESS_AUD: the Access
+  // application's AUD tag.
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
 }

@@ -67,40 +67,126 @@ function checkBasicAuth(request: Request, env: Env): string | Response | null {
   return unauthorized();
 }
 
-export function requireActorEmail(request: Request, env: Env): string | Response {
-  // The `Cf-Access-Authenticated-User-Email` header is only authoritative
-  // when Cloudflare Access fronts the Worker. Access also sets
-  // `CF-Access-Jwt-Assertion`; if that header is absent the request bypassed
-  // Access (e.g. a *.workers.dev URL), so we must reject — the email header
-  // would otherwise be forgeable. (Presence is the cheap guard.)
-  //
-  // NOTE: there is no `workers_dev = false` in wrangler.toml — workers.dev is
-  // deliberately ENABLED there, because the Telegram webhook is registered
-  // against it. The only actual defence against the workers.dev bypass is the
-  // hostname check at the top of src/index.ts, which 404s every path but
-  // /telegram/webhook on a *.workers.dev request. Do not weaken that check
-  // believing a wrangler setting is backing it up.
-  //
-  // NOTE: Full JWT signature verification against the team's JWKS
-  // (gated on optional env.ACCESS_TEAM_DOMAIN + env.ACCESS_AUD) is intentionally
-  // NOT implemented here: it requires the `jose` library, which is not present
-  // in node_modules, and the task forbids adding a new dependency. When `jose`
-  // is added, verify the JWT here whenever both env vars are set, and keep this
-  // presence-check as the fallback when they are not (so the panel never locks).
+// requireActorEmail authenticates an /api/* request and returns the actor.
+//
+// Cloudflare Access headers are client-controlled unless Access actually sits
+// in front of the Worker, and nothing in the request proves that. So they are
+// trusted ONLY when ACCESS_TEAM_DOMAIN and ACCESS_AUD are configured AND the
+// CF-Access-Jwt-Assertion verifies (RS256 against the team JWKS, aud, iss,
+// exp); the actor is the email inside the verified token, never the
+// Cf-Access-Authenticated-User-Email header. Without that configuration the
+// Access headers are ignored and basic auth is required. Checking only that
+// the JWT header was present (what this did before 2026-09-13) let anyone
+// who sent two made-up headers in as admin once Access was taken off.
+//
+// NOTE: there is no `workers_dev = false` in wrangler.toml — workers.dev is
+// deliberately ENABLED there, because the Telegram webhook is registered
+// against it. The only actual defence against the workers.dev bypass is the
+// hostname check at the top of src/index.ts, which 404s every path but
+// /telegram/webhook on a *.workers.dev request. Do not weaken that check
+// believing a wrangler setting is backing it up.
+export async function requireActorEmail(request: Request, env: Env, fetcher: typeof fetch = fetch): Promise<string | Response> {
   const jwt = request.headers.get("CF-Access-Jwt-Assertion")?.trim();
-  if (!jwt) {
-    // Access is not in front of this request. Fall back to basic auth when it
-    // is configured; when it is not, fail closed — an unauthenticated /api/*
-    // exposes agent secrets, obfs passwords and every user's sub_token.
-    const basic = checkBasicAuth(request, env);
-    if (basic !== null) return basic;
-    return error(401, { error: "unauthorized", detail: "missing access jwt" });
+  if (jwt && accessConfigured(env)) {
+    const email = await verifyAccessJwt(jwt, env, fetcher);
+    if (email) return email;
+    return error(401, { error: "unauthorized", detail: "invalid access jwt" });
   }
-  const email = request.headers.get("Cf-Access-Authenticated-User-Email")?.trim();
-  if (!email) {
-    return error(401, { error: "unauthorized", detail: "missing access email" });
+  // Access is not configured (or not in front of this request): fall back to
+  // basic auth when it is configured; when it is not, fail closed — an
+  // unauthenticated /api/* exposes agent secrets, obfs passwords and every
+  // user's sub_token.
+  const basic = checkBasicAuth(request, env);
+  if (basic !== null) return basic;
+  return error(401, { error: "unauthorized", detail: "no authentication configured" });
+}
+
+function accessConfigured(env: Env): boolean {
+  return !!env.ACCESS_TEAM_DOMAIN?.trim() && !!env.ACCESS_AUD?.trim();
+}
+
+// "rwl265.cloudflareaccess.com", with or without scheme / trailing slash.
+function teamOrigin(env: Env): string {
+  const host = env.ACCESS_TEAM_DOMAIN!.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  return `https://${host}`;
+}
+
+const JWKS_TTL_MS = 10 * 60 * 1000;
+// Clock skew tolerated on exp / nbf.
+const JWT_LEEWAY_S = 60;
+let jwksCache: { origin: string; fetchedAt: number; keys: JsonWebKey[] } | null = null;
+
+// Test hook: forget the cached key set.
+export function resetAccessKeyCache(): void {
+  jwksCache = null;
+}
+
+async function accessKeys(origin: string, fetcher: typeof fetch, refresh: boolean): Promise<JsonWebKey[]> {
+  const now = Date.now();
+  if (!refresh && jwksCache && jwksCache.origin === origin && now - jwksCache.fetchedAt < JWKS_TTL_MS) {
+    return jwksCache.keys;
   }
-  return email;
+  const res = await fetcher(`${origin}/cdn-cgi/access/certs`, { signal: AbortSignal.timeout(5000) });
+  if (!res.ok) throw new Error(`access certs: HTTP ${res.status}`);
+  const body = await res.json() as { keys?: JsonWebKey[] };
+  const keys = Array.isArray(body.keys) ? body.keys : [];
+  jwksCache = { origin, fetchedAt: now, keys };
+  return keys;
+}
+
+function b64urlBytes(s: string): Uint8Array {
+  const b64 = s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4);
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function b64urlJson(s: string): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(new TextDecoder().decode(b64urlBytes(s)));
+    return v && typeof v === "object" ? v as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+// verifyAccessJwt returns the verified email, or null for anything that does
+// not check out (malformed, wrong alg, unknown kid, bad signature, wrong
+// aud/iss, expired, JWKS unreachable).
+export async function verifyAccessJwt(jwt: string, env: Env, fetcher: typeof fetch = fetch): Promise<string | null> {
+  try {
+    const parts = jwt.split(".");
+    if (parts.length !== 3) return null;
+    const header = b64urlJson(parts[0]);
+    const payload = b64urlJson(parts[1]);
+    if (!header || !payload || header.alg !== "RS256" || typeof header.kid !== "string") return null;
+
+    const origin = teamOrigin(env);
+    let jwk = (await accessKeys(origin, fetcher, false)).find((k) => (k as { kid?: string }).kid === header.kid);
+    if (!jwk) {
+      // Access rotates its signing keys; one refetch covers a new kid.
+      jwk = (await accessKeys(origin, fetcher, true)).find((k) => (k as { kid?: string }).kid === header.kid);
+    }
+    if (!jwk) return null;
+    const key = await crypto.subtle.importKey("jwk", jwk, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["verify"]);
+    const ok = await crypto.subtle.verify(
+      "RSASSA-PKCS1-v1_5", key, b64urlBytes(parts[2]), new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
+    );
+    if (!ok) return null;
+
+    const now = Math.floor(Date.now() / 1000);
+    const aud = env.ACCESS_AUD!.trim();
+    const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if (!auds.includes(aud)) return null;
+    if (payload.iss !== origin) return null;
+    if (typeof payload.exp !== "number" || payload.exp + JWT_LEEWAY_S < now) return null;
+    if (typeof payload.nbf === "number" && payload.nbf - JWT_LEEWAY_S > now) return null;
+    const email = typeof payload.email === "string" ? payload.email.trim() : "";
+    return email || null;
+  } catch {
+    return null;
+  }
 }
 
 export function enforceRateLimit(email: string): Response | null {
