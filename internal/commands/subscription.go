@@ -42,7 +42,9 @@ func buildUserURIs(name, uuid, domain, hy2PW string, env map[string]string, warn
 	// differently-named entries for the same endpoint. Fall back to the user
 	// name if NODE_ID isn't set (a node that predates the env var, or a test
 	// harness) rather than emitting an empty tag.
-	tag := strings.TrimSpace(env[state.KeyNodeID])
+	// Upper-cased: cfvpn.env holds the id as typed at install time (jpy-03)
+	// while D1 — and so the panel — holds JPY-03, and the two must agree.
+	tag := strings.ToUpper(strings.TrimSpace(env[state.KeyNodeID]))
 	if tag == "" {
 		tag = name
 	}
