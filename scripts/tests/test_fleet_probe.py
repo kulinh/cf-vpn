@@ -193,6 +193,21 @@ def test_empty_and_duplicate_subscriptions_alert_and_exit_2(tmp_path, monkeypatc
     assert "duplicate route names in subscription: kulinh@SIN-01-Reality" in sent[2]
 
 
+def test_probe_run_crash_alerts_and_exits_2(tmp_path, monkeypatch):
+    """A missing xray/hysteria binary (or a full disk) used to leave only a
+    traceback in the cron .err file. It must page, with the vantage point."""
+    sent = _record_alerts(monkeypatch)
+    envf = _probe_env(tmp_path)
+    monkeypatch.setattr(fp, "fetch_subscription", lambda url: SAMPLE)
+
+    def boom(routes, x, h):
+        raise FileNotFoundError("no such file: /usr/local/bin/xray")
+    monkeypatch.setattr(fp, "run_probes", boom)
+    assert fp.main(["--env", envf]) == 2
+    assert len(sent) == 1 and sent[0].startswith("cfvpn fleet-probe @test-box\n")
+    assert "probe run crashed: FileNotFoundError: no such file: /usr/local/bin/xray" in sent[0]
+
+
 def test_send_telegram_honours_429_retry_after(monkeypatch):
     import io
     import urllib.error

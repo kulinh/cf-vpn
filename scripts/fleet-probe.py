@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 import urllib.error
 import urllib.parse as up
 import urllib.request
@@ -401,11 +402,18 @@ def main(argv=None) -> int:
         return fetch_failed("duplicate route names in subscription: " + ", ".join(dups))
     fetch_entry, fetch_alerts = fold_fetch(prev, True, threshold)
 
-    results = run_probes(routes, xray_bin, hy_bin)
-    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    with open(log_file, "a") as lf:
-        for name, ms in results.items():
-            lf.write(f"{ts} {name} {'OK' if ms is not None else 'FAIL'} {ms if ms is not None else '-'}\n")
+    # A missing xray/hysteria binary or a full disk used to leave only a
+    # traceback in the cron .err file: the probe went silent with no alert.
+    try:
+        results = run_probes(routes, xray_bin, hy_bin)
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(log_file, "a") as lf:
+            for name, ms in results.items():
+                lf.write(f"{ts} {name} {'OK' if ms is not None else 'FAIL'} {ms if ms is not None else '-'}\n")
+    except Exception as e:
+        traceback.print_exc()
+        send_telegram(token, chat_id, header + f"probe run crashed: {type(e).__name__}: {e}")
+        return 2
 
     state, alerts = next_state(prev, results, threshold)
     state[FETCH_KEY] = fetch_entry  # next_state keeps only probed routes
