@@ -1,6 +1,6 @@
 import type { SubscriptionRow } from "./subscription";
 import { hasHy2, hasIPv6, hasNaive, hy2Address, isCloudflareRow, isRealityRow, realityHost } from "./subscription";
-import { httpUpgradeName, hy2Name, hy2V6Name, naiveName, realityName, realityV6Name } from "./clash";
+import { httpUpgradeName, hy2Name, hy2V6Name, naiveName, realityName, realityV6Name, xhttpH3Name } from "./clash";
 import { AUTO_MEMBERS } from "./shadowrocket";
 import type { ModuleRules } from "./cnrules";
 
@@ -145,7 +145,13 @@ export function buildSingboxConfig(username: string, rows: SubscriptionRow[], op
   const nodes = nodeOutbounds(username, rows);
   const tags = nodes.map((o) => o.tag as string);
   const have = new Set(tags);
-  const auto = AUTO_MEMBERS.map(([id, name]) => name(username, id)).filter((n) => have.has(n));
+  // sing-box has no xhttp, so an XHTTP-H3 member of the shared list is taken
+  // by the same node's HY2 route instead: also QUIC, and measured on par with
+  // H3 from the home line (2026-09-13, VNM-01 -> JPY-03: ~10 MB/s for both,
+  // REALITY ~3.5). Shadowrocket keeps H3.
+  const auto = [...new Set(AUTO_MEMBERS.map(([id, name]) =>
+    name === xhttpH3Name && !have.has(name(username, id)) ? hy2Name(username, id) : name(username, id)
+  ))].filter((n) => have.has(n));
   const hy2 = tags.filter((t) => t.endsWith("-HY2"));
 
   const groups: Json[] = [];
