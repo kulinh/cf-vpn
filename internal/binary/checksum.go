@@ -69,6 +69,41 @@ func ExpectedSHA256BareDigest(checksums []byte, filename string) (string, error)
 	return ExpectedSHA256(checksums, filename)
 }
 
+// ExpectedSHA256Dgst reads the SHA2-256 line of an Xray-core <asset>.dgst file,
+// which lists one digest per algorithm and no file name:
+//
+//	MD5= ee4e2ff74948a9b464624b1cabc44409
+//	SHA1= b55b06e74e89083b9cedfdecf0d68b579cd2af72
+//	SHA2-256= 23cd9af937744d97776ee35ecad4972cf4b2109d1e0fe6be9930467608f7c8ae
+//	SHA2-512= e8bc40a0...
+//
+// Like the bare-digest form, it can only be trusted by a caller that fetched
+// the .dgst for the very asset it is verifying. The SHA-512 line is skipped
+// deliberately: one strong digest is enough, and it keeps a single hash path.
+func ExpectedSHA256Dgst(dgst []byte, filename string) (string, error) {
+	want := filepath.Base(filename)
+	for _, line := range strings.Split(string(dgst), "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok || strings.TrimSpace(key) != "SHA2-256" {
+			continue
+		}
+		digest := strings.ToLower(strings.TrimSpace(value))
+		if len(digest) != 64 {
+			return "", fmt.Errorf("SHA2-256 for %s is not a sha256 digest: %q", want, value)
+		}
+		if _, err := hex.DecodeString(digest); err != nil {
+			return "", fmt.Errorf("SHA2-256 for %s is not hex: %q", want, value)
+		}
+		return digest, nil
+	}
+	return "", fmt.Errorf("no SHA2-256 entry for %s in the .dgst file", want)
+}
+
+// VerifyFileSHA256Dgst is VerifyFileSHA256 for an Xray-core .dgst file.
+func VerifyFileSHA256Dgst(path string, dgst []byte) error {
+	return verifyFileSHA256(path, dgst, ExpectedSHA256Dgst)
+}
+
 // VerifyFileSHA256 hashes path and compares it with the entry for that file in
 // the checksums file. A missing entry is an error — the whole point is that the
 // download is never installed unverified.
