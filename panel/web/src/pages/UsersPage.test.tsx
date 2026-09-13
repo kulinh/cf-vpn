@@ -195,17 +195,29 @@ async function renderWithSub() {
   await vi.waitFor(() => expect(subSpy).toHaveBeenCalledWith('kulinh'))
 }
 
-test('renders one block per client with a QR next to every link, and no generic copy / QR buttons', async () => {
+test('renders one block per client with Open / Copy / QR per link, no generic buttons, no inline QR', async () => {
   await renderWithSub()
   expect(await screen.findByText('Shadowrocket')).toBeInTheDocument()
   expect(screen.getByText('Hiddify')).toBeInTheDocument()
   expect(screen.getByText('sing-box')).toBeInTheDocument()
-  // 1 sub + 3 confs, 1 hiddify, 3 sing-box profiles = 8 rows, each with its QR.
+  // 1 sub + 3 confs, 1 hiddify, 3 sing-box profiles = 8 rows.
   expect(screen.getAllByRole('button', { name: /^Copy / })).toHaveLength(8)
-  expect(screen.getAllByLabelText(/^QR /)).toHaveLength(8)
+  expect(screen.getAllByRole('button', { name: /^QR / })).toHaveLength(8)
   expect(screen.queryByRole('button', { name: /copy subscription/i })).toBeNull()
   expect(screen.queryByRole('button', { name: /show qr/i })).toBeNull()
-  expect(vi.mocked(QRCode.toCanvas)).toHaveBeenCalled()
+  expect(screen.queryByText(testSubscription.subUrl)).toBeNull()
+  expect(vi.mocked(QRCode.toCanvas)).not.toHaveBeenCalled()
+})
+
+test('QR button opens a popup with that link, Close dismisses it', async () => {
+  await renderWithSub()
+  fireEvent.click(screen.getByRole('button', { name: 'QR sing-box RWL-RU' }))
+  const dialog = await screen.findByRole('dialog', { name: 'QR sing-box RWL-RU' })
+  const expected = `sing-box://import-remote-profile?url=${encodeURIComponent(`${testSubscription.subUrl}?format=singbox&rules=ru`)}#RWL-RU`
+  expect(within(dialog).getByLabelText(`QR image ${expected}`)).toBeInTheDocument()
+  expect(vi.mocked(QRCode.toCanvas)).toHaveBeenCalledWith(expect.anything(), expected, expect.anything())
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }))
+  expect(screen.queryByRole('dialog')).toBeNull()
 })
 
 test('Shadowrocket subscription: Open hands a sub:// deep link to a synthetic anchor, Copy puts the plain URL on the clipboard', async () => {
@@ -232,7 +244,6 @@ test('Shadowrocket config rows copy the named .conf URL and have no Open button'
   fireEvent.click(screen.getByRole('button', { name: 'Copy Shadowrocket config RWL-UAE' }))
   expect(writeText).toHaveBeenCalledWith(`${testSubscription.subUrl}/RWL-UAE.conf`)
   expect(screen.queryByRole('button', { name: 'Open Shadowrocket config RWL-UAE' })).toBeNull()
-  expect(screen.getByLabelText(`QR ${testSubscription.subUrl}/RWL-RU.conf`)).toBeInTheDocument()
 })
 
 test('Hiddify and sing-box rows open their deep links', async () => {
