@@ -13,7 +13,7 @@ export function ErrorBanner({ message }: ErrorBannerProps) {
   return (
     <div
       role="alert"
-      className="rounded-lg border border-red-800 bg-red-950/60 px-4 py-3 text-sm text-red-200"
+      className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
     >
       {message}
     </div>

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
+import { Badge, LatencyText, ModeBadge, PageHeader, StatCard, btnMd, btnPrimary, statusTone, tableWrap, td, th, thead, tr } from '../components/ui/theme'
 import { healthcheckNode, listNodes } from '../lib/api'
 import { describeLoadError } from '../lib/errors'
 import type { Node } from '../lib/types'
@@ -65,67 +66,78 @@ export function CommandCenterPage() {
     }
   }
 
-  const getStatusBadge = (status: Node['status']) => {
-    switch (status) {
-      case 'active':
-        return <span className="rounded bg-green-900 px-2 py-0.5 text-xs text-green-300">Active</span>
-      case 'unreachable':
-        return <span className="rounded bg-red-900 px-2 py-0.5 text-xs text-red-300">Unreachable</span>
-      case 'down':
-        return <span className="rounded bg-red-900 px-2 py-0.5 text-xs text-red-300">Down</span>
-      case 'degraded':
-        return <span className="rounded bg-yellow-900 px-2 py-0.5 text-xs text-yellow-300">Degraded</span>
-      case 'disabled':
-        return <span className="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-300">Disabled</span>
-      default:
-        return <span className="rounded bg-slate-700 px-2 py-0.5 text-xs text-slate-300">Unknown</span>
-    }
+  const STATUS_LABEL: Record<string, string> = {
+    active: 'Active',
+    unreachable: 'Unreachable',
+    down: 'Down',
+    degraded: 'Degraded',
+    disabled: 'Disabled',
   }
+  const getStatusBadge = (status: Node['status']) => (
+    <Badge tone={statusTone(status)} withDot>
+      {STATUS_LABEL[status] ?? 'Unknown'}
+    </Badge>
+  )
+
+  const activeCount = nodes.filter((n) => n.status === 'active').length
+  const issueCount = nodes.filter((n) => n.status === 'unreachable' || n.status === 'down' || n.status === 'degraded').length
+  const cloudflareCount = nodes.filter((n) => n.mode === 'cloudflare').length
 
   return (
     <>
       <section className="space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-semibold">Home</h1>
-            <p className="mt-1 text-sm text-slate-400">Fleet health overview and latency snapshot.</p>
-          </div>
-          <button
-            type="button"
-            disabled={checkingAll}
-            onClick={() => void handleRefreshAll()}
-            className="rounded bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {checkingAll ? 'Checking...' : 'Refresh All'}
-          </button>
-        </div>
+        <PageHeader
+          title="Home"
+          subtitle="Fleet health overview and latency snapshot."
+          actions={
+            <button
+              type="button"
+              disabled={checkingAll}
+              onClick={() => void handleRefreshAll()}
+              className={`${btnPrimary} ${btnMd}`}
+            >
+              {checkingAll ? 'Checking...' : 'Refresh All'}
+            </button>
+          }
+        />
 
         <ErrorBanner message={loadError} />
 
-        <div className="overflow-hidden rounded-lg border border-slate-800">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <StatCard label="Nodes" value={nodes.length} accent="bg-indigo-500" />
+          <StatCard label="Healthy" value={activeCount} accent="bg-emerald-500" />
+          <StatCard label="Issues" value={issueCount} accent={issueCount > 0 ? 'bg-rose-500' : 'bg-slate-300 dark:bg-slate-700'} />
+          <StatCard label="Via Cloudflare" value={cloudflareCount} accent="bg-orange-500" />
+        </div>
+
+        <div className={tableWrap}>
           <table className="w-full text-sm">
-            <thead className="bg-slate-900 text-slate-400">
+            <thead className={thead}>
               <tr>
-                <th className="px-4 py-2 text-left">ID</th>
-                <th className="px-4 py-2 text-left">Name</th>
-                <th className="px-4 py-2 text-left">Mode</th>
-                <th className="px-4 py-2 text-left">Latency</th>
-                <th className="px-4 py-2 text-left">Status</th>
+                <th className={th}>ID</th>
+                <th className={th}>Name</th>
+                <th className={th}>Mode</th>
+                <th className={th}>Latency</th>
+                <th className={th}>Status</th>
               </tr>
             </thead>
             <tbody>
               {nodes.map((node) => (
-                <tr key={node.id} className="border-t border-slate-800">
-                  <td className="px-4 py-2 font-mono text-xs text-slate-500">{node.id}</td>
-                  <td className="px-4 py-2 font-medium text-slate-100">{node.label}</td>
-                  <td className="px-4 py-2 text-slate-300">{node.mode ?? 'direct'}</td>
-                  <td className="px-4 py-2 text-slate-300">{node.latencyMs == null || node.latencyMs <= 0 ? 'N/A' : `${node.latencyMs} ms`}</td>
-                  <td className="px-4 py-2">{getStatusBadge(node.status)}</td>
+                <tr key={node.id} className={tr}>
+                  <td className={`${td} whitespace-nowrap font-mono text-xs font-medium text-indigo-600 dark:text-indigo-300`}>{node.id}</td>
+                  <td className={`${td} font-medium text-slate-900 dark:text-slate-100`}>{node.label}</td>
+                  <td className={td}>
+                    <ModeBadge mode={node.mode} />
+                  </td>
+                  <td className={td}>
+                    <LatencyText ms={node.latencyMs} />
+                  </td>
+                  <td className={td}>{getStatusBadge(node.status)}</td>
                 </tr>
               ))}
               {nodes.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={5} className="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
                     No nodes found
                   </td>
                 </tr>

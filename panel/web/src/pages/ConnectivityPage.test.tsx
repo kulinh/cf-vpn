@@ -84,7 +84,7 @@ describe('ConnectivityPage', () => {
     await screen.findByText('SIN-01')
     const button = screen.getByRole('button', { name: /run test/i })
     expect(button.className).not.toMatch(/bg-slate-900/)
-    expect(button.className).toMatch(/bg-blue-600/)
+    expect(button.className).toMatch(/bg-indigo-600/)
   })
 
   it('surfaces a failed node load instead of showing an empty table', async () => {

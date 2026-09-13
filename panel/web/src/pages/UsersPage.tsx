@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ClientBlock, LinkRow, QrPopup } from '../components/users/LinkRow'
+import { PageHeader } from '../components/ui/theme'
 import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
 import { getUserSubscription, listNodes, listUsers, upgradeUserNodes } from '../lib/api'
@@ -114,8 +115,8 @@ export function UsersPage() {
 
   return (
     <>
-      <section className="space-y-3">
-        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">Users</h1>
+      <section className="space-y-4">
+        <PageHeader title="Users" subtitle="Import links for each client app." />
         <ErrorBanner message={loadError} />
         {users.map((user) => {
           const missingCount = missingByUser[user.id] ?? 0

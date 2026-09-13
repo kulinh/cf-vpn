@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { ConfirmDialog } from '../components/ui/ConfirmDialog'
 import { ErrorBanner } from '../components/ui/ErrorBanner'
 import { Toast } from '../components/ui/Toast'
+import { Badge, LatencyText, ModeBadge, PageHeader, btnDanger, btnGhost, btnMd, btnPrimary, btnSm, card, input, label as labelCls, statusTone, tableWrap, td, th, thead, tr } from '../components/ui/theme'
 import { deleteNode, healthcheckNode, listNodes, patchNode, rotateNode } from '../lib/api'
 import { describeLoadError } from '../lib/errors'
 import type { Node } from '../lib/types'
@@ -189,74 +190,67 @@ export function NodesPage() {
 
   return (
     <>
-      <section className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h1 className="text-xl font-semibold">Nodes</h1>
-            <p className="mt-1 text-sm text-slate-400">Manage node hosts and run latency checks.</p>
-          </div>
-          <button
-            type="button"
-            disabled={checkingAll || checkingNodeId != null}
-            onClick={() => void handleCheckAll()}
-            className="rounded bg-indigo-600 px-3 py-1.5 text-xs text-white disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {checkingAll ? 'Checking all...' : 'Check all'}
-          </button>
-        </div>
+      <section className="space-y-4">
+        <PageHeader
+          title="Nodes"
+          subtitle="Manage node hosts and run latency checks."
+          actions={
+            <button
+              type="button"
+              disabled={checkingAll || checkingNodeId != null}
+              onClick={() => void handleCheckAll()}
+              className={`${btnPrimary} ${btnMd}`}
+            >
+              {checkingAll ? 'Checking all...' : 'Check all'}
+            </button>
+          }
+        />
         <ErrorBanner message={loadError} />
-        <div className="overflow-x-auto rounded-lg border border-slate-800">
+        <div className={tableWrap}>
           <table className="w-full min-w-[640px] text-sm">
-            <thead className="bg-slate-900 text-slate-400">
+            <thead className={thead}>
               <tr>
-                <th className="px-4 py-2 text-left">ID</th>
-                <th className="px-4 py-2 text-left">Name</th>
-                <th className="px-4 py-2 text-left">Info</th>
-                <th className="px-4 py-2 text-left">Latency</th>
-                <th className="px-4 py-2 text-left">Status</th>
-                <th className="px-4 py-2"></th>
+                <th className={th}>ID</th>
+                <th className={th}>Name</th>
+                <th className={th}>Info</th>
+                <th className={th}>Latency</th>
+                <th className={th}>Status</th>
+                <th className={th}></th>
               </tr>
             </thead>
             <tbody>
               {nodes.map((node) => (
-                <tr key={node.id} className="border-t border-slate-800">
-                  <td className="px-4 py-2 font-mono text-xs text-slate-400">{node.id}</td>
-                  <td className="px-4 py-2 text-slate-100">{node.label}</td>
-                  <td className="px-4 py-2 text-xs text-slate-400">
-                    <div className="font-mono">{node.vpnHost}</div>
-                    {node.hy2Host && <div className="font-mono">HY2 {node.hy2Host}:{node.hy2Port ?? 'N/A'}</div>}
-                    {node.publicIp && <div className="font-mono">IP {node.publicIp}</div>}
-                    <div className="font-mono">Mode {node.mode ?? 'direct'}</div>
+                <tr key={node.id} className={tr}>
+                  <td className={`${td} whitespace-nowrap font-mono text-xs font-medium text-indigo-600 dark:text-indigo-300`}>{node.id}</td>
+                  <td className={`${td} font-medium text-slate-900 dark:text-slate-100`}>{node.label}</td>
+                  <td className={`${td} text-xs`}>
+                    <div className="font-mono text-slate-700 dark:text-slate-300">{node.vpnHost}</div>
+                    {node.hy2Host && (
+                      <div className="font-mono text-slate-500 dark:text-slate-400">
+                        HY2 {node.hy2Host}:{node.hy2Port ?? 'N/A'}
+                      </div>
+                    )}
+                    {node.publicIp && <div className="font-mono text-slate-500 dark:text-slate-400">IP {node.publicIp}</div>}
+                    <div className="mt-1 flex items-center gap-1 font-mono text-slate-500 dark:text-slate-400">
+                      <span className="sr-only">Mode {node.mode ?? 'direct'}</span>
+                      <ModeBadge mode={node.mode} />
+                    </div>
                   </td>
-                  <td className="px-4 py-2 text-slate-300">
-                    {checkingNodeId === node.id
-                      ? '...'
-                      : node.latencyMs == null || node.latencyMs <= 0
-                        ? 'N/A'
-                        : `${node.latencyMs} ms`}
+                  <td className={td}>
+                    <LatencyText ms={node.latencyMs} pending={checkingNodeId === node.id} />
                   </td>
-                  <td className="px-4 py-2">
-                    <span
-                      className={`rounded px-2 py-0.5 text-xs ${
-                        node.status === 'active'
-                          ? 'bg-green-900 text-green-300'
-                          : node.status === 'degraded'
-                            ? 'bg-yellow-900 text-yellow-300'
-                            : node.status === 'down' || node.status === 'unreachable'
-                              ? 'bg-red-900 text-red-300'
-                              : 'bg-slate-800 text-slate-400'
-                      }`}
-                    >
+                  <td className={td}>
+                    <Badge tone={statusTone(node.status)} withDot>
                       {node.status}
-                    </span>
+                    </Badge>
                   </td>
-                  <td className="px-4 py-2">
-                    <div className="flex gap-1">
+                  <td className={td}>
+                    <div className="flex justify-end gap-1.5">
                       <button
                         type="button"
                         disabled={rotatingNodeId != null}
                         onClick={() => setConfirmNodeId(node.id)}
-                        className="rounded bg-indigo-500 px-2 py-1 text-xs text-white disabled:cursor-not-allowed disabled:opacity-50"
+                        className={`${btnPrimary} ${btnSm}`}
                       >
                         {rotatingNodeId === node.id ? 'Rotating...' : 'Rotate'}
                       </button>
@@ -264,22 +258,18 @@ export function NodesPage() {
                         type="button"
                         disabled={checkingAll || checkingNodeId != null}
                         onClick={() => void handleCheck(node.id)}
-                        className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 disabled:cursor-not-allowed disabled:opacity-50"
+                        className={`${btnGhost} ${btnSm}`}
                       >
                         {checkingNodeId === node.id ? 'Checking...' : 'Check'}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => handleEdit(node)}
-                        className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300"
-                      >
+                      <button type="button" onClick={() => handleEdit(node)} className={`${btnGhost} ${btnSm}`}>
                         Edit
                       </button>
                       <button
                         type="button"
                         disabled={deletingNodeId != null}
                         onClick={() => setConfirmDeleteNodeId(node.id)}
-                        className="rounded bg-red-900 px-2 py-1 text-xs text-red-300 disabled:cursor-not-allowed disabled:opacity-50"
+                        className={`${btnDanger} ${btnSm}`}
                       >
                         {deletingNodeId === node.id ? 'Deleting...' : 'Delete'}
                       </button>
@@ -289,7 +279,7 @@ export function NodesPage() {
               ))}
               {nodes.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500">
+                  <td colSpan={6} className="px-4 py-8 text-center text-slate-500 dark:text-slate-400">
                     No nodes found
                   </td>
                 </tr>
@@ -324,51 +314,51 @@ export function NodesPage() {
       />
 
       {editingNode && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-4">
-            <h2 className="text-lg font-semibold text-slate-100">Edit Node</h2>
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm">
+          <div className={`${card} w-full max-w-sm p-4 shadow-xl dark:bg-slate-900`}>
+            <h2 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Edit Node</h2>
             <div className="mt-4 space-y-3">
               <div>
-                <label className="mb-1 block text-xs text-slate-400">Label</label>
+                <label className={labelCls}>Label</label>
                 <input
                   type="text"
                   value={editValues.label ?? ''}
                   onChange={(e) => setEditValues((v) => ({ ...v, label: e.target.value }))}
-                  className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  className={input}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-400">Admin Host</label>
+                <label className={labelCls}>Admin Host</label>
                 <input
                   type="text"
                   value={editValues.admin_host ?? ''}
                   onChange={(e) => setEditValues((v) => ({ ...v, admin_host: e.target.value }))}
-                  className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  className={input}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-400">VPN Host</label>
+                <label className={labelCls}>VPN Host</label>
                 <input
                   type="text"
                   value={editValues.vpn_host ?? ''}
                   onChange={(e) => setEditValues((v) => ({ ...v, vpn_host: e.target.value }))}
-                  className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  className={input}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs text-slate-400">Zone</label>
+                <label className={labelCls}>Zone</label>
                 <input
                   type="text"
                   value={editValues.zone ?? ''}
                   onChange={(e) => setEditValues((v) => ({ ...v, zone: e.target.value }))}
-                  className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-slate-100"
+                  className={input}
                 />
               </div>
               <div className="flex justify-end gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => setEditingNode(null)}
-                  className="rounded bg-slate-700 px-3 py-1.5 text-sm text-slate-100"
+                  className={`${btnGhost} ${btnMd}`}
                 >
                   Cancel
                 </button>
@@ -376,7 +366,7 @@ export function NodesPage() {
                   type="button"
                   disabled={savingNode}
                   onClick={() => void handleSaveEdit()}
-                  className="rounded bg-indigo-500 px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                  className={`${btnPrimary} ${btnMd}`}
                 >
                   {savingNode ? 'Saving...' : 'Save'}
                 </button>

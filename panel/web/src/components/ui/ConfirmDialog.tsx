@@ -1,3 +1,5 @@
+import { btnGhost, btnMd, btnPrimary } from './theme'
+
 type ConfirmDialogProps = {
   open: boolean
   title: string
@@ -30,24 +32,24 @@ export function ConfirmDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby="confirm-dialog-title"
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4 backdrop-blur-sm"
       onClick={onCancel}
     >
       <div
-        className="w-full max-w-sm rounded-xl border border-slate-700 bg-slate-900 p-4"
+        className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-4 shadow-xl dark:border-slate-700 dark:bg-slate-900"
         onClick={(event) => event.stopPropagation()}
       >
-        <h2 id="confirm-dialog-title" className="text-base font-semibold text-slate-100">
+        <h2 id="confirm-dialog-title" className="text-base font-semibold text-slate-900 dark:text-slate-100">
           {title}
         </h2>
-        {message ? <p className="mt-2 text-sm text-slate-300">{message}</p> : null}
+        {message ? <p className="mt-2 text-sm text-slate-600 dark:text-slate-300">{message}</p> : null}
 
         <div className="mt-4 flex justify-end gap-2">
           <button
             type="button"
             onClick={onCancel}
             disabled={confirming}
-            className="rounded bg-slate-700 px-3 py-1.5 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+            className={`${btnGhost} ${btnMd}`}
           >
             {cancelLabel}
           </button>
@@ -55,7 +57,7 @@ export function ConfirmDialog({
             type="button"
             onClick={onConfirm}
             disabled={confirming}
-            className="rounded bg-indigo-500 px-3 py-1.5 text-sm text-white disabled:cursor-not-allowed disabled:opacity-60"
+            className={`${btnPrimary} ${btnMd}`}
           >
             {confirming ? busyLabel : confirmLabel}
           </button>

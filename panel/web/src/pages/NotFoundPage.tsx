@@ -1,3 +1,4 @@
+import { btnGhost, btnMd, btnPrimary, card } from '../components/ui/theme'
 import { useLocation, useNavigate } from 'react-router-dom'
 
 /**
@@ -17,10 +18,10 @@ export function NotFoundPage() {
   const navigate = useNavigate()
 
   return (
-    <section className="space-y-3">
-      <h1 className="text-lg font-semibold">Page not found</h1>
+    <section className={`${card} mx-auto max-w-lg space-y-3 p-5`}>
+      <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">Page not found</h1>
       <p className="text-sm text-slate-600 dark:text-slate-300">
-        Nothing is routed at <code className="font-mono">{location.pathname}</code>.
+        Nothing is routed at <code className="rounded bg-slate-100 px-1 font-mono dark:bg-slate-800">{location.pathname}</code>.
       </p>
       <p className="text-sm text-slate-600 dark:text-slate-300">
         If you followed a link to a page that should exist, this browser is probably running an
@@ -30,14 +31,14 @@ export function NotFoundPage() {
         <button
           type="button"
           onClick={() => window.location.reload()}
-          className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
+          className={`${btnPrimary} ${btnMd}`}
         >
           Reload
         </button>
         <button
           type="button"
           onClick={() => navigate('/')}
-          className="rounded border border-slate-300 px-3 py-1.5 text-sm dark:border-slate-700"
+          className={`${btnGhost} ${btnMd}`}
         >
           Home
         </button>
