@@ -140,7 +140,7 @@ User mutations (add/remove/sync) re-render the xray config in-place using the ac
 
 ## DERP relays and china-mode
 
-The tailnet runs its own DERP relays (`derper` on HKG-01 and JPY-01, see
+The tailnet runs its own DERP relays (`derper` on HAN-01, HKG-01, JPY-01 and JPY-03, see
 `docs/prep/tailscale-derp.md`). `cfvpnctl derp` edits the tailnet policy
 file's `derpMap` through the Tailscale API and touches nothing else in the
 policy (comments included). It needs an OAuth client with the **Policy File:
@@ -153,20 +153,23 @@ TS_OAUTH_CLIENT_SECRET=...
 
 ```bash
 cfvpnctl derp show                 # current flag + regions
-cfvpnctl derp china-mode on        # devices use ONLY our relays — the permanent setting (see below)
-cfvpnctl derp china-mode off       # public relays + our relays — not used any more
-cfvpnctl derp region add --id 902 --code osa --name JPY-03 --host derp-xxxx.duylinh.net   # ports default 8443/3478; live: 900 HKG-01, 901 JPY-01, 902 JPY-03
+cfvpnctl derp china-mode off       # public relays + our relays — the permanent setting (see below)
+cfvpnctl derp china-mode on        # devices use ONLY our relays — not used any more
+cfvpnctl derp region add --id 902 --code osa --name JPY-03 --host derp-xxxx.duylinh.net   # ports default 8443/3478; live: 900 HKG-01, 901 JPY-01, 902 JPY-03, 903 HAN-01
 cfvpnctl derp region remove --id 901
 ```
 
-### China-mode stays on
+### China-mode stays off
 
-`china-mode` is kept **on permanently** (`cfvpnctl derp china-mode on`) and
-there is no travel-mode switch any more: Tailscale's default relays are
-blocked from China, and the three private regions (900 HKG-01, 901 JPY-01,
-902 JPY-03) serve every device everywhere, so nothing is gained by flipping
-back. The former Telegram control bot and its `/mode` / `/china` commands, and
-the fleet-wide rules setting it drove, are gone. Which blocked-site list a
+`china-mode` is kept **off** (since 2026-09-15) and there is no travel-mode
+switch: every device gets Tailscale's public relays (Dubai, Singapore, Tokyo…)
+**plus** the four private regions (900 HKG-01, 901 JPY-01, 902 JPY-03, 903
+HAN-01), so a phone abroad homes on the nearest public relay without anyone
+touching the policy, devices in Vietnam home on HAN-01, and inside China the
+private regions are still in the map as reachable fallbacks. It was on from
+2026-09-13 to 09-15; clients that last synced then kept a stale map until they
+reconnected. The former Telegram control bot and its `/mode` / `/china`
+commands, and the fleet-wide rules setting it drove, are gone. Which blocked-site list a
 Shadowrocket `.conf` or `?format=singbox` config inlines is chosen per link
 with `?rules=cn|uae` (default `cn`) — the panel's **RWL-CN** and **RWL-UAE**
 profiles are those two links, so switching is done on the phone, not in the

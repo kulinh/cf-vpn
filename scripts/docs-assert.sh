@@ -23,7 +23,7 @@ if grep -RInE '(docker|docker-compose|container_name|docker compose)' "${DOCS[@]
 fi
 
 # The Telegram control bot and `cfvpnctl rules-mode` were removed on
-# 2026-09-13 (DERP china-mode stays on permanently; the blocked-site list is
+# 2026-09-13 (no DERP travel-mode switch any more; the blocked-site list is
 # chosen per link with ?rules=). A README that still tells the operator to
 # build, install or drive them sends them to a binary that no longer exists.
 if grep -nE 'cfvpn-tgbot|rules-mode' README.md; then
