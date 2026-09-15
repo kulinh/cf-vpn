@@ -1,4 +1,4 @@
-# Custom Tailscale DERP relays on HKG-01, JPY-01 and JPY-03 — DEPLOYED 2026-09-12
+# Custom Tailscale DERP relays on HKG-01, JPY-01, JPY-03 and HAN-01 — DEPLOYED 2026-09-12
 
 Status: `derper` runs on HKG-01 and the tailnet policy carries `derpMap`
 with regions 900 (HKG-01) and 901 (JPY-01). `OmitDefaultRegions` was set to `true` for ~40
@@ -11,7 +11,12 @@ extra region. The flag is now managed by `cfvpnctl derp china-mode on|off`
 china-mode on`) — the default relays are blocked from China and the three
 private regions (900 HKG-01, 901 JPY-01, 902 JPY-03) serve everywhere, so the
 travel-mode switch (and the Telegram control bot that flipped it) was removed.
-The test table below records the two states as measured on 2026-09-12.
+**Update 2026-09-15:** china-mode is **off** again (operator decision: travel to
+the UAE and elsewhere must work with no switch; globalping from du AS15802 and
+Etisalat AS5384 reached controlplane/login.tailscale.com and the Dubai relays
+derp23b/c/d at 49–122 ms, the private relays at 650–1900 ms). Region **903
+HAN-01** added so devices in Vietnam home on a relay 5–7 ms away instead of
+HKG-01. The test table below records the two states as measured on 2026-09-12.
 
 | Item | HKG-01 (region 900) | JPY-01 (region 901) |
 |---|---|---|
@@ -77,3 +82,15 @@ Rollback = remove `derpMap` from the policy; on the node
 ## Region 902 — JPY-03 (Oracle Cloud Osaka, arm64), added 2026-09-12 21:40
 
 Same recipe: `derper` 1.102.4 cross-compiled on VNM-01 (`GOOS=linux GOARCH=arm64 go install tailscale.com/cmd/derper@v1.102.4`, binary under `$GOPATH/bin/linux_arm64/`), host `derp-de29e117.duylinh.net` → 129.225.185.197 (A, not proxied), lego DNS-01 cert expiring 2026-12-11, `/etc/cron.d/derper-cert-renew` at 04:31 on the 1st, unit identical to JPY-01's, ufw 8443/tcp + 3478/udp, plus the OCI VCN security list for the same two ports. derper ignores bare STUN binding requests, so a raw-socket STUN test says nothing — verify UDP reachability with a packet counter (`iptables -I INPUT -p udp --dport 3478 -j ACCEPT` + `-L -v`) or simply `tailscale netcheck` from another node. Netcheck after the add: osa 121 ms from VNM-01, 118 ms from SIN-01 (which now has two usable private relays), 0.5 ms locally.
+
+## Region 903 — HAN-01 (Hanoi, AS63734), added 2026-09-15
+
+Chosen as the strongest fleet VPS with a Vietnamese IP (4 vCPU / 8 GB, idle,
+IPv4 + IPv6; VNM-02 is 2 vCPU / 4 GB with n8n and no IPv6; VNM-01 is the home PC,
+not 24/7). Same recipe as 902: `derper` 1.102.4 (amd64 binary copied from HKG-01),
+host `derp-bb5eccce.duylinh.net` → A 103.199.17.69 + AAAA 2404:fbc0:0:209c::a (not
+proxied), lego DNS-01 cert expiring 2026-12-14, `/etc/cron.d/derper-cert-renew`
+at 04:37 on the 1st, unit identical to JPY-03's, ufw 8443/tcp + 3478/udp (xray
+keeps 443). VNM-01 netcheck after the add: `han 6.7 ms (HAN-01)`, Hong Kong 36,
+Singapore 45, HKG-01 55. Rollback: `cfvpnctl derp region remove --id 903`, then on
+HAN-01 `systemctl disable --now derper; ufw delete allow 8443/tcp; ufw delete allow 3478/udp`.
